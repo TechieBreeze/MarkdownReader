@@ -5,12 +5,155 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Markdown Reader</title>
 <style>
+/* ============================================================================
+   设计 token —— 三层结构（调研依据：W3C Design Tokens 2025.10 + Penpot 分层实践）
+     L1 primitive  原始色板（换主题只改这一层）
+     L2 semantic   语义层（surface/text/border/accent/state），组件只引用语义层
+     L3 component  组件级覆写（仅在语义层不够表达时使用）
+   语义色不裸 hex：组件里出现 hex 即为失控信号。
+   字体/间距/圆角/阴影/动效同样 token 化（4/8 节奏）。
+   ========================================================================== */
 :root {
-  --bg: #0f1419; --bg2: #161b22; --bg3: #1c2333;
-  --border: #2d333b; --fg: #d0d7de; --fg-dim: #8b949e;
-  --accent: #4f8cff; --accent-bg: #1f3a6e;
-  --green: #3fb950; --red: #f85149; --yellow: #d29922;
-  --code-bg: #1e1e1e;   /* VSCode Dark+ 代码区背景 */
+  /* ---- L1 原始色板（暗色：Tokyo Night 蓝调基底 + GitHub Dark 前景对比）---- */
+  --p-bg-0:   #0b0f16;   /* 应用最底层（窗外/框架） */
+  --p-bg-1:   #10151f;   /* 侧栏、面板 */
+  --p-bg-2:   #151b27;   /* 内容表面 */
+  --p-bg-3:   #1b2230;   /* 悬浮/选中表面 */
+  --p-bg-4:   #222b3c;   /* 更高层表面（弹窗/代码块） */
+  --p-fg-0:   #e6edf6;   /* 标题 */
+  --p-fg-1:   #cbd5e4;   /* 正文（对 bg-2 ≈ 12.9:1） */
+  --p-fg-2:   #9aa7ba;   /* 次要（对 bg-2 ≈ 7.4:1） */
+  --p-fg-3:   #6b7a91;   /* 弱化（仅装饰/禁用，对 bg-2 ≈ 4.6:1） */
+  --p-line-1: #232c3d;   /* 常规边框 */
+  --p-line-2: #2f3a4f;   /* 强边框/分隔 */
+
+  /* 强调色（蓝） */
+  --p-accent-1: #4d94ff;  /* 主色 */
+  --p-accent-2: #2f6fd0;  /* hover */
+  --p-accent-3: #1d4a94;  /* active/底色 */
+  --p-accent-fg: #ffffff;
+
+  /* 语义状态色 */
+  --p-green: #3fb950; --p-red: #f0645b; --p-yellow: #d9a336;
+  --p-purple: #a78bfa; --p-cyan: #4bc5d4; --p-orange: #e8956a;
+
+  /* ---- L2 语义层 ---- */
+  /* 表面：用亮度差建立层级，而非靠边框堆叠（调研：VS Code 现代 UI 去边框化） */
+  --surface-app:        var(--p-bg-0);   /* 应用框架 */
+  --surface-chrome:     var(--p-bg-1);   /* 顶栏 / 侧栏 / 标签栏 */
+  --surface-content:    var(--p-bg-2);   /* 正文区 */
+  --surface-raised:     var(--p-bg-3);   /* 悬浮、选中行 */
+  --surface-overlay:    var(--p-bg-4);   /* 弹窗、下拉 */
+  --surface-inset:      #0d121b;        /* 代码块/输入框（比内容区更内凹） */
+
+  /* 文本 */
+  --text-primary:   var(--p-fg-1);
+  --text-strong:    var(--p-fg-0);
+  --text-secondary: var(--p-fg-2);
+  --text-tertiary:  var(--p-fg-3);
+  --text-inverse:   var(--p-accent-fg);
+
+  /* 边框 */
+  --border-subtle:  var(--p-line-1);
+  --border-default: var(--p-line-2);
+  --border-strong:  #3a475e;
+  --border-focus:   var(--p-accent-1);
+
+  /* 交互 */
+  --accent:         var(--p-accent-1);
+  --accent-hover:   var(--p-accent-2);
+  --accent-active:  var(--p-accent-3);
+  --accent-subtle:  rgba(77, 148, 255, 0.14);
+  --accent-border:  rgba(77, 148, 255, 0.42);
+
+  --hover-wash:     rgba(255, 255, 255, 0.045);   /* 统一 hover 反馈 */
+  --active-wash:    rgba(77, 148, 255, 0.16);
+
+  /* 状态 */
+  --success: var(--p-green); --danger: var(--p-red); --warning: var(--p-yellow);
+
+  /* 代码高亮（GitHub Dark + One Dark Pro 混合，取值已实测 ≥4.5:1） */
+  --code-bg:        var(--surface-inset);
+  --hl-keyword:     #ff7b72;   /* 6.6:1 */
+  --hl-string:      #a5d6ff;   /* 10.9:1 */
+  --hl-comment:     #8b9bb4;   /* 5.4:1 */
+  --hl-number:      #79c0ff;   /* 8.6:1 */
+  --hl-function:    #d2a8ff;   /* 8.1:1 */
+  --hl-type:        #ffa657;   /* 9.2:1 */
+  --hl-title:       #ffd7a8;
+  --hl-attr:        #79c0ff;
+  --hl-builtin:     #ffa198;
+  --hl-variable:    #c9d1d9;
+  --hl-meta:        #8b949e;
+
+  /* ---- 间距：4/8 节奏 ---- */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-5: 24px; --sp-6: 32px; --sp-7: 48px; --sp-8: 64px;
+
+  /* ---- 圆角：小圆角统一（去掉胶囊/直角混用）---- */
+  --r-sm: 3px; --r-md: 5px; --r-lg: 8px; --r-full: 999px;
+
+  /* ---- 字号：正文 ≥15px，代码 ≥13px（旧版代码 11.9px 偏小）---- */
+  --fs-xs: 11px; --fs-sm: 12px; --fs-md: 13px; --fs-base: 15px;
+  --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 26px; --fs-3xl: 32px;
+  --fs-code: 13px;
+
+  /* ---- 行高 ---- */
+  --lh-tight: 1.35; --lh-normal: 1.6; --lh-relaxed: 1.75;
+
+  /* ---- 阴影：分层用，越高层越明显 ---- */
+  --shadow-1: 0 1px 2px rgba(0,0,0,.28);
+  --shadow-2: 0 2px 8px rgba(0,0,0,.34);
+  --shadow-3: 0 8px 28px rgba(0,0,0,.46);
+
+  /* ---- 动效 token（调研：hover 100ms / 按钮 200ms / 弹窗 300ms）---- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 100ms; --dur-normal: 180ms; --dur-slow: 280ms;
+
+  /* ---- 布局尺寸 ---- */
+  --topbar-h: 44px;
+  --taskbar-h: 34px;
+  --tabbar-h: 36px;
+  --tree-w: 268px;
+  /* 阅读行宽：中文 35-50 全角字最佳（旧版 980px 过宽、约 126 字符） */
+  --measure: 46rem;   /* ≈ 736px @16px */
+  --measure-wide: 60rem;
+}
+
+/* 亮色模式：语义层整体翻转，组件代码零改动 */
+:root[data-theme="light"] {
+  --p-bg-0: #f4f6f9;  --p-bg-1: #ffffff;  --p-bg-2: #ffffff;  --p-bg-3: #eef1f6;  --p-bg-4: #ffffff;
+  --p-fg-0: #10161f;  --p-fg-1: #2b3646;  --p-fg-2: #56637a;  --p-fg-3: #7d8ba1;
+  --p-line-1: #dde3ec; --p-line-2: #c8d1de;
+  --p-accent-1: #2563eb; --p-accent-2: #1d4ed8; --p-accent-3: #1e40af;
+  --hover-wash:   rgba(0, 0, 0, 0.04);
+  --active-wash:  rgba(37, 99, 235, 0.10);
+  --accent-subtle: rgba(37, 99, 235, 0.09);
+  --accent-border: rgba(37, 99, 235, 0.35);
+  --surface-inset: #f6f8fb;
+  --hl-keyword: #cf222e; --hl-string: #0a3069; --hl-comment: #6e7781;
+  --hl-number: #0550ae; --hl-function: #8250df; --hl-type: #953800;
+  --hl-title: #953800; --hl-attr: #0550ae; --hl-builtin: #cf222e;
+  --hl-variable: #24292f; --hl-meta: #6e7781;
+  --shadow-1: 0 1px 2px rgba(16,24,40,.06);
+  --shadow-2: 0 2px 8px rgba(16,24,40,.10);
+  --shadow-3: 0 8px 28px rgba(16,24,40,.14);
+}
+
+/* ---- 向后兼容别名：旧 CSS 里的裸 hex 变量名映射到语义层。
+   保留这些别名是为了不必一次性重写 894 行既有规则；新写的代码一律用语义层名字。
+   全部指向语义 token，因此亮/暗切换自动生效。 ---- */
+:root {
+  --bg:      var(--surface-chrome);
+  --bg2:     var(--surface-content);
+  --bg3:     var(--surface-raised);
+  --fg:      var(--text-primary);
+  --fg-dim:  var(--text-secondary);
+  --border:  var(--border-subtle);
+  --accent-bg: var(--active-wash);
+  --green:   var(--success);
+  --red:     var(--danger);
+  --yellow:  var(--warning);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
@@ -897,29 +1040,615 @@ body {
 .peek-card .pk-line .pk-no { color: #4a525c; min-width: 28px; text-align: right; user-select: none; }
 .peek-card .pk-line.cur { background: rgba(210,153,34,0.18); }
 .peek-card .pk-line.cur .pk-no { color: #d29922; }
+
+
+/* ============================================================================
+   ▼ UI 重构层（v2）—— 追加覆盖，不改动上方既有规则
+   诊断依据（实测 + 截图分析 + VS Code 现代 UI / Tokyo Night / W3C Design Tokens）：
+   1) 顶部 4 层栏占 160px、正文前 200px → 视觉负担重、像后台模板
+   2) 正文行宽 980px ≈ 126 字符 → 中文阅读应 35-50 全角字
+   3) 正文 14px / 代码 11.9px → 均偏小，长时间阅读疲劳
+   4) 蓝色承担 7 种语义（品牌/主按钮/激活/链接/行内代码/标签强调/视图入口）→ 语义过载
+   5) 30 种裸 hex 散落 → 换主题必漏
+   6) 按钮 26-31px 高、tree-item 24px → 触控目标偏小、点击区域不足
+   7) outline 基本为 none → 键盘焦点不可见
+   8) 圆角混用（胶囊 task-tab / 小圆角按钮 / 近直角 tab）
+   ========================================================================== */
+
+/* ---------- 1. 基础：焦点可见 + 全局动效节流 ---------- */
+:root:focus-within { }
+*:focus { outline: none; }   /* 统一改由 :focus-visible 接管 */
+*:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+  border-radius: var(--r-sm);
+}
+/* 尊重系统「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------- 2. 品牌：emoji → SVG（skill：禁止 emoji 当图标）---------- */
+.brand { font-size: var(--fs-md); font-weight: 600; letter-spacing: 0.01em; color: var(--text-strong); }
+.brand .brand-mark { display: inline-flex; vertical-align: -2px; margin-right: 6px; color: var(--accent); }
+.brand .brand-mark svg { width: 16px; height: 16px; }
+
+/* ---------- 3. 顶栏：层级 + 主次分离（只保留一个实心主按钮）---------- */
+#topbar {
+  height: var(--topbar-h);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-subtle);
+  /* 顶栏不再「浮」在最上层：与侧栏同色，仅靠底部一条边界分隔 */
+  padding: 0 var(--sp-3);
+  gap: var(--sp-2);
+  align-items: center;
+}
+#topbar .brand { margin-right: var(--sp-1); }
+
+/* 图标按钮：统一 30×30，SVG 16px，hover 有底色反馈 */
+#topbar .nav-btn, #topbar .icon-btn {
+  width: 30px; height: 30px; min-width: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out);
+}
+#topbar .nav-btn svg, #topbar .icon-btn svg { width: 16px; height: 16px; display: block; }
+#topbar .nav-btn:hover:not(:disabled), #topbar .icon-btn:hover:not(:disabled) {
+  background: var(--hover-wash); color: var(--text-strong);
+}
+#topbar .nav-btn:active:not(:disabled) { background: var(--active-wash); }
+#topbar .nav-btn:disabled {
+  /* 显式清掉 hover/active 底色：disabled 按钮不应有高亮背景 */
+  background: transparent; color: var(--text-tertiary);
+  cursor: default; opacity: .5;
+}
+
+/* 主按钮：唯一实心蓝，其余幽灵化（消除「三个蓝按钮同权重」）*/
+#topbar .btn-primary {
+  height: 30px; padding: 0 var(--sp-4);
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--accent); color: var(--text-inverse);
+  border: 1px solid transparent; border-radius: var(--r-md);
+  font-size: var(--fs-md); font-weight: 500; cursor: pointer;
+  transition: background var(--dur-normal) var(--ease-out);
+}
+#topbar .btn-primary:hover { background: var(--accent-hover); }
+#topbar .btn-primary:active { background: var(--accent-active); }
+
+/* 次级按钮（项目/Git图/JSON）：幽灵 + 分组 */
+#topbar .btn-ghost {
+  height: 30px; padding: 0 var(--sp-3);
+  display: inline-flex; align-items: center; gap: 6px;
+  background: transparent; color: var(--text-secondary);
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  font-size: var(--fs-md); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out);
+}
+#topbar .btn-ghost svg { width: 15px; height: 15px; flex: none; }
+#topbar .btn-ghost:hover { background: var(--hover-wash); color: var(--text-strong); border-color: var(--border-strong); }
+#topbar .btn-ghost:active { background: var(--active-wash); }
+/* 项目按钮：当前有项目时用 accent-subtle 表明「这是一个筛选态」*/
+#topbar #btn-projects { margin-left: auto; }
+#topbar #btn-projects[data-active="1"] {
+  background: var(--accent-subtle); border-color: var(--accent-border); color: var(--text-strong);
+}
+#topbar #btn-gitgraph { margin-left: 0; }
+
+/* 搜索/打开输入框：内凹表面 */
+#topbar input[type=text], #topbar input:not([type]) {
+  height: 30px; padding: 0 var(--sp-3);
+  background: var(--surface-inset);
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  color: var(--text-primary); font-size: var(--fs-md);
+  transition: border-color var(--dur-fast) var(--ease-out),
+              box-shadow var(--dur-fast) var(--ease-out);
+}
+#topbar input:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+/* ---------- 4. 任务栏 / 标签栏：消除双重激活感 ---------- */
+/* 任务（工作区）与文件标签区分语言：任务是「分组标签」，文件是「文档标签」*/
+#taskbar {
+  height: var(--taskbar-h);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 var(--sp-3) 0 var(--sp-2);
+  gap: var(--sp-1); align-items: center;
+  font-size: var(--fs-sm);
+}
+/* 任务胶囊：小圆角（去掉胶囊感），激活用左侧色条而非整块蓝 */
+#taskbar .task-tab {
+  height: 24px; padding: 0 var(--sp-2) 0 7px;
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid transparent; border-left: 2px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent; color: var(--text-secondary);
+  font-size: var(--fs-sm); cursor: pointer; user-select: none;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+#taskbar .task-tab:hover { background: var(--hover-wash); color: var(--text-primary); }
+#taskbar .task-tab.active {
+  background: var(--surface-raised); color: var(--text-strong);
+  border-color: var(--border-subtle); border-left-color: var(--accent);
+  font-weight: 500;
+}
+#taskbar .task-tab .x { opacity: .5; border-radius: var(--r-sm); padding: 0 2px; }
+#taskbar .task-tab .x:hover { opacity: 1; background: var(--hover-wash); }
+
+/* 文件标签栏 */
+#tabbar {
+  height: var(--tabbar-h);
+  background: var(--surface-chrome);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0 var(--sp-2); gap: 2px; align-items: stretch;
+}
+#tabbar .tab {
+  height: calc(var(--tabbar-h) - 1px);
+  padding: 0 var(--sp-2) 0 var(--sp-3);
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  max-width: 260px;
+  border: 1px solid transparent; border-bottom: none;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: transparent; color: var(--text-secondary);
+  font-size: var(--fs-md); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+#tabbar .tab:hover { background: var(--hover-wash); color: var(--text-primary); }
+/* 激活态：表面变亮 + 顶部 2px 强调条（唯一用 accent 表示激活的地方）*/
+#tabbar .tab.active {
+  background: var(--surface-content); color: var(--text-strong);
+  border-color: var(--border-subtle);
+  box-shadow: inset 0 2px 0 var(--accent);
+  font-weight: 500;
+}
+#tabbar .tab .tab-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#tabbar .tab .x {
+  flex: none; width: 18px; height: 18px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-tertiary); opacity: .7;
+}
+#tabbar .tab .x:hover { background: var(--hover-wash); color: var(--text-primary); opacity: 1; }
+#tabbar .tab.dirty .x::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+/* ---------- 5. 目录树：提升密度与当前位置反馈 ---------- */
+#tree {
+  width: var(--tree-w);
+  background: var(--surface-chrome);
+  border-right: 1px solid var(--border-subtle);
+  font-size: var(--fs-md);
+}
+#tree-head {
+  height: 32px; padding: 0 var(--sp-3);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: var(--fs-xs); font-weight: 600;
+  color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .06em;
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky; top: 0; background: var(--surface-chrome); z-index: 2;
+}
+/* 行高 24 → 28px（触控目标），缩进与箭头尺寸提升
+   注意 padding-left 必须保留 --indent：上方旧规则是
+   `padding: 3px 10px 3px var(--indent,10px)`，若这里简写成 `0 8px 0 4px`
+   会把缩进整体抹平、层级全丢（实测树会横向溢出 200px）。 */
+#tree .tree-item {
+  min-height: 28px; height: 28px;
+  padding: 0 var(--sp-2) 0 calc(var(--indent, 10px) + 4px);
+  display: flex; align-items: center; gap: 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary); font-size: var(--fs-md);
+  cursor: pointer; user-select: none;
+  /* 树内不允许横向滚动：宽度固定，靠 ellipsis 截断长名 */
+  max-width: 100%; overflow: hidden;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+/* 层级引导线：让父子关系不靠缩进猜。
+   .tree-sub 是每个已展开目录的子容器，用 border-left 画一条竖线，
+   子项 padding-left 再叠加 --indent，形成连续的层级路径。 */
+#tree .tree-sub {
+  border-left: 1px solid var(--border-subtle);
+  margin-left: 15px;              /* 与父级箭头中心对齐 */
+  padding-left: 2px;
+  max-width: 100%; overflow: hidden;
+}
+#tree .tree-sub > .tree-item:first-child { position: relative; }
+#tree .tree-sub > .tree-item::before {
+  /* 从竖线到子项的短横线，形成「树线」视觉 */
+  content: ""; position: absolute;
+  left: -2px; top: 50%; width: 8px; height: 1px;
+  background: var(--border-subtle);
+}
+/* 展开箭头：放大 + 明确展开态颜色（原来 16px 箭头弱到看不出状态）*/
+#tree .tree-item .t-icon {
+  flex: none; width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 10px; line-height: 1;
+  color: var(--text-tertiary);
+}
+#tree .tree-item.dir { font-weight: 600; color: var(--text-primary); }
+/* 祖先目录（当前文件所在分支）：形成「根 → 祖先链 → 当前文件」的连续视觉路径。
+   三级状态：普通目录(灰) → 当前分支祖先(accent + 左侧条) → 当前文件(accent 底色 + 填充)。
+   只靠文字颜色区分不够 —— 祖先链要能连成一条线，所以祖先用 inset 左条。 */
+#tree .tree-item.dir.on-path {
+  color: var(--accent);
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: transparent;   /* 祖先不加底色，避免和当前文件的填充选中态混淆 */
+}
+#tree .tree-item.dir.on-path .t-icon { color: var(--accent); }
+/* 当前分支所在的 .tree-sub 引导线也点亮，让链路视觉连续 */
+#tree .tree-sub:has(> .tree-item.on-path),
+#tree .tree-sub:has(> .tree-item.dir.on-path) {
+  border-left-color: var(--accent-border);
+}
+#tree .tree-item:hover { background: var(--hover-wash); color: var(--text-primary); }
+/* 当前文件：左侧强调条 + 表面变亮（截图分析指出的缺失反馈）
+   class 名沿用既有实现：.active-file（当前打开文件）/ .located（跳转定位过的文件），
+   不要另造 .active/.current —— JS 只维护这两个类名。 */
+#tree .tree-item.file.active-file {
+  background: var(--active-wash); color: var(--text-strong);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+#tree .tree-item.file.active-file .t-label,
+#tree .tree-item.file.active-file .t-name { color: var(--text-strong); }
+#tree .tree-item.file.active-file .t-icon { color: var(--accent); }
+/* 定位高亮（Ctrl+跳转命中的目标），比当前文件更短暂更强 */
+#tree .tree-item.located {
+  background: var(--accent-subtle);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* 根/项目层级：字重区分 */
+#tree .tree-item.dir { font-weight: 600; color: var(--text-primary); }
+#tree .tree-item .t-icon { flex: none; width: 15px; height: 15px; color: var(--text-tertiary); }
+#tree .tree-item .t-label, #tree .tree-item .t-name {
+  /* 必须显式覆盖旧规则的 overflow:visible + text-overflow:clip，
+     否则长文件名会把树撑出横向滚动条（实测溢出 200px） */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1 1 auto;
+}
+/* 长名 hover 显示全文（title 属性由 JS 写入）*/
+/* 未打开的文件降到次要色，打开的用正文色 —— 用明度而非加粗表达状态 */
+#tree .tree-item.file:not(.active-file):not(.located) .t-label { color: var(--text-secondary); }
+#tree .tree-resizer {
+  width: 5px; cursor: col-resize; background: transparent;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+#tree .tree-resizer:hover, #tree .tree-resizer.dragging { background: var(--accent-subtle); }
+
+/* ---------- 6. 正文排版：行宽 / 字号 / 行距（阅读体验核心）---------- */
+#content { background: var(--surface-content); }
+/* 字体分工（截图分析建议）：中文正文用无衬线（阅读舒适），
+   只有代码块/行内代码/代码视图用等宽 —— 避免整页等宽的「终端感」。*/
+.md-body, .markdown-body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  /* 旧版 980px ≈ 126 字符；改为 46rem ≈ 736px（中文 35-50 全角字最佳）*/
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-5) var(--sp-8);
+  font-size: var(--fs-base);      /* 14 → 15px */
+  line-height: var(--lh-relaxed); /* 1.75 */
+  color: var(--text-primary);
+}
+/* 代码块 / 宽表格突破行宽限制（调研：差异化布局）*/
+.md-body > pre,
+.md-body > table,
+.md-body .mermaid,
+.md-body > .table-wrap { max-width: var(--measure-wide); margin-left: 0; margin-right: 0; }
+
+.md-body h1, .md-body h2, .md-body h3,
+.md-body h4, .md-body h5, .md-body h6 {
+  color: var(--text-strong);
+  font-weight: 650;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.011em;         /* 大字号负字距，视觉更紧实 */
+  margin-top: var(--sp-6);
+  margin-bottom: var(--sp-3);
+}
+.md-body h1 { font-size: 28px; margin-top: 0; margin-bottom: var(--sp-4); padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border-subtle); }
+.md-body h2 { font-size: var(--fs-xl); padding-bottom: var(--sp-2); border-bottom: 1px solid var(--border-subtle); }
+.md-body h3 { font-size: var(--fs-lg); }
+.md-body h4 { font-size: var(--fs-base); }
+.md-body h5, .md-body h6 { font-size: var(--fs-md); color: var(--text-secondary); }
+/* 标题不再带过强横线（截图分析：横向强调过强）—— 只 h1/h2 保留细分隔 */
+.md-body h3, .md-body h4, .md-body h5, .md-body h6 { border-bottom: none; padding-bottom: 0; }
+
+.md-body p { margin: 0 0 var(--sp-4); }
+.md-body ul, .md-body ol { margin: 0 0 var(--sp-4); padding-left: 1.5em; }
+.md-body li { margin-bottom: var(--sp-2); }
+.md-body li::marker { color: var(--text-tertiary); }
+.md-body strong { color: var(--text-strong); font-weight: 650; }
+
+/* 链接：蓝色文字 + hover 下划线（不再用蓝色描边标签，减少噪点）*/
+.md-body a {
+  color: var(--accent); text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.md-body a:hover { color: var(--accent-hover); border-bottom-color: currentColor; }
+
+/* 行内代码：中性灰背景、无蓝色边框（与链接区分语义）*/
+.md-body code {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: 0.875em;                 /* 15px × .875 ≈ 13px，不再过小 */
+  padding: 0.15em 0.4em;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle); border-radius: var(--r-sm);
+  color: var(--text-primary);
+  /* 断行策略：中文按词断，英文/路径按字符断。
+     overflow-wrap:anywhere 会把中文词中间劈开；用 break-word 更温和。 */
+  word-break: normal; overflow-wrap: break-word;
+  /* 连续多个行内代码块不要连成噪点带 */
+  margin: 0 0.08em;
+}
+/* 行内代码块与正文混排时降噪：不加边框，只用表面色 */
+.md-body p code, .md-body li code, .md-body td code {
+  border-color: transparent; background: var(--surface-raised); color: var(--text-secondary);
+}
+/* 行内代码块（路径类）不再抢眼：去掉蓝色边框，用中性色 */
+.md-body a > code, .md-body code.pth {
+  border-color: transparent; background: var(--surface-raised); color: var(--text-secondary);
+}
+
+.md-body pre {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: var(--fs-code);          /* 11.9 → 13px */
+  line-height: 1.65;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
+  padding: var(--sp-4);
+  overflow-x: auto;
+  box-shadow: var(--shadow-1);
+}
+.md-body pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
+
+/* 引用块：左侧 3px 强调线（截图分析：当前像临时嵌入的灰盒子）*/
+.md-body blockquote {
+  margin: 0 0 var(--sp-4); padding: var(--sp-3);
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-raised);
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  color: var(--text-secondary);
+}
+.md-body blockquote p:last-child { margin-bottom: 0; }
+
+.md-body hr { border: none; border-top: 1px solid var(--border-subtle); margin: var(--sp-6) 0; }
+
+.md-body table {
+  border-collapse: collapse; width: 100%; font-size: var(--fs-md);
+  border: 1px solid var(--border-subtle); border-radius: var(--r-md); overflow: hidden;
+}
+.md-body th {
+  background: var(--surface-raised); color: var(--text-strong); font-weight: 600;
+  text-align: left; padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.md-body td { padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border-subtle); }
+.md-body tr:last-child td { border-bottom: none; }
+.md-body tbody tr:hover { background: var(--hover-wash); }
+
+/* ---------- 7. 代码视图：字号 + token 化高亮色 ---------- */
+.ct-scroll, .code-view {
+  font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
+  font-size: var(--fs-code);          /* 11.9 → 13px */
+  line-height: 1.6;
+  background: var(--surface-content);
+}
+.ct-scroll .cl-no {
+  font-size: var(--fs-sm); color: var(--text-tertiary);
+  background: var(--surface-chrome); user-select: none;
+  border-right: 1px solid var(--border-subtle);
+  min-width: 44px;
+}
+/* 高亮类映射到 token（不再是裸 hex）*/
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag { color: var(--hl-keyword) !important; }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-quote { color: var(--hl-string) !important; }
+.hljs-comment, .hljs-deletion { color: var(--hl-comment) !important; font-style: italic; }
+.hljs-number, .hljs-symbol, .hljs-bullet { color: var(--hl-number) !important; }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--hl-function) !important; }
+.hljs-type, .hljs-class .hljs-title, .hljs-title.class_, .hljs-built_in { color: var(--hl-type) !important; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-template-variable, .hljs-property { color: var(--hl-attr) !important; }
+.hljs-meta, .hljs-meta .hljs-keyword, .hljs-comment .hljs-doctag { color: var(--hl-meta) !important; }
+.hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--hl-type) !important; }
+.hljs-params { color: var(--hl-variable) !important; }
+.hljs-subst { color: var(--hl-variable) !important; }
+.hljs-link { color: var(--accent) !important; text-decoration: underline; }
+.hljs-strong { font-weight: 700; }
+.hljs-emphasis { font-style: italic; }
+/* jump flash：目标行短暂高亮，动效 token 化 */
+.jump-flash, .jump-flash-ov {
+  background: var(--accent-subtle);
+  box-shadow: inset 2px 0 0 var(--accent);
+  animation: jumpFlash var(--dur-slow) var(--ease-out);
+}
+@keyframes jumpFlash {
+  0%   { background: var(--accent-subtle); }
+  100% { background: transparent; }
+}
+
+/* ---------- 8. 弹窗（项目管理 / 快速打开 / JSON）---------- */
+.mask {
+  background: rgba(3, 6, 12, 0.62);
+  backdrop-filter: blur(3px);
+  animation: maskIn var(--dur-normal) var(--ease-out);
+}
+@keyframes maskIn { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+  animation: modalIn var(--dur-slow) var(--ease-out);
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(-6px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-base); font-weight: 600; color: var(--text-strong);
+}
+.modal-head .close-btn {
+  width: 28px; height: 28px; border: none; border-radius: var(--r-md);
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.modal-head .close-btn:hover { background: var(--hover-wash); color: var(--text-strong); }
+/* 弹窗按钮：高度统一 30px（此前 26/31/35 混用）*/
+.modal input[type=text], .modal input:not([type]) {
+  height: 30px; padding: 0 var(--sp-3);
+  background: var(--surface-inset); border: 1px solid var(--border-default);
+  border-radius: var(--r-md); color: var(--text-primary); font-size: var(--fs-md);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.modal input:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle); }
+.modal .btn {
+  height: 30px; padding: 0 var(--sp-4);
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  background: var(--surface-raised); color: var(--text-primary);
+  font-size: var(--fs-md); cursor: pointer; white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.modal .btn:hover { background: var(--hover-wash); border-color: var(--border-strong); }
+.modal .btn.primary { background: var(--accent); border-color: transparent; color: var(--text-inverse); font-weight: 500; }
+.modal .btn.primary:hover { background: var(--accent-hover); }
+.modal .btn.danger { color: var(--danger); border-color: transparent; background: transparent; }
+.modal .btn.danger:hover { background: rgba(240, 100, 91, 0.12); }
+
+/* 项目列表项 */
+.proj-item {
+  padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md);
+  border: 1px solid transparent; cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.proj-item:hover { background: var(--hover-wash); }
+.proj-item.cur { background: var(--accent-subtle); border-color: var(--accent-border); }
+.proj-item .proj-name { font-size: var(--fs-md); color: var(--text-strong); font-weight: 500; }
+.proj-item .proj-path { font-size: var(--fs-xs); color: var(--text-tertiary); }
+.proj-ops button {
+  height: 26px; padding: 0 var(--sp-2);
+  border: 1px solid var(--border-default); border-radius: var(--r-sm);
+  background: var(--surface-raised); color: var(--text-secondary);
+  font-size: var(--fs-xs); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.proj-ops button:hover { background: var(--hover-wash); color: var(--text-primary); }
+.proj-ops .proj-remove:hover { color: var(--danger); border-color: var(--danger); }
+
+/* ---------- 9. Toast / 空态 ---------- */
+#toast {
+  background: var(--surface-overlay); color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  box-shadow: var(--shadow-3);
+  font-size: var(--fs-md);
+  padding: var(--sp-2) var(--sp-4);
+}
+.toast-err { border-color: var(--danger); color: var(--danger); }
+.placeholder, .empty-state {
+  color: var(--text-tertiary); font-size: var(--fs-md);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-2); height: 100%; text-align: center;
+}
+.placeholder svg, .empty-state svg { width: 40px; height: 40px; opacity: .35; }
+
+/* ---------- 10. 滚动条（VS Code 现代 UI 风格：细、低干扰）---------- */
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: var(--r-full);
+  border: 3px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---------- 11. 文本选中 ---------- */
+::selection { background: var(--active-wash); color: var(--text-strong); }
+
+
+/* ---------- 12. 响应式（skill 要求 375/768/1024/1440 四断点均无横向滚动）---------- */
+/* 实测：1024px 以上无溢出；375/768px 时正文/顶栏固定宽度导致 document 溢出 794px。 */
+@media (max-width: 1180px) {
+  #topbar { flex-wrap: wrap; height: auto; min-height: var(--topbar-h); padding: var(--sp-2) var(--sp-3); row-gap: var(--sp-2); }
+  #open-input { flex: 1 1 200px; min-width: 140px; }
+  #topbar .spacer { display: none; }
+  #topbar #btn-projects { margin-left: auto; }
+  #topbar #btn-projects, #topbar #btn-gitgraph, #topbar #btn-json { font-size: var(--fs-sm); padding: 0 var(--sp-2); }
+}
+@media (max-width: 900px) {
+  :root { --tree-w: 220px; }
+  /* 窄屏取消居中留白，改全宽 + 更小内边距；行长变短可略放大字号 */
+  .md-body, .markdown-body {
+    max-width: 100%;
+    padding: var(--sp-4) var(--sp-4) var(--sp-6);
+    font-size: var(--fs-lg);
+  }
+  .md-body > pre, .md-body > table, .md-body .mermaid, .md-body > .table-wrap { max-width: 100%; }
+  .md-body h1 { font-size: 24px; }
+  .md-body h2 { font-size: var(--fs-lg); }
+  /* 代码块/表格在自身内部横向滚动，而不是撑宽整个文档 */
+  .md-body pre { max-width: 100%; overflow-x: auto; }
+  .md-body table { display: block; overflow-x: auto; }
+}
+@media (max-width: 680px) {
+  :root { --tree-w: 190px; }
+  #topbar .brand { font-size: var(--fs-sm); }
+  /* 窄屏只留图标，文字靠 title/aria-label 说明 */
+  #topbar #btn-gitgraph, #topbar #btn-json { font-size: 0; gap: 0; padding: 0 6px; }
+  #topbar #btn-gitgraph svg, #topbar #btn-json svg { width: 16px; height: 16px; }
+  #topbar #btn-projects { font-size: var(--fs-sm); max-width: 140px; }
+  #topbar #btn-projects span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .md-body, .markdown-body { padding: var(--sp-3) var(--sp-3) var(--sp-5); }
+  #tabbar .tab { max-width: 150px; }
+}
+/* 兜底：文档永不横向滚动，任何超宽内容都在自身容器内滚 */
+html, body { max-width: 100%; overflow-x: hidden; }
+
 </style>
 </head>
 <body>
 
 <div id="topbar">
-  <span class="brand">📖 Markdown Reader</span>
-  <button id="nav-back" class="nav-btn" title="后退（Alt+←）" disabled>
+  <span class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg></span>Markdown Reader</span>
+  <button id="nav-back" class="nav-btn" title="后退（Alt+←）" aria-label="后退" disabled>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
   </button>
-  <button id="nav-fwd" class="nav-btn" title="前进（Alt+→）" disabled>
+  <button id="nav-fwd" class="nav-btn" title="前进（Alt+→）" aria-label="前进" disabled>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
   </button>
   <input type="text" id="open-input" placeholder="输入相对路径打开（如 docs/梳理/00-业务全景导读.md），回车确认"
          spellcheck="false">
-  <button id="btn-open">打开</button>
-  <button id="btn-refresh" title="刷新当前标签页内容" disabled>
+  <button id="btn-open" class="btn-primary" title="按输入的相对路径打开文档（回车同效）" aria-label="打开文档">打开</button>
+  <button id="btn-refresh" class="icon-btn" title="刷新当前标签页内容" aria-label="刷新当前标签页" disabled>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
   </button>
   <div class="spacer"></div>
-  <button id="btn-projects" title="项目管理（Alt+P）：添加/切换/移除项目">项目</button>
-  <button id="btn-gitgraph" title="Git 版本树（查看分支/合并/提交）">Git 图</button>
-  <button id="btn-json" title="JSON 格式化 / 压缩 / 校验">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+  <button id="btn-projects" class="btn-ghost" title="项目管理（Alt+P）：添加/切换/移除项目" aria-label="项目管理">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+    <span id="btn-projects-label">项目</span>
+  </button>
+  <button id="btn-gitgraph" class="btn-ghost" title="Git 版本树（查看分支/合并/提交）" aria-label="Git 版本树">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><circle cx="6" cy="19" r="3"/><path d="M6 8v8M9 5h4a5 5 0 0 1 5 5v6"/></svg>
+    Git 图
+  </button>
+  <button id="btn-theme" class="icon-btn" title="切换明暗主题" aria-label="切换明暗主题">
+    <svg id="icon-theme" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
+  <button id="btn-json" class="btn-ghost" title="JSON 格式化 / 压缩 / 校验" aria-label="JSON 工具">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
     JSON
   </button>
 </div>
@@ -931,11 +1660,13 @@ body {
       <span class="j-title">项目管理</span>
       <span style="color:var(--fg-dim);font-size:12px">添加 / 切换 / 移除工作区根 · 切换后目录树跟随当前项目</span>
       <span class="j-spacer"></span>
-      <button class="j-close" id="projects-close">✕</button>
+      <button class="j-close" id="projects-close" aria-label="关闭项目管理">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-width="2.2" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
     </div>
     <div id="projects-add">
       <input id="projects-path" placeholder="输入项目根目录绝对路径（如 D:/projects/任务A），回车添加" spellcheck="false">
-      <button id="projects-add-btn">添加项目</button>
+      <button id="projects-add-btn" class="btn primary">添加项目</button>
     </div>
     <div id="projects-list"></div>
     <div id="projects-footer" style="padding:8px 14px;color:var(--fg-dim);font-size:12px"></div>
@@ -1278,6 +2009,17 @@ let _curProject = null;   // 当前项目 vtop 名（切换后任务/标签集�
 // 多根虚拟顶层名（/api/meta 填充）。必须顶部声明：resolveRel() 在页面加载早期
 // 就会被调用（渲染文档里的相对链接），若到 init 才声明会撞 TDZ 抛 ReferenceError。
 let _vtops = [];
+
+/* 目录树状态声明。
+   必须放在这里（顶层早期、initTasks() 之前）：initTasks() → renderTabbar()
+   → syncTreeActiveFile() 会在 L2015 顶层同步执行，而 syncTreeActiveFile 要读 expanded。
+   若这些 const 声明留在文件后部（原来在 4800+ 行），会撞 TDZ 抛
+   "Cannot access 'expanded' before initialization"，导致整个 script 中断，
+   后面的所有事件绑定都不执行（目录树/按钮全部点不动）。 */
+const expanded = new Set([""]);          // 已展开目录（path 相对根）
+let _ancestorPathSet = new Set();        // 当前标签祖先目录集合（on-path 高亮用）
+const TREE_KEY = "mdreader.tree.v1";     // 树展开状态独立存储（与任务状态分开）
+
 const $ = (sel, el) => (el || document).querySelector(sel);
 
 /* 初始化任务工作台：还原 localStorage（无则建默认任务「默认」） */
@@ -1354,15 +2096,23 @@ function bmSetFor(scroll) {
 
 /* 最近打开文件（Ctrl+E）：跨会话持久化，openTab 统一记录 */
 const RECENT_KEY = "mdreader.recent.v1";
-let recentFiles = [];
-try { recentFiles = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"); } catch (e) { recentFiles = []; }
-if (!Array.isArray(recentFiles)) recentFiles = [];
+/* 注意声明顺序：这个 let 必须在 openTab 首次被调用之前完成初始化。
+   init() 是 async IIFE（会立即同步执行到第一个 await），若它在下面这条
+   初始化语句之前调用了 openTab，recordRecent 里读 recentFiles 会撞 TDZ
+   （ReferenceError: Cannot access 'recentFiles' before initialization）。
+   改成对象容器 + 惰性初始化，彻底消除这个顺序依赖。 */
+const _recent = { list: [] };
+try {
+  const v = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+  if (Array.isArray(v)) _recent.list = v;
+} catch (e) { /* 存储不可用/数据损坏：保持空列表 */ }
 function recordRecent(path) {
-  const i = recentFiles.indexOf(path);
-  if (i >= 0) recentFiles.splice(i, 1);
-  recentFiles.unshift(path);
-  if (recentFiles.length > 40) recentFiles.length = 40;
-  try { localStorage.setItem(RECENT_KEY, JSON.stringify(recentFiles)); } catch (e) { /* 静默 */ }
+  const list = _recent.list;
+  const i = list.indexOf(path);
+  if (i >= 0) list.splice(i, 1);
+  list.unshift(path);
+  if (list.length > 40) list.length = 40;
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); } catch (e) { /* 静默 */ }
 }
 function openTab(path, { focus = true, fromLink = false, line = null, branch = null, commit = null } = {}) {
   path = path.replace(/\\/g, "/").replace(/^\/+/, "");
@@ -4091,8 +4841,7 @@ function isWebPath(path) {
 /* ================= 文件树 ================= */
 
 
-const expanded = new Set([""]);  // 已展开目录（path 相对根）
-const TREE_KEY = "mdreader.tree.v1";   // 树展开状态独立存储（与任务状态分开）
+
 let _treeScrollRestore = 0;           // 页面加载时从存储恢复的 #tree scrollTop
 
 /* 展开态按项目分区：目录树顶层就是项目列表，各项目的展开路径互不相同，
@@ -4204,16 +4953,41 @@ function bindLocateButton(btn, filePath) {
   };
 }
 
-/* 同步「当前打开文件」高亮：活动标签的路径若在树中可见（父目录已展开）则标记，
-   否则清除标记。只标记不强制展开（展开由「定位」负责）。在树渲染/展开折叠/标签切换后调用。 */
-function syncTreeActiveFile() {
+function syncTreeActiveFile(forceExpand) {
   const t = curActiveTab();
   const path = t ? t.path : null;
   document.querySelectorAll("#tree .tree-item.file.active-file").forEach(n => n.classList.remove("active-file"));
   if (!path) return;
   const node = document.querySelector(`#tree .tree-item.file[data-path="${CSS.escape(path)}"]`);
-  if (node) node.classList.add("active-file");
+  if (node) { node.classList.add("active-file"); return; }
+  if (forceExpand === false) return;
+
+  // 展开祖先。两个方向的路径不一致，必须都构造候选：
+  //   树节点 data-path 带 vtop 前缀：「20260917-微服务/docs/梳理」
+  //   标签页 path 可能无前缀：「docs/梳理/x.md」（旧文档 / 单根 / 服务端兜底解析）
+  const candidates = _pathCandidates(path);   // 与 _ancestorDirs 共用同一套前缀规则
+  let changed = false;
+  for (const base of candidates) {
+    const parts = base.split("/");
+    for (let i = 1; i < parts.length; i++) {
+      const dir = parts.slice(0, i).join("/");
+      if (dir && !expanded.has(dir)) { expanded.add(dir); changed = true; }
+    }
+  }
+  if (!changed) return;
+  saveExpanded();
+  renderTree().then(() => {
+    for (const cand of candidates) {
+      const n2 = document.querySelector(`#tree .tree-item.file[data-path="${CSS.escape(cand)}"]`);
+      if (n2) {
+        n2.classList.add("active-file");
+        n2.scrollIntoView({ block: "nearest" });   // 滚动到可见，不强制居中
+        return;
+      }
+    }
+  }).catch(() => {});
 }
+
 
 /* ================= 目录树宽度：拖拽调整 + 持久化 ================= */
 const TREE_WIDTH_KEY = "mdreader.treeWidth.v1";
@@ -4254,12 +5028,34 @@ function initTreeResizer() {
   });
 }
 
+/* 当前标签路径的各级祖先目录（带/不带 vtop 前缀两种写法都要），
+   用来给「当前分支」加 on-path 高亮。只算目录段，不含文件自身。 */
+function _ancestorDirs() {
+  const t = curActiveTab();
+  if (!t) return new Set();
+  const out = new Set();
+  for (const base of _pathCandidates(t.path)) {
+    const parts = base.split("/");
+    for (let i = 1; i < parts.length; i++) out.add(parts.slice(0, i).join("/"));
+  }
+  return out;
+}
+/* 路径候选：带 vtop 前缀 / 无 vtop 前缀（与 syncTreeActiveFile 同一套规则） */
+function _pathCandidates(path) {
+  const segs = path.split("/");
+  const out = [path];
+  if (_vtops.includes(segs[0])) out.push(segs.slice(1).join("/"));
+  else for (const v of _vtops) out.push(v + "/" + path);
+  return out;
+}
+
 async function renderTree() {
   const tree = $("#tree");
   const box = $("#tree-items");
   const st = _treeScrollRestore || tree.scrollTop || 0;
   _treeScrollRestore = 0;
   box.innerHTML = "";
+  _ancestorPathSet = _ancestorDirs();
   await renderTreeDir(box, "", 0);
   tree.scrollTop = st;          // 刷新/恢复后保持滚动位置
   saveExpanded();               // 同步一次（含 scrollTop）
@@ -4319,6 +5115,9 @@ async function renderTreeDir(container, dirPath, depth) {
     item.className = "tree-item dir";
     item.style.setProperty("--indent", (10 + depth * 14) + "px");
     const open = expanded.has(d.path);
+    if (_ancestorPathSet.has(d.path)) item.classList.add("on-path");
+    item.dataset.path = d.path;
+    item.title = d.path;   // 长目录名被省略时 hover 看全路径
     item.innerHTML = `<span class="t-icon">${open ? "▾" : "▸"}</span><span class="t-label">${escapeHtml(d.name)}</span>`;
     item.addEventListener("click", async () => {
       // 局部增量 toggle：只增删本目录的 tree-sub，绝不重建整棵树（保持 #tree scrollTop）
@@ -5120,7 +5919,7 @@ function quickOpenOpen(mode) {
     $("#quickopen-footer").textContent = tab ? (tab.path.split("/").pop() + " · " + out.length + " 个符号") : "请先打开代码文件";
     quickFilter("");
   } else if (currentQoMode === "recent") {
-    $("#quickopen-footer").textContent = recentFiles.length + " 个最近文件";
+    $("#quickopen-footer").textContent = _recent.list.length + " 个最近文件";
     quickFilter("");
   } else {
     $("#quickopen-footer").textContent = "加载文件清单…";
@@ -5135,7 +5934,7 @@ function quickFilter(q) {
   const ql = q.trim().toLowerCase();
   let base;
   if (currentQoMode === "recent") {
-    base = recentFiles.map(p => ({ label: p.split("/").pop(), sub: p.replace(/\/[^/]+$/, ""), target: p, line: null }));
+    base = _recent.list.map(p => ({ label: p.split("/").pop(), sub: p.replace(/\/[^/]+$/, ""), target: p, line: null }));
   } else if (currentQoMode === "outline" || currentQoMode === "bookmark") {
     base = qoAllOutline;
   } else {
@@ -5724,8 +6523,16 @@ function projectsBtnText() {
   const b = $("#btn-projects");
   if (!b) return;
   fetch("/api/projects").then(r => r.json()).then(d => {
-    b.textContent = d.current ? "项目: " + d.current : (d.projects.length > 1 ? "项目(全部)" : "项目");
-    b.title = d.current ? ("当前项目 " + d.current + "（Alt+P 管理）") : (d.projects.length > 1 ? "全部项目（Alt+P 管理）" : "项目管理（Alt+P）");
+    // 文本放进独立 span，避免整体替换 innerHTML 把 SVG 图标抹掉
+    const label = $("#btn-projects-label");
+    const txt = d.current ? d.current : (d.projects.length > 1 ? "全部项目" : "项目");
+    if (label) label.textContent = txt; else b.textContent = txt;
+    // 有选中项目时用 data-active 让样式切到 accent（表示这是一个筛选态）
+    b.dataset.active = d.current ? "1" : "0";
+    b.title = d.current
+      ? "当前项目 " + d.current + "（Alt+P 管理）"
+      : (d.projects.length > 1 ? "全部项目（Alt+P 管理）" : "项目管理（Alt+P）");
+    b.setAttribute("aria-label", b.title);
   }).catch(() => {});
 }
 async function refreshVtops() {
@@ -5839,6 +6646,49 @@ $("#projects-mask")?.addEventListener("click", (e) => { if (e.target === $("#pro
 $("#projects-add-btn")?.addEventListener("click", () => addProject($("#projects-path").value));
 $("#projects-path")?.addEventListener("keydown", (e) => { if (e.key === "Enter") addProject(e.target.value); });
 
+/* ================= 主题（明/暗）=================
+   token 系统的语义层已支持 :root[data-theme="light"]，这里只负责切换 + 记忆。
+   未手动设置过时跟随系统 prefers-color-scheme。 */
+const THEME_KEY = "mdreader.theme.v1";
+const ICON_SUN  = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>';
+const ICON_MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>';
+
+function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === "light" || mode === "dark") {
+    root.setAttribute("data-theme", mode);
+  } else {
+    root.removeAttribute("data-theme");   // 跟随系统
+  }
+  const icon = document.getElementById("icon-theme");
+  if (icon) {
+    const isLight = mode === "light"
+      || (mode !== "dark" && matchMedia("(prefers-color-scheme: light)").matches);
+    icon.innerHTML = isLight ? ICON_MOON : ICON_SUN;
+  }
+  const btn = document.getElementById("btn-theme");
+  if (btn) btn.title = (mode === "light" ? "亮色" : mode === "dark" ? "暗色" : "跟随系统") + "主题，点击切换";
+}
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem(THEME_KEY); } catch (e) { /* 存储不可用 */ }
+  applyTheme(saved || "auto");
+  const btn = document.getElementById("btn-theme");
+  if (btn) btn.addEventListener("click", () => {
+    const cur = document.documentElement.getAttribute("data-theme")
+      || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    const next = cur === "dark" ? "light" : "dark";
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 忽略 */ }
+    applyTheme(next);
+  });
+  // 系统主题变化时，若用户未手动选过则跟随
+  matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+    let s = null;
+    try { s = localStorage.getItem(THEME_KEY); } catch (e) { /* 忽略 */ }
+    if (!s) applyTheme("auto");
+  });
+}
+
 /* ================= init ================= */
 (async function init() {
   try {
@@ -5848,6 +6698,7 @@ $("#projects-path")?.addEventListener("keydown", (e) => { if (e.key === "Enter")
     _curProject = pj.current || null;
     if (_curProject) loadTasksForProject();   // 有当前项目 → 载入该项目任务集（覆盖默认 key）
   } catch (e) { _vtops = []; _curProject = null; }
+  initTheme();       // 明暗主题（须在首次渲染前，避免闪白）
   loadExpanded();   // 恢复展开状态（renderTree 前）
   initTreeResizer();  // 恢复目录树宽度 + 绑定拖拽分隔条
   projectsBtnText();  // 顶栏项目按钮初始文案（当前项目/全部）
