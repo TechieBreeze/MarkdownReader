@@ -1,0 +1,29 @@
+# ---- 运行期产物（不入库）----
+# 注意：gitignore 不支持行尾注释（会被当作 pattern 的一部分），说明要单独占一行。
+.mmd-cache/
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- 本地日志 ----
+# 注意：*.log 匹配不到 .log.err（后缀不是 .log）
+*.log
+*.log.err
+*.log.*
+
+# ---- 机器相关的本地状态 ----
+# projects.json 记录本机挂载的工作区根目录（绝对路径），换机器就失效，
+# 但删掉会导致用户已配置的项目丢失 —— 故忽略而保留本地文件。
+projects.json
+projects.json.tmp
+projects.json.broken
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 临时目录（调试用，正常不该存在）----
+_tmp_*/
