@@ -2421,7 +2421,19 @@ function openTab(path, { focus = true, fromLink = false, line = null, branch = n
   }
   const name = path.split("/").pop() || path;
   const tab = { id: "tab" + (++tabSeq), path, name, kind, content: null, dirty: false, jumpLine: line != null ? line : null, scrollTop: 0, mmdRendered: [] };
-  task.tabs.push(tab);
+  // 插入位置：紧跟「发起跳转的那个标签页」右边，而不是永远追加到末尾。
+  // 追加到末尾时，若当前标签在中间（比如 A B C，C 是当前），点 C 里的链接开 D
+  // 会变成 A B C D —— D 落在最右，视觉上像跳到了另一组文件；实际用户预期
+  // 是 D 就开在 C 旁边（A B C D 中 C 的右侧，即 A B C→D 但不影响其它）。
+  // 锚点取 task.activeTabId（当前激活标签），它就是发起跳转的那个标签。
+  // focus=false（后台打开）时不该抢当前位置，仍追加到末尾。
+  if (focus) {
+    const anchorIdx = task.tabs.findIndex(t => t.id === task.activeTabId);
+    if (anchorIdx >= 0) task.tabs.splice(anchorIdx + 1, 0, tab);
+    else task.tabs.push(tab);
+  } else {
+    task.tabs.push(tab);
+  }
   // 激活由 loadMarkdown/loadCodeTab 完成（await 后 curActiveId()===tab.id 才 renderContent）。
   // 需要聚焦时这里设 activeTabId（不再手动 activateTab，避免两次 renderContent/两次 mermaid fetch）；
   // 不聚焦（后台打开）则保持当前 tab。

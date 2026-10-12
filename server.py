@@ -16,6 +16,7 @@ Markdown Reader 本地服务
 """
 import functools
 import hashlib
+import itertools
 import json
 import threading
 import mimetypes
@@ -1614,11 +1615,18 @@ class Handler(BaseHTTPRequestHandler):
                     break
                 try:
                     with open(e.path, "r", encoding="utf-8", errors="replace") as fh:
-                        lines = fh.readlines(MAX_LINES + 1)
+                        # 不能用 fh.readlines(MAX_LINES)：
+                        # 它的 hint 是「字符数」而非行数（实测 readlines(5001) 只回 139 行、
+                        # readlines(200) 只回 5 行），Windows 文本流尤其明显。
+                        # 后果是 30% 的文件被截到前 ~8KB，全项目 76 万行只搜到 32 万行 ——
+                        # 代码里明明有，关键字却搜不到（如 HytCustomerServiceImpl 的
+                        # recalculateTier 在 L185/L337，文件只读到 139 行）。
+                        # islice 按真实行数截断。
+                        lines = list(itertools.islice(fh, MAX_LINES))
                 except OSError:
                     continue
                 matches = []
-                for i, ln in enumerate(lines[:MAX_LINES], 1):
+                for i, ln in enumerate(lines, 1):
                     hit = bool(re_obj.search(ln)) if use_re else (q_lower in ln.lower())
                     if hit:
                         matches.append({"line": i, "text": ln.rstrip("\r\n")[:300]})
