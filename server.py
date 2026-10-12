@@ -74,14 +74,21 @@ CODE_EXTS = {
 # 快速打开 / 文件树可打开的资源类文件扩展名
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp", ".ico"}
 
+# 搜索用：项目根 → 可搜索文本文件数。_api_search 按项目规模给扫描预算
+# （各项目规模差一个量级：微服务 ~3900 / baseline ~18800，固定上限会让大项目
+# 永远扫不到结果）。项目增删时随 _invalidate_gits_cache 一并清空。
+_SCAN_COUNT_CACHE = {}
+
 
 def _invalidate_gits_cache():
-    """清空 gits 仓库扫描缓存。
+    """清空 gits 仓库扫描缓存与搜索文件数缓存。
 
-    必须由 _setup_roots 调用：_all_git_repos 把结果缓存在模块级 _GITS_REPOS，
-    而项目可以在运行期增删（/api/projects add|remove），不失效的话新增项目的仓库
-    永远搜不到、被删项目的仓库还会继续命中。
+    必须由 _setup_roots 调用：_all_git_repos 把结果缓存在模块级 _GITS_REPOS、
+    _scan_budget 把文件数缓存在 _SCAN_COUNT_CACHE，而项目可以在运行期增删
+    （/api/projects add|remove），不失效的话新增项目的仓库永远搜不到、
+    被删项目的仓库还会继续命中，搜索预算也会按旧规模算错。
     """
+    _SCAN_COUNT_CACHE.clear()
     global _GITS_REPOS
     _GITS_REPOS = None
     for fn in (_git_tree_files,):
@@ -168,6 +175,51 @@ def _save_project_roots():
         except OSError:
             pass
         return False
+
+
+def _scan_budget(search_roots):
+    """按被搜项目的可搜索文件数给扫描预算：1.3 倍，留余量。
+
+    文件数统计本身要遍历目录，故按根缓存；项目目录树变动不频繁，
+    进程重启后自然刷新（与 _GITS_REPOS 缓存同一策略）。
+    """
+    total = 0
+    for r in search_roots:
+        if r not in _SCAN_COUNT_CACHE:
+            n = 0
+            stack = [r]
+            while stack:
+                d = stack.pop()
+                try:
+                    entries = os.scandir(d)
+                except OSError:
+                    continue
+                for e in entries:
+                    try:
+                        isd = e.is_dir(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if isd:
+                        if not is_ignored(e.name):
+                            stack.append(e.path)
+                        continue
+                    if is_searchable_text(e.name):
+                        n += 1
+            _SCAN_COUNT_CACHE[r] = n
+        total += _SCAN_COUNT_CACHE[r]
+    return max(6000, int(total * 1.3))
+
+
+def _current_project_name():
+    """projects.json 里标记的当前项目 vtop 名；读不到返回 None。"""
+    if not os.path.isfile(PROJECTS_FILE):
+        return None
+    try:
+        with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
+            cur = json.load(f).get("current")
+        return cur if cur in _VTOP else None
+    except Exception:
+        return None
 
 
 def _root_for(rel: str):
@@ -1491,8 +1543,12 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def _api_search(self, qs):
-        """全局搜索：整个工作区扫文本文件，返回包含目标字符串的文件 + 匹配行。
-        支持 re=1（正则，忽略大小写）与 ext=扩展名（类型过滤）。
+        """项目内搜索：扫文本文件，返回包含目标字符串的文件 + 匹配行。
+        支持 re=1（正则，忽略大小写）、ext=扩展名（类型过滤）、project=<vtop>。
+        搜索范围 = 当前项目（project 参数指定，缺省用 projects.json 的 current），
+        不跨项目：各项目文件数差异极大（微服务 ~3900 / baseline ~18800），
+        跨项目遍历既慢又会返回别的项目的同名文件，与「查询以项目为边界」冲突。
+        project=__all__ 显式请求时才搜全部项目。
         限制：最多扫描 MAX_SCAN 个文件、每文件最多 40 行、最多返回 120 个文件（防单线程阻塞）。"""
         q = (qs.get("q") or [""])[0]
         if not q or len(q) > 200:
@@ -1506,14 +1562,27 @@ class Handler(BaseHTTPRequestHandler):
             except re.error as e:
                 self._json({"error": "正则表达式错误: " + str(e)}, 400)
                 return
-        MAX_SCAN = 6000          # 最多读取的文件数（工作区 ~3900 个文本文件，需全覆盖）
         MAX_LINES = 5000         # 单文件最多读的行数
         MAX_LINES_PER_FILE = 40  # 单文件最多返回的匹配行
         MAX_FILES = 120          # 最多返回的文件数
         q_lower = q.lower()
         results = []
         scanned = 0
-        stack = list(ROOTS)
+        # 搜索根：project=<vtop> 优先，缺省当前项目，__all__ 才跨项目
+        project = (qs.get("project") or [""])[0].strip()
+        if project == "__all__":
+            search_roots = list(ROOTS)
+        elif project and project in _VTOP:
+            search_roots = [_VTOP[project]]
+        else:
+            cur = _current_project_name()
+            search_roots = [_VTOP[cur]] if cur in _VTOP else list(ROOTS[:1])
+        # 扫描上限按「被搜项目的文件数」自适应，不再固定 6000：
+        # 各项目规模差一个量级（微服务 ~3900 / baseline ~18800），固定值会让大项目
+        # 永远扫不到结果（DFS 是 LIFO，尾部目录先被扫，配额先耗尽）。
+        # 上浮 1.3 倍留余量；超长项目仍靠 MAX_FILES 提前短路。
+        MAX_SCAN = _scan_budget(search_roots)
+        stack = list(search_roots)
         while stack and len(results) < MAX_FILES and scanned < MAX_SCAN:
             d = stack.pop()
             try:
@@ -1557,7 +1626,9 @@ class Handler(BaseHTTPRequestHandler):
                             break
                 if matches:
                     results.append({"file": rel_of(e.path), "matches": matches})
-        self._json({"q": q, "results": results, "truncated": scanned >= MAX_SCAN or len(results) >= MAX_FILES})
+        self._json({"q": q, "results": results, "truncated": scanned >= MAX_SCAN or len(results) >= MAX_FILES,
+                    "scanned": scanned,
+                    "scope": "__all__" if len(search_roots) > 1 else _vtop_of(search_roots[0])})
 
     def _resolve_chain_tail(self, tree, src_path, line, member_col1, name, view_commit, src_text):
         """链式调用末尾成员（qualifier=None）按链头接收者解析：

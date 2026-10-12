@@ -473,6 +473,16 @@ body {
   border-collapse: collapse; display: block; overflow-x: auto;
   max-width: 100%; margin: 0.8em 0;
 }
+/* ---- 表格视图：超宽表格自适应 ----
+   问题：表格虽有 display:block + overflow-x:auto，但单元格没有换行规则，
+   单元格里的长链接（200+ 字符、无法断行的 token）会撑破列宽，
+   内容被容器裁掉、右侧永远看不到 —— 也没有滚动条，因为整表已被内容撑开。
+   对策分两层：
+   1) 单元格内文字允许在任意字符处断行（长链接拆行），列宽由内容自适应；
+   2) 仍超宽时（列多或内容确实长）保留横向滚动，不裁内容。
+   JS 侧 markScrollableTables 按实际溢出加 .is-scrollx，仅用于滚动提示，
+   不用它判断是否滚动（那会与 CSS 重复，且字体未加载时会误判）。 */
+
 .md-body th, .md-body td {
   border: 1px solid var(--border); padding: 5px 12px; text-align: left;
 }
@@ -551,7 +561,10 @@ body {
 #m-scroll.vscroll, .ct-scroll.vscroll { padding: 0; }
 #m-scroll.vscroll .v-wrap, .ct-scroll.vscroll .v-wrap { position: relative; }
 #m-scroll.vscroll .cl-line, .ct-scroll.vscroll .cl-line {
-  position: absolute; left: 0; right: 0;
+  /* 横向滚动：不能用 left:0; right:0 —— 那会把行宽锁成容器宽，
+     超长行的溢出既不计入 scrollWidth 也不产生滚动条，内容被 overflow:hidden 裁掉。
+     宽度改由 JS 按最长行写到 v-wrap 上（见 syncVWrapWidth）。 */
+  position: absolute; left: 0;
   height: 20px; line-height: 20px; min-height: 0; overflow: hidden;
 }
 #m-scroll.vscroll .cl-no, .ct-scroll.vscroll .cl-no { position: static; }
@@ -698,7 +711,6 @@ body {
 .proj-item button:hover { background: #2a4a8f; }
 .proj-item .proj-remove { border-color: var(--border); color: var(--fg-dim); }
 .proj-item .proj-remove:hover { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.1); }
-
 
 
 #m-scroll .cl-line.fold-hidden, .ct-scroll .cl-line.fold-hidden { display: none; }
@@ -1642,6 +1654,49 @@ body {
   border-collapse: collapse; width: 100%; font-size: var(--fs-md);
   border: 1px solid var(--border-subtle); border-radius: var(--r-md); overflow: hidden;
 }
+/* ---- 表格视图：超宽表格自适应 ----
+   必须放在上面「.md-body table { ... overflow: hidden }」之后：
+   overflow 是简写，会把 overflow-x 一并设成 hidden，把滚动能力覆盖掉
+   （那条 hidden 是为圆角裁剪服务的，不能删，只能在其后重开 overflow-x）。
+
+   关键约束（实测踩过的坑）：
+   overflow-wrap 必须用 break-word，不能用 anywhere。
+   anywhere 会把单元格的 min-content 宽度压到「一个字符宽」，配合
+   table-layout:auto 后，某些列会被压成极窄的一竖条（表头挤成一两个字）。
+   break-word 只在「行已经放不下时才断」，不影响 min-content 计算，
+   列宽仍按内容自然分配 —— 这才是要的效果。
+   同理不给 th/td 设 min-width: 0（那等于放弃列的最小宽度）。 */
+.md-body table {
+  table-layout: auto;             /* 按内容定列宽 */
+  width: 100%;                    /* 铺满正文栏；内容更宽时才触发滚动 */
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;               /* 必须在 overflow:hidden 之后重开 */
+  overflow-y: visible;
+}
+.md-body table th,
+.md-body table td {
+  overflow-wrap: break-word;      /* 放不下时才断行；不影响列宽计算 */
+  word-break: normal;
+  white-space: normal;            /* 覆盖可能的 pre/nowrap 继承 */
+  vertical-align: top;
+}
+/* 单元格里的长链接：链接自身允许断行，但不改变所在列的 min-content 宽度 */
+.md-body table td a,
+.md-body table th a {
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+/* 可横向滚动的表格右侧渐隐，提示右侧还有内容；悬停显示完整内容便于查看/复制 */
+.md-body table.is-scrollx {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent 100%);
+}
+.md-body table.is-scrollx:hover,
+.md-body table.is-scrollx:focus-within {
+  -webkit-mask-image: none;
+          mask-image: none;
+}
 .md-body th {
   background: var(--surface-raised); color: var(--text-strong); font-weight: 600;
   text-align: left; padding: var(--sp-2) var(--sp-3);
@@ -1811,6 +1866,8 @@ body {
     font-size: var(--fs-lg);
   }
   .md-body > pre, .md-body > table, .md-body .mermaid, .md-body > .table-wrap { max-width: 100%; }
+
+
   .md-body h1 { font-size: 24px; }
   .md-body h2 { font-size: var(--fs-lg); }
   /* 代码块/表格在自身内部横向滚动，而不是撑宽整个文档 */
@@ -3261,6 +3318,19 @@ function onCodeTabToggle(tab) {
   if (curActiveId() === tab.id) renderCodeTabContent(tab);
 }
 
+/* 标记可横向滚动的表格：给 .is-scrollx，供样式做右侧渐隐提示。
+   判定用 scrollWidth > clientWidth（实际溢出），不是按列数猜 ——
+   表格列多但内容短时不需要滚动条，加了反而是噪音。 */
+function markScrollableTables(scope) {
+  (scope || document).querySelectorAll(".md-body table, .md-body .table-wrap").forEach(t => {
+    t.classList.remove("is-scrollx");
+    // 布局要等一帧后才稳定（字体加载/图片加载会改变列宽）
+    requestAnimationFrame(() => {
+      if (t.scrollWidth > t.clientWidth + 1) t.classList.add("is-scrollx");
+    });
+  });
+}
+
 function renderContent(mdText, mdPath) {
   const box = $("#content");
   box.className = "";
@@ -3272,6 +3342,7 @@ function renderContent(mdText, mdPath) {
     `</div>` +
     `<div class="md-body">${marked.parse(mdText, { gfm: true, breaks: true })}</div>`;
   bindLocateButton($("#ct-locate"), mdPath);   // 公共定位：markdown 标签页
+  markScrollableTables(box);
   // 图片相对路径 → /api/raw
   box.querySelectorAll("img").forEach(img => {
     const src = img.getAttribute("src") || "";
@@ -4124,6 +4195,36 @@ function paintVirtualWindow(scroll, wrap) {
     html += `<div class="${cls.join(" ")}" data-line="${no}" style="top:${6 + i * V_LINE_H}px"><span class="cl-no">${no}</span><span class="cl-code">${sign} ${codeHtml}</span></div>`;
   }
   wrap.innerHTML = html;
+  syncVWrapWidth(scroll, wrap, vs);
+}
+
+/* 虚拟滚动的横向滚动：把最宽行的像素宽度写到 v-wrap 上。
+   绝对定位的 .cl-line 不设 left/right 后宽度由内容撑开，但 .cl-code 的
+   white-space:pre 会让内容横向溢出、被 overflow:hidden 裁掉，容器也不会出现
+   横向滚动条（scrollWidth 仍等于 clientWidth）—— 表现为「长代码看不全、
+   拖不出横向滚动条」。这里显式给出内容宽度，overflow-x:auto 才有可滚范围。
+
+   宽度取窗口内 .cl-code 的真实 scrollWidth，不用「字符数 × 字宽」估算：
+   实测 cronGen.js 里有一行 4567 字符却只渲染 615px（压缩 JS + 软换行/宽字符），
+   按字符数估算会把 wrap 撑到 35270px —— 比真实需要宽 25 倍，横向滚动条形同虚设。
+
+   横向宽度只增不减（vs.maxW）：纵向滚动换窗口时，新窗口若更窄不应让
+   已撑开的宽度缩回去，否则用户横向拖到一半会被拽回。 */
+function syncVWrapWidth(scroll, wrap, vs) {
+  if (!vs) return;
+  const codes = wrap.querySelectorAll(".cl-line .cl-code");
+  if (!codes.length) return;
+  let need = 0;
+  for (const c of codes) {
+    // 行号列宽度（约 44-52px）+ .cl-code 左右 padding（14px×2）
+    const w = c.scrollWidth + 70;
+    if (w > need) need = w;
+  }
+  const width = Math.max(need, scroll.clientWidth);
+  if (width > (vs.maxW || 0)) {
+    vs.maxW = width;
+    wrap.style.width = width + "px";
+  }
 }
 
 /* 完整文件 + 改动标记视图：
@@ -5075,7 +5176,6 @@ function isWebPath(path) {
 /* ================= 文件树 ================= */
 
 
-
 let _treeScrollRestore = 0;           // 页面加载时从存储恢复的 #tree scrollTop
 
 /* 展开态按项目分区：目录树顶层就是项目列表，各项目的展开路径互不相同，
@@ -6008,6 +6108,9 @@ async function globalSearchRun() {
     const params = new URLSearchParams({ q });
     if (useRe) params.set("re", "1");
     if (ext) params.set("ext", ext);
+    // 只搜当前项目：跨项目遍历文件数差异极大（微服务 ~3900 / baseline ~18800），
+    // 既慢又会命中别的项目的同名文件。服务端缺省已是当前项目，这里显式传以防 stale。
+    if (_curProject) params.set("project", _curProject);
     const j = await api("/api/search?" + params.toString());
     renderGlobalResults(j, q);
   } catch (e) {
@@ -6028,7 +6131,7 @@ function renderGlobalResults(j, q) {
   const results = j.results || [];
   if (!results.length) {
     res.innerHTML = `<div class="gs-empty">未找到包含「${escapeHtml(q)}」的文件</div>`;
-    $("#gsearch-footer").textContent = "0 个文件";
+    $("#gsearch-footer").textContent = `0 个文件 · 仅搜当前项目${j.scope ? "（" + escapeHtml(j.scope) + "）" : ""}`;
     return;
   }
   let totalLines = 0;
@@ -6045,7 +6148,8 @@ function renderGlobalResults(j, q) {
   }).join("");
   res.innerHTML = html;
   $("#gsearch-footer").innerHTML =
-    `${results.length} 个文件 · ${totalLines} 行匹配` +
+    `${results.length} 个文件 · ${totalLines} 行匹配 · 仅搜当前项目` +
+    (j.scope ? `<span style="opacity:.7">（${escapeHtml(j.scope)}${j.scanned ? " · 已扫 " + j.scanned + " 文件" : ""}）</span>` : "") +
     (j.truncated ? ` <span style="color:var(--yellow)">（结果过多，已截断）</span>` : "");
   res.querySelectorAll(".gs-file-head").forEach(h => {
     h.addEventListener("click", () => h.parentElement.classList.toggle("open"));
