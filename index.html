@@ -1447,13 +1447,21 @@ body {
   border-radius: 0;                /* 整行高亮时圆角会在左侧露出空隙，用直角 */
   color: var(--text-secondary); font-size: var(--fs-md);
   cursor: pointer; user-select: none;
-  max-width: 100%; overflow: hidden;
+  /* 行宽 = 树宽（100%）：高亮与 hover 的可交互区域始终铺满可视区，
+     不会跟着长文件名跑到 491px 之外、也不会横向滚动时「跑掉」。
+     长文件名改为溢出到行外（overflow:visible），由 .tree-sub 的
+     min-width:max-content 承载溢出宽度，#tree 的 overflow-x:auto 提供横向滚动。
+     —— 不能用 width:max-content：那会让行宽跟内容走（实测 491px），
+     高亮/hover 只覆盖内容宽，可交互区域和视觉都不对。 */
+  width: 100%;
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
 /* 内容行：只做缩进，不参与背景 */
 #tree .tree-item > .t-row {
   display: flex; align-items: center; gap: 6px;
-  min-width: 0; flex: 1 1 auto;
+  /* 不收缩：长文件名把内容撑出树宽（行本身 width:100% 不变），
+     溢出宽度由 .tree-sub 承载 → #tree 出现横向滚动。 */
+  flex: none;
   padding-left: calc(var(--indent, 10px) + 4px);
   height: 100%;
 }
@@ -1471,8 +1479,10 @@ body {
    --indent 由 renderTreeDir 按 depth 计算（10 + depth*14），
    竖线位置与 depth 对齐：左边距 = --indent - 9px（箭头中心 ≈ indent+7px）。 */
 #tree .tree-sub {
-  position: relative;
-  max-width: 100%; overflow: hidden;
+  /* 不设 max-width/overflow:hidden —— 那会把长文件名裁掉，横向滚动无从产生。
+     min-width:max-content 让本子树按最长内容撑开，
+     #tree 据此出现横向滚动；子项 width:100% 相对本子树，高亮仍从 x=0 起铺满可视区。 */
+  min-width: max-content;
   /* 抵消旧实现的 margin，避免子项盒子被内缩 */
   margin-left: 0; padding-left: 0; border-left: none;
 }
@@ -1516,7 +1526,14 @@ body {
 #tree .tree-sub:has(> .tree-item.dir.on-path) {
   border-left-color: var(--accent-border);
 }
-#tree .tree-item:hover { background: var(--hover-wash); color: var(--text-primary); }
+/* 行高亮与 hover 都画在 .tree-item 自身背景上。行宽锁定为树宽（width:100%），
+   所以可交互区域始终铺满可视区。
+   横向滚动时高亮会随行一起向左移动、右侧露出未高亮的空白 ——
+   这是「高亮铺满树宽」与「行随内容横向滚动」在 CSS 层面的固有冲突
+   （试过 position:sticky：父级 .tree-sub 是普通 block，sticky 参照不到
+   滚动容器 #tree，实测无效；用 transform/JS 补偿会让整棵树跟着反向位移）。
+   用户已确认接受此表现。
+   左侧 2px accent 强调条用 box-shadow inset，不受行宽影响，位置始终正确。 */
 /* 当前文件：左侧强调条 + 表面变亮（截图分析指出的缺失反馈）
    class 名沿用既有实现：.active-file（当前打开文件）/ .located（跳转定位过的文件），
    不要另造 .active/.current —— JS 只维护这两个类名。 */
@@ -1536,13 +1553,18 @@ body {
 #tree .tree-item.dir { font-weight: 600; color: var(--text-primary); }
 #tree .tree-item .t-icon { flex: none; width: 15px; height: 15px; color: var(--text-tertiary); }
 #tree .tree-item .t-label, #tree .tree-item .t-name {
-  /* 必须显式覆盖旧规则的 overflow:visible + text-overflow:clip，
-     否则长文件名会把树撑出横向滚动条（实测溢出 200px） */
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  min-width: 0; flex: 1 1 auto;
+  /* 长文件名完整显示，不再截断成省略号 —— 截断后就看不到完整路径，
+     也无法横向拖动查看了。
+     overflow:visible 让文字溢出到行外（行宽由 .tree-item 的 width:100% 锁定为树宽，
+     不跟着变宽），溢出宽度由 .tree-sub 的 min-width:max-content 承载，
+     #tree 的 overflow-x:auto 据此出现横向滚动。
+     显式覆盖旧层的 ellipsis 以免两套规则打架。 */
+  overflow: visible; text-overflow: clip; white-space: nowrap;
+  flex: none;
 }
 /* 长名 hover 显示全文（title 属性由 JS 写入）*/
 /* 未打开的文件降到次要色，打开的用正文色 —— 用明度而非加粗表达状态 */
+#tree .tree-item:hover { background: var(--hover-wash); color: var(--text-primary); }
 #tree .tree-item.file:not(.active-file):not(.located) .t-label { color: var(--text-secondary); }
 #tree .tree-resizer {
   width: 5px; cursor: col-resize; background: transparent;
@@ -1843,6 +1865,26 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); background-clip: content-box; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* ---- 标签栏：隐藏横向滚动条 ----
+   #tabbar 是 overflow-x:auto，标签一多就出横向滚动条。它高度固定
+   （height: var(--tabbar-h)），滚动条会占掉标签栏内部空间把标签压扁。
+
+   Chrome 没有「只隐藏横向滚动条」的纯 CSS 方案
+   （::-webkit-scrollbar 的 height:0 对经典滚动条无效），只能整体隐藏。
+   横向滚动能力保留：overflow-x 仍是 auto —— 滚轮横向/Shift+滚轮/触控板
+   均可滚动，标签拖拽排序时 setupTabDrag 里已有边缘自动横向滚动。
+   右侧渐隐提示还有标签（JS 按实际溢出打 .has-right）。 */
+#tabbar {
+  scrollbar-width: none;                /* Firefox / Edge */
+  -ms-overflow-style: none;
+}
+#tabbar::-webkit-scrollbar { width: 0; height: 0; }   /* Chrome：0 = 隐藏且不占布局 */
+#tabbar.has-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent 100%);
+}
+#tabbar:hover { -webkit-mask-image: none; mask-image: none; }   /* 悬停显示完整便于选中 */
 
 /* ---------- 11. 文本选中 ---------- */
 ::selection { background: var(--active-wash); color: var(--text-strong); }
@@ -2475,6 +2517,14 @@ function renderTabbar() {
   });
   const rf = $("#btn-refresh");
   if (rf) rf.disabled = !curActiveId();
+  // 横向滚动条已隐藏（见 CSS 注释），按实际溢出打 .has-right 做右侧渐隐提示
+  bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
+  if (!bar.__hintBound) {
+    bar.addEventListener("scroll", () => {
+      bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
+    }, { passive: true });
+    bar.__hintBound = true;
+  }
   const plus = document.createElement("span");
   plus.className = "tab-new"; plus.textContent = "＋";
   plus.title = "新建标签页（输入路径）";
