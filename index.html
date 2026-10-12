@@ -307,7 +307,7 @@ body {
   width: max-content; min-width: 100%;   /* 长内容撑开行宽 → #tree 出现横向滚动 */
 }
 #tree .tree-item:hover { background: var(--bg3); color: var(--fg); }
-#tree .tree-item.dir > .t-label { font-weight: 600; color: #9db4d0; }
+#tree .tree-item.dir .t-label { font-weight: 600; color: #9db4d0; }
 #tree .tree-item .t-icon { width: 16px; text-align: center; flex: 0 0 auto; }
 #tree .tree-item .t-icon svg { display: block; margin: 0 auto; }
 #tree .tree-item .t-label { overflow: visible; text-overflow: clip; }
@@ -969,49 +969,229 @@ body {
 #goto-panel button#goto-cancel { background: transparent; border-color: var(--border); color: var(--fg-dim); }
 #goto-panel button#goto-cancel:hover { color: var(--red); border-color: var(--red); }
 
-/* ---------- Git 版本树（gitgraph.js） ---------- */
+/* ---------- Git 版本树（纯 SVG 手绘，不依赖 gitgraph.js）---------- */
+/* 设计要点：
+   · 提交为列（时间从左到右），分支为行（上下排列）—— 与 GitKraken/GitHub 一致
+   · 曲线用 SVG path C 贝塞尔，不用 canvas（文本可选中、可缩放、样式全走 token）
+   · 全部颜色/间距走语义 token，暗亮两套主题自动生效 */
 #ggraph-mask {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 150;
+  position: fixed; inset: 0; background: rgba(3,6,12,.66);
+  backdrop-filter: blur(3px); z-index: 150;
   display: none; align-items: center; justify-content: center;
 }
 #ggraph-mask.show { display: flex; }
 #ggraph-panel {
-  width: min(1100px, 94vw); height: min(760px, 92vh); background: var(--bg2);
-  border: 1px solid var(--border); border-radius: 10px;
+  width: min(1240px, 95vw); height: min(820px, 93vh);
+  background: var(--surface-overlay);
+  border: 1px solid var(--border-default); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
   display: flex; flex-direction: column; overflow: hidden;
+  animation: modalIn var(--dur-slow) var(--ease-out);
 }
 #ggraph-head {
-  display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-  border-bottom: 1px solid var(--border); flex: 0 0 auto;
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle); flex: 0 0 auto;
+  flex-wrap: wrap;
 }
-#ggraph-head .gg-title { font-weight: 600; color: var(--accent); }
-#ggraph-head .gg-hint { font-size: 12px; color: var(--fg-dim); }
+#ggraph-head .gg-title {
+  font-weight: 650; color: var(--text-strong); font-size: var(--fs-base);
+  letter-spacing: -0.01em;
+}
+#ggraph-head .gg-hint { font-size: var(--fs-xs); color: var(--text-tertiary); }
+#ggraph-head .gg-stats {
+  font-size: var(--fs-xs); color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
 #ggraph-head select {
-  background: var(--bg); color: var(--fg); border: 1px solid var(--border);
-  border-radius: 6px; padding: 4px 8px; font-size: 12.5px; max-width: 260px;
+  height: 28px; padding: 0 var(--sp-2);
+  background: var(--surface-inset); color: var(--text-primary);
+  border: 1px solid var(--border-default); border-radius: var(--r-md);
+  font-size: var(--fs-sm); max-width: 260px; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out);
 }
-#ggraph-head button {
-  background: var(--accent-bg); color: #cfe0ff; border: 1px solid #2f5bb8;
-  border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12.5px;
+#ggraph-head select:hover { border-color: var(--border-strong); }
+#ggraph-head select:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle);
 }
-#ggraph-head button:hover { background: #2a4a8f; }
-#ggraph-body { flex: 1; display: flex; flex-direction: row; overflow: hidden; }
-#ggraph-canvas-wrap { flex: 1; overflow: auto; background: var(--bg); }
-#ggraph-canvas { display: block; }
+#ggraph-head select:disabled { opacity: .5; cursor: default; }
+#ggraph-head .gg-close, #ggraph-head #gg-close {
+  width: 28px; height: 28px; border: none; border-radius: var(--r-md);
+  background: transparent; color: var(--text-secondary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+#ggraph-head #gg-close:hover { background: var(--hover-wash); color: var(--text-strong); }
+#ggraph-head #gg-close svg { width: 15px; height: 15px; }
+
+#ggraph-body {
+  flex: 1; display: flex; flex-direction: row; overflow: hidden; min-height: 0;
+}
+/* 左：纯图形（只画点、线、分支名）—— 不放提交文字，避免文字压线 */
+#gg-left {
+  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--border-subtle);
+}
+#ggraph-canvas-wrap {
+  position: relative;
+  flex: 1 1 auto; min-width: 0; overflow: auto;
+  background: var(--surface-content);
+  /* 时间网格：帮助感知「这是一条时间线」 */
+  background-image: linear-gradient(to right, var(--border-subtle) 1px, transparent 1px);
+  background-size: 52px 100%;
+  background-position: 146px 0;   /* 对齐 PAD_L=140 + 节点半径 */
+}
+#ggraph-svg { display: block; transform-origin: 0 0; }
+/* LOD：概览缩放时隐藏逐提交节点、显示密度条（由 JS 设 data-zoom-mode）*/
+#ggraph-svg[data-zoom-mode="dense"] .gg-full { display: none; }
+#ggraph-svg[data-zoom-mode="full"]  .gg-dense { display: none; }
+/* 概览模式下密度条要用「屏幕像素」尺寸，不能跟着 viewBox 一起被缩小 ——
+   5% 缩放时 9px 的条只剩 0.45px，等于没有。这里用 CSS transform 反向放大，
+   让密度条在任何缩放下都保持至少 ~7px 粗。 */
+#ggraph-svg .gg-bar-rect {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+/* --gg-bar-scale 由 JS 按 1/zoom 计算（上限 6），让密度条在任何缩放下
+   都保持约 7-9 屏幕像素粗；CSS calc 里做除法不可靠，所以值从 JS 注入。 */
+#ggraph-svg[data-zoom-mode="dense"] .gg-bar-rect {
+  transform: scaleY(var(--gg-bar-scale, 1));
+}
+/* 概览模式下的语义节点（分支头/合并）同样保持屏幕尺寸 */
+#ggraph-svg[data-zoom-mode="dense"] .gg-dense .gg-node circle,
+#ggraph-svg[data-zoom-mode="dense"] .gg-dense .gg-node rect[transform] {
+  vector-effect: non-scaling-stroke;
+}
+#gg-zoom { display: inline-flex; align-items: center; gap: 2px; }
+#gg-zoom button {
+  height: 24px; min-width: 24px; padding: 0 6px;
+  border: 1px solid var(--border-default); border-radius: var(--r-sm);
+  background: var(--surface-raised); color: var(--text-secondary);
+  font-size: var(--fs-sm); cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+#gg-zoom button:hover { background: var(--hover-wash); color: var(--text-strong); }
+#gg-zoom-val {
+  min-width: 46px; text-align: center; font-size: var(--fs-xs);
+  color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+
+/* 图例：说明节点含义，不靠猜 */
+#gg-legend {
+  flex: 0 0 auto; display: flex; align-items: center; gap: var(--sp-4);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs); color: var(--text-secondary);
+  background: var(--surface-chrome);
+  flex-wrap: wrap;
+}
+#gg-legend .lg-item { display: inline-flex; align-items: center; gap: 5px; }
+#gg-legend .lg-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+#gg-legend .lg-dot.head { box-shadow: 0 0 0 2px var(--surface-chrome), 0 0 0 3.5px currentColor; }
+/* 图例里的「合并提交」菱形 */
+#gg-legend .gg-legend-dia {
+  width: 8px; height: 8px; flex: none;
+  background: var(--text-secondary); transform: rotate(45deg);
+}
+
+/* 中：提交列表（文字集中在这里，不再叠在图上）*/
+#gg-right {
+  flex: 0 0 460px; display: flex; flex-direction: column;
+  min-width: 0; background: var(--surface-chrome);
+}
+#gg-list-head {
+  flex: 0 0 auto; display: grid; grid-template-columns: 1fr 96px 84px;
+  gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--fs-xs); font-weight: 600; color: var(--text-tertiary);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+#gg-list { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; }
+.gg-row {
+  display: grid; grid-template-columns: 1fr 96px 84px;
+  gap: var(--sp-2); align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: pointer; font-size: var(--fs-sm);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.gg-row:hover { background: var(--hover-wash); }
+.gg-row.selected { background: var(--active-wash); box-shadow: inset 2px 0 0 var(--accent); }
+.gg-row .gg-msg {
+  color: var(--text-primary); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.gg-row .gg-msg .gg-sha {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: var(--fs-xs); color: var(--hl-number); margin-right: 6px;
+}
+.gg-row .gg-author, .gg-row .gg-date {
+  color: var(--text-tertiary); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.gg-row .gg-refs { display: inline-flex; gap: 3px; margin-right: 5px; vertical-align: 1px; }
+.gg-chip {
+  font-size: 9.5px; padding: 0 5px; height: 14px; line-height: 14px;
+  border-radius: var(--r-full); color: #0b0f16; font-weight: 600;
+  display: inline-block; max-width: 96px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+}
+.gg-head-badge {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  margin-right: 4px; vertical-align: 2px;
+}
+/* 语义连线：跨轨道 / 汇入 merge —— 概览模式下它是 Git DAG 的骨架，必须醒目 */
+.gg-sem { filter: drop-shadow(0 0 2px rgba(255,255,255,.16)); }
+.gg-link { opacity: .38; }
+/* 提交圆点 */
+.gg-node { cursor: pointer; }
+.gg-node circle { transition: r var(--dur-fast) var(--ease-out), stroke-width var(--dur-fast) var(--ease-out); }
+.gg-node:hover circle { r: 8; stroke-width: 3; }
+.gg-node.selected circle { stroke: var(--text-strong); stroke-width: 3; r: 8; }
+.gg-node text { pointer-events: none; user-select: none; }
+/* 分支/标签胶囊 */
+.gg-ref { cursor: pointer; }
+.gg-ref:hover rect { filter: brightness(1.18); }
+/* 空态 */
+.gg-empty {
+  position: absolute; inset: 0; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--sp-2); color: var(--text-tertiary); font-size: var(--fs-md);
+  text-align: center; pointer-events: none;
+}
+.gg-empty svg { width: 36px; height: 36px; opacity: .35; }
+
 #ggraph-detail {
-  flex: 0 0 300px; overflow-y: auto; padding: 12px 14px;
-  border-left: 1px solid var(--border); font-size: 12.5px; color: var(--fg);
-  background: var(--bg);
+  flex: 0 0 300px; overflow-y: auto; padding: var(--sp-3);
+  border-left: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+  font-size: var(--fs-sm); color: var(--text-primary);
+  background: var(--surface-chrome);
 }
-#ggraph-detail .ggd-hash { font-family: Consolas, monospace; font-size: 12px; color: #79c0ff; word-break: break-all; }
-#ggraph-detail .ggd-row { display: flex; gap: 8px; padding: 2px 0; }
-#ggraph-detail .ggd-lbl { color: var(--fg-dim); flex: 0 0 48px; }
-#ggraph-detail .ggd-msg { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); white-space: pre-wrap; word-break: break-word; }
-#ggraph-detail .ggd-parents { color: var(--fg-dim); font-family: Consolas, monospace; font-size: 11.5px; word-break: break-all; }
-#ggraph-detail .ggd-empty { color: var(--fg-dim); text-align: center; padding: 40px 10px; }
-#ggraph-canvas-wrap::-webkit-scrollbar { width: 10px; height: 10px; }
-#ggraph-canvas-wrap::-webkit-scrollbar-thumb { background: #3a4556; border-radius: 5px; }
-#ggraph-canvas-wrap::-webkit-scrollbar-corner { background: transparent; }
+#ggraph-detail .ggd-hash {
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: var(--fs-sm); color: var(--hl-number); word-break: break-all;
+}
+#ggraph-detail .ggd-row { display: flex; gap: var(--sp-2); padding: 3px 0; align-items: baseline; }
+#ggraph-detail .ggd-lbl { color: var(--text-tertiary); flex: 0 0 44px; }
+#ggraph-detail .ggd-msg {
+  margin-top: var(--sp-3); padding-top: var(--sp-3);
+  border-top: 1px solid var(--border-subtle);
+  white-space: pre-wrap; word-break: break-word; color: var(--text-primary);
+  line-height: var(--lh-normal);
+}
+#ggraph-detail .ggd-parents {
+  color: var(--text-tertiary);
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: var(--fs-xs); word-break: break-all;
+}
+#ggraph-detail .ggd-msg-full {
+  margin-top: var(--sp-2); color: var(--text-secondary); font-size: var(--fs-xs);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 180px; overflow-y: auto;
+  padding: var(--sp-2); background: var(--surface-inset);
+  border-radius: var(--r-sm); border: 1px solid var(--border-subtle);
+}
 
 /* ---------- Peek 定义预览（Alt+点击） ---------- */
 .peek-card {
@@ -1242,33 +1422,66 @@ body {
    注意 padding-left 必须保留 --indent：上方旧规则是
    `padding: 3px 10px 3px var(--indent,10px)`，若这里简写成 `0 8px 0 4px`
    会把缩进整体抹平、层级全丢（实测树会横向溢出 200px）。 */
+/* 缩进实现方式（重要）：要让「选中高亮」铺满整行，不能用 padding-left 做缩进 ——
+   padding 会把背景一起内缩，高亮条就只从缩进位置开始（实测高亮项 x=36/w=212，
+   容器 w=248）。改为：
+     左边框盒子（.tree-item）padding-left:0，宽度 100%，负责背景/高亮/hover；
+     内部再套一层 .t-row 做缩进位移（transform 或 margin-left），只影响内容不影响背景。
+   JS 侧 renderTreeDir 需要多生成一层 .t-row。 */
 #tree .tree-item {
   min-height: 28px; height: 28px;
-  padding: 0 var(--sp-2) 0 calc(var(--indent, 10px) + 4px);
+  padding: 0;                      /* 不做缩进，背景铺满整行 */
   display: flex; align-items: center; gap: 6px;
-  border-radius: var(--r-sm);
+  border-radius: 0;                /* 整行高亮时圆角会在左侧露出空隙，用直角 */
   color: var(--text-secondary); font-size: var(--fs-md);
   cursor: pointer; user-select: none;
-  /* 树内不允许横向滚动：宽度固定，靠 ellipsis 截断长名 */
   max-width: 100%; overflow: hidden;
   transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
+/* 内容行：只做缩进，不参与背景 */
+#tree .tree-item > .t-row {
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; flex: 1 1 auto;
+  padding-left: calc(var(--indent, 10px) + 4px);
+  height: 100%;
+}
+/* 首层（项目根）不加额外左padding，视觉贴边更像 IDE */
+#tree > #tree-items > .tree-item > .t-row { padding-left: var(--sp-2); }
 /* 层级引导线：让父子关系不靠缩进猜。
    .tree-sub 是每个已展开目录的子容器，用 border-left 画一条竖线，
    子项 padding-left 再叠加 --indent，形成连续的层级路径。 */
+/* 层级引导线 —— 关键约束：任何缩进都不能让 .tree-item 自身内缩，
+   否则选中高亮就不是整行（实测会被缩进量顶掉左边）。
+   做法：
+     · .tree-sub 完全不加 margin/padding（否则子项盒子整体内缩）
+     · 竖线用绝对定位画在 .tree-item 左侧，不占布局宽度
+     · 层级缩进全部由 .t-row 的 padding-left 承担（--indent）
+   --indent 由 renderTreeDir 按 depth 计算（10 + depth*14），
+   竖线位置与 depth 对齐：左边距 = --indent - 9px（箭头中心 ≈ indent+7px）。 */
 #tree .tree-sub {
-  border-left: 1px solid var(--border-subtle);
-  margin-left: 15px;              /* 与父级箭头中心对齐 */
-  padding-left: 2px;
+  position: relative;
   max-width: 100%; overflow: hidden;
+  /* 抵消旧实现的 margin，避免子项盒子被内缩 */
+  margin-left: 0; padding-left: 0; border-left: none;
 }
-#tree .tree-sub > .tree-item:first-child { position: relative; }
-#tree .tree-sub > .tree-item::before {
-  /* 从竖线到子项的短横线，形成「树线」视觉 */
+/* 竖线：绝对定位，不参与布局，因此不压缩子项宽度 */
+#tree .tree-sub::before {
   content: ""; position: absolute;
-  left: -2px; top: 50%; width: 8px; height: 1px;
+  left: calc(var(--indent, 10px) - 9px);
+  top: 0; bottom: 0; width: 1px;
   background: var(--border-subtle);
+  pointer-events: none;
 }
+/* 短横线：从竖线连到子项内容，画在 .t-row 内（跟着缩进走） */
+#tree .tree-sub > .tree-item > .t-row::before {
+  content: ""; flex: none;
+  width: 7px; height: 1px; margin-right: 1px;
+  background: var(--border-subtle);
+  align-self: center;
+}
+/* 首层没有父目录 → 不画竖线与短横线 */
+#tree > #tree-items > .tree-item > .t-row { padding-left: var(--sp-2); }
+#tree > #tree-items > .tree-sub > .tree-item > .t-row::before { content: none; }
 /* 展开箭头：放大 + 明确展开态颜色（原来 16px 箭头弱到看不出状态）*/
 #tree .tree-item .t-icon {
   flex: none; width: 14px; height: 14px;
@@ -1701,13 +1914,35 @@ html, body { max-width: 100%; overflow-x: hidden; }
   <div id="ggraph-panel">
     <div id="ggraph-head">
       <span class="gg-title">Git 版本树</span>
-      <select id="gg-repo" title="选择仓库"></select>
-      <span class="gg-hint">点击 commit 查看详情</span>
+      <select id="gg-project" title="选择项目" aria-label="选择项目"></select>
+      <select id="gg-repo" title="选择仓库（仅当前项目下的仓库）" aria-label="选择仓库"></select>
+      <span class="gg-hint">点击 commit 查看详情 · 滚轮横向</span>
       <span class="m-spacer"></span>
-      <button id="gg-close">✕</button>
+      <span id="gg-stats" class="gg-stats"></span>
+      <div id="gg-zoom" role="group" aria-label="缩放">
+        <button data-z="out" title="缩小" aria-label="缩小">&minus;</button>
+        <span id="gg-zoom-val">100%</span>
+        <button data-z="in" title="放大" aria-label="放大">+</button>
+        <button data-z="fit" title="缩放到适应窗口宽度">适应</button>
+        <button data-z="head" title="跳到最新提交">最新</button>
+      </div>
+      <button id="gg-close" aria-label="关闭 Git 版本树">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
     </div>
     <div id="ggraph-body">
-      <div id="ggraph-canvas-wrap"><canvas id="ggraph-canvas"></canvas></div>
+      <div id="gg-left">
+        <div id="ggraph-canvas-wrap"><svg id="ggraph-svg" role="img" aria-label="Git 提交图"></svg>
+          <div id="ggraph-empty" class="gg-empty" hidden></div>
+        </div>
+        <div id="gg-legend"></div>
+      </div>
+      <div id="gg-right">
+        <div id="gg-list-head">
+          <span>提交</span><span>作者</span><span>日期</span>
+        </div>
+        <div id="gg-list" role="listbox" aria-label="提交列表"></div>
+      </div>
       <div id="ggraph-detail" style="display:none"></div>
     </div>
   </div>
@@ -1853,8 +2088,6 @@ html, body { max-width: 100%; overflow-x: hidden; }
 
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/highlight.min.js"></script>
-<link rel="stylesheet" href="vendor/gitgraph.min.css">
-<script src="vendor/gitgraph.min.js"></script>
 <link rel="stylesheet" href="vendor/github-dark.min.css">
 <style>
 /* ===== VSCode Dark+ 代码弹窗配色覆盖（仅作用于代码弹窗 #m-scroll，不动 vendor 主题） ===== */
@@ -5118,7 +5351,9 @@ async function renderTreeDir(container, dirPath, depth) {
     if (_ancestorPathSet.has(d.path)) item.classList.add("on-path");
     item.dataset.path = d.path;
     item.title = d.path;   // 长目录名被省略时 hover 看全路径
-    item.innerHTML = `<span class="t-icon">${open ? "▾" : "▸"}</span><span class="t-label">${escapeHtml(d.name)}</span>`;
+    // 内容包一层 .t-row：缩进只作用于内容层，外层 .tree-item 负责背景/高亮，
+    // 这样选中高亮才能铺满整行（用 padding-left 缩进会把背景一起内缩）。
+    item.innerHTML = `<span class="t-row"><span class="t-icon">${open ? "▾" : "▸"}</span><span class="t-label">${escapeHtml(d.name)}</span></span>`;
     item.addEventListener("click", async () => {
       // 局部增量 toggle：只增删本目录的 tree-sub，绝不重建整棵树（保持 #tree scrollTop）
       const icon = item.querySelector(".t-icon");
@@ -5134,6 +5369,8 @@ async function renderTreeDir(container, dirPath, depth) {
         expanded.add(d.path);
         const ns = document.createElement("div");
         ns.className = "tree-sub";
+        // 竖线位置按该层缩进（--indent）计算，见 CSS 里 .tree-sub::before 的 left
+        ns.style.setProperty("--indent", (10 + depth * 14) + "px");
         item.after(ns);
         icon.textContent = "▾";
         await renderTreeDir(ns, d.path, depth + 1);
@@ -5145,6 +5382,7 @@ async function renderTreeDir(container, dirPath, depth) {
     if (open) {
       const sub = document.createElement("div");
       sub.className = "tree-sub";
+      sub.style.setProperty("--indent", (10 + depth * 14) + "px");
       item.after(sub);
       await renderTreeDir(sub, d.path, depth + 1);
     }
@@ -5158,7 +5396,7 @@ async function renderTreeDir(container, dirPath, depth) {
     item.dataset.ext = f.ext;
     item.dataset.path = f.path;     // 「定位」按完整相对路径精确匹配（非重名歧义）
     item.style.setProperty("--indent", (10 + depth * 14) + "px");
-    item.innerHTML = treeFileIconHtml(f.ext) + `<span class="t-label">${escapeHtml(f.name)}</span>`;
+    item.innerHTML = `<span class="t-row">${treeFileIconHtml(f.ext)}<span class="t-label">${escapeHtml(f.name)}</span></span>`;
     item.addEventListener("click", () => { pushNav(f.path); openTab(f.path); });
     container.appendChild(item);
   }
@@ -6032,152 +6270,734 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* ================= Git 版本树（gitgraph.js 渲染，顶栏「Git 图」） ================= */
+/* ================= Git 版本树（纯 SVG 手绘，顶栏「Git 图」）=================
+   为什么重写：gitgraph.js 渲染到 canvas，样式老旧、文本不可选中、暗色下配色脏、
+   且 hitTest 在 devicePixelRatio≠1 时坐标偏移（历史上「点不中」）。
+   现在改为服务端给拓扑 + 前端 SVG 画：
+     · 列 = 时间（x），行 = 分支轨道（y），符合 GitKraken / GitHub 的阅读直觉
+     · 连接用三次贝塞尔，不用直线段（转弯平滑）
+     · 分支头/标签画成彩色胶囊，一眼看出「哪条线是谁」
+     · 仓库列表只取当前项目下的仓库（绝不跨项目）
+   ==================================================================== */
 let ggRepos = [];
+let ggProjects = [];
+let ggData = null;          // 当前仓库的 graph 数据
+let ggSelected = null;      // 选中的 commit id
+let ggRowIndex = new Map(); // commit id → 列表行元素（选中联动高亮）
+let ggEdgeStats = null;       // 本次渲染的边聚合统计（bundle 数 / 最大聚合 / 覆盖边数）
+let ggColCache = null;     // {data, map}：commit id → 时间序序号缓存
+
+/* 分支配色：与 token 无关的固定调色板（暗/亮两套下都可读），同一分支全局同色 */
+const GG_BRANCH_COLORS = [
+  "#4d94ff", "#3fb950", "#f0883e", "#d2a8ff", "#4bc5d4",
+  "#f0645b", "#d9a336", "#a78bfa", "#7ee787", "#ffa657",
+];
+
+function ggColorFor(name, all) {
+  if (!name) return "#6b7a91";
+  const i = all.indexOf(name);
+  return GG_BRANCH_COLORS[(i < 0 ? 0 : i) % GG_BRANCH_COLORS.length];
+}
+
+/* ---------- 打开 / 关闭 ---------- */
 function gitGraphOpen() {
   $("#ggraph-mask").classList.add("show");
-  const sel = $("#gg-repo");
-  const tab = curActiveTab();
-  const initPath = tab ? tab.path : "";
-  if (!ggRepos.length) {
-    api("/api/git/repos").then(j => {
-      ggRepos = j.repos || [];
-      sel.innerHTML = ggRepos.map(r => `<option value="${escapeHtml(r)}">${escapeHtml(r === "." ? "(工作区根)" : r)}</option>`).join("");
-      return loadGitGraph(initPath || sel.value);
-    }).catch(() => {});
-  } else {
-    loadGitGraph(initPath || sel.value);
-  }
+  loadGitProjects().then(() => {
+    const tab = curActiveTab();
+    // 默认仓库：优先「当前标签所在仓库」，且必须属于当前项目
+    const initPath = tab ? tab.path : "";
+    loadGitGraph(initPath);
+  }).catch(() => {});
 }
-function gitGraphClose() { $("#ggraph-mask").classList.remove("show"); }
+function gitGraphClose() {
+  $("#ggraph-mask").classList.remove("show");
+  ggSelected = null;
+}
+
+/* ---------- 项目 / 仓库下拉（项目隔离）---------- */
+async function loadGitProjects() {
+  const pSel = $("#gg-project");
+  let proj = [];
+  try {
+    const j = await (await fetch("/api/meta")).json();
+    proj = (j && j.roots || []).map(r => r.name);
+  } catch (e) { /* 用当前项目兜底 */ }
+  ggProjects = proj;
+  const cur = _curProject || (proj.length === 1 ? proj[0] : "");
+  const opts = proj.map(n =>
+    `<option value="${escapeHtml(n)}"${n === cur ? " selected" : ""}>${escapeHtml(n)}</option>`).join("");
+  pSel.innerHTML = opts || `<option value="">(无项目)</option>`;
+  pSel.value = cur;
+  pSel.disabled = proj.length <= 1;      // 单项目时不需要选
+  await loadGitRepos(cur);
+}
+
+async function loadGitRepos(project) {
+  const rSel = $("#gg-repo");
+  ggRepos = [];
+  rSel.innerHTML = '<option value="">加载中…</option>';
+  try {
+    // project 为空时服务端按 _CURRENT 决定；显式传 vtop 名保证只列当前项目的仓库
+    const q = project ? ("?project=" + encodeURIComponent(project)) : "";
+    const j = await (await fetch("/api/git/repos" + q)).json();
+    ggRepos = j.repos || [];
+  } catch (e) {
+    rSel.innerHTML = '<option value="">加载失败</option>';
+    return;
+  }
+  if (!ggRepos.length) {
+    rSel.innerHTML = '<option value="">该项目下没有 git 仓库</option>';
+    rSel.disabled = true;
+    ggEmpty("当前项目下没有 git 仓库", "只有项目根目录里的 git 仓库才会列出来");
+    return;
+  }
+  rSel.disabled = false;
+  rSel.innerHTML = ggRepos.map(r => {
+    const name = r.split("/").pop() || r;
+    return `<option value="${escapeHtml(r)}" title="${escapeHtml(r)}">${escapeHtml(name)}</option>`;
+  }).join("");
+}
+
+function ggEmpty(msg, hint) {
+  const box = $("#ggraph-empty");
+  const svg = $("#ggraph-svg");
+  if (svg) { svg.innerHTML = ""; svg.removeAttribute("width"); svg.removeAttribute("height"); }
+  if (!box) return;
+  if (!msg) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML =
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+    `<circle cx="6" cy="5" r="2.5"/><circle cx="18" cy="19" r="2.5"/><circle cx="6" cy="19" r="2.5"/>` +
+    `<path d="M6 7.5v9M9 5h4.5a4.5 4.5 0 0 1 4.5 4.5v7"/></svg>` +
+    `<div>${escapeHtml(msg)}</div>` +
+    (hint ? `<div style="font-size:var(--fs-xs)">${escapeHtml(hint)}</div>` : "");
+}
+
+/* ---------- 加载 graph ---------- */
 async function loadGitGraph(preferPath) {
-  const sel = $("#gg-repo");
-  const q = preferPath || sel.value;
-  if (!q) return;
+  const rSel = $("#gg-repo");
+  let q = (preferPath || "").trim();
+  // 优先标签所在仓库；否则用下拉当前值
+  if (q && !ggRepos.some(r => q === r || q.startsWith(r + "/"))) {
+    const hit = ggRepos.find(r => q.startsWith(r + "/"));
+    q = hit || "";
+  }
+  if (!q) q = rSel.value;
+  if (!q) { ggEmpty("请选择一个仓库", "下拉里只列出当前项目下的 git 仓库"); return; }
+  const opt = Array.from(rSel.options).find(o => o.value === q);
+  if (opt) rSel.value = q;
+  ggEmpty("");
+  ggSelected = null;
   $("#ggraph-detail").style.display = "none";
-  const j = await api("/api/git/graph?path=" + encodeURIComponent(q)).catch(() => null);
-  if (!j || !j.commits) { toast("版本树加载失败", "err"); return; }
-  // 下拉同步到实际仓库（graph 返回相对 repo_root）
+  let j = null;
+  try {
+    j = await api("/api/git/graph?path=" + encodeURIComponent(q));
+  } catch (e) {
+    ggEmpty("版本树加载失败", String(e && e.message || e));
+    return;
+  }
+  if (!j || !j.commits || !j.commits.length) {
+    ggData = null;
+    $("#gg-stats").textContent = "";
+    ggEmpty("该仓库没有提交记录", (j && j.repo) ? escapeHtml(j.repo) : "");
+    return;
+  }
   if (j.repo_root) {
     const rel = String(j.repo_root).replace(/\\/g, "/").replace(/^\//, "");
-    const opt = Array.from(sel.options).find(o => o.value === rel);
-    if (opt) sel.value = rel;
+    const o2 = Array.from(rSel.options).find(o => o.value === rel);
+    if (o2) rSel.value = rel;
   }
+  ggData = j;
   renderGitGraph(j);
 }
-/* commit 详情（右侧面板） */
+
+/* ---------- 核心：拓扑布局 + SVG 绘制 ---------- */
+function renderGitGraph(data) {
+  const svg = $("#ggraph-svg");
+  if (!svg) return;
+  const commits = data.commits || [];
+  const byId = new Map(commits.map(c => [c.id, c]));
+  const branches = data.branches || [];
+  const tags = data.tags || [];
+  const branchNames = branches.map(b => b.name);
+
+  /* ---- 1) 轨道分配（lane）
+     关键点：主干集合不能用「第一父链」算。
+       真实仓库里 head 沿第一父只能回溯 20-30 步就到顶，而分支祖先链更长，
+       于是「分支是否在主干上」永远判 false，所有分支被挤成一条线。
+     正确做法：从 head 出发沿「所有父边」做可达性遍历（BFS），
+       能到达的 commit = 主干域；分支头落在这个域内即视为并入主干。
+     轨道：主干 lane 0；每个分叉出去的分支按「分叉点」分 lane，同点分出共用一条。 */
+  const trunkSet = new Set();
+  {
+    const start = (data.head && byId.has(data.head)) ? data.head
+                : (branches.find(b => b.name === data.headBranch) || branches[0] || {}).head;
+    const q = [start];
+    const seen = new Set();
+    while (q.length) {
+      const id = q.pop();
+      if (!id || seen.has(id) || !byId.has(id)) continue;
+      seen.add(id); trunkSet.add(id);
+      for (const p of byId.get(id).parents) if (!seen.has(p)) q.push(p);
+    }
+  }
+  // 分叉点：从分支头回溯，找第一个落在主干域内的祖先（它就是分叉出去的那个点）
+  const forkPointOf = head => {
+    let c = head;
+    const seen = new Set();
+    while (c && byId.has(c) && !seen.has(c)) {
+      seen.add(c);
+      if (trunkSet.has(c) && c !== head) return c;
+      const cc = byId.get(c);
+      c = (cc && cc.parents && cc.parents[0]) || null;   // 判空：父可能被截断
+    }
+    return null;
+  };
+  /* 有效分支 = head 提交确实在返回集合里的分支。
+     悬空引用（ref 指向的 commit 被 -n 截断掉，或本就是已 gc 的对象）head 不在 byId，
+     它占一条轨道只会得到一条空线，让用户以为「这个分支没提交」——
+     实测 3 个 tag_refBranch_* 就是这样。改为：不分配轨道，在图例里注明有多少悬空引用。 */
+  const liveBranches = branches.filter(b => byId.has(b.head));
+  const danglingRefs = branches.length - liveBranches.length;
+
+  /* 轨道分配（按「祖先链重叠度」而非单纯分支名）
+     两个分支如果祖先链高度重叠（实测 test2.0 与 th-dev 各 163/168 步且几乎重合），
+     它们本质是同一条线上的两个指针 —— 各占一条轨道会让其中一条空着。
+     做法：以分叉点为键分组；没有分叉点（游离）且链重叠的分支并入已有轨道。 */
+  const laneOf = new Map();
+  laneOf.set(data.headBranch || "__trunk__", 0);
+  const laneForks = [null];
+  const forkLane = new Map();
+  const laneHeads = new Map();          // lane → 该轨道包含的分支 head 集合
+  laneHeads.set(0, new Set());
+  const sharesAncestry = (a, b) => {   // a/b 的第一父链是否共享节点
+    let c = a; const sa = new Set();
+    while (c && byId.has(c) && !sa.has(c)) { sa.add(c); const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
+    c = b; const sb = new Set();
+    while (c && byId.has(c) && !sb.has(c)) { sb.add(c); if (sa.has(c)) return true; const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
+    return false;
+  };
+  for (const b of liveBranches) {
+    if (b.name === data.headBranch) continue;
+    if (trunkSet.has(b.head)) { laneOf.set(b.name, 0); continue; }   // 分支头在主干域内
+    const fork = forkPointOf(b.head);
+    if (fork && forkLane.has(fork)) {           // 同一分叉点 → 共用轨道
+      const ln = forkLane.get(fork); laneOf.set(b.name, ln); laneHeads.get(ln).add(b.head); continue;
+    }
+    if (!fork) {
+      // 游离分支：若与某轨道已有分支共享祖先，就并进去，避免空轨道
+      let merged = false;
+      for (const [ln, heads] of laneHeads) {
+        for (const h of heads) {
+          if (sharesAncestry(b.head, h)) { laneOf.set(b.name, ln); heads.add(b.head); merged = true; break; }
+        }
+        if (merged) break;
+      }
+      if (merged) continue;
+      const ln = Math.min(laneForks.length, 7);
+      laneForks[ln] = null; laneOf.set(b.name, ln); laneHeads.set(ln, new Set([b.head]));
+      if (laneForks.length <= ln) laneForks.push(null);
+      continue;
+    }
+    const ln = Math.min(laneForks.length, 7);
+    laneForks[ln] = fork;
+    forkLane.set(fork, ln);
+    laneOf.set(b.name, ln);
+    laneHeads.set(ln, new Set([b.head]));
+    if (laneForks.length <= ln) laneForks.push(fork);
+  }
+  const laneCount = Math.max(1, laneForks.length);
+
+  /* ---- 2) 每个 commit 属于哪条轨道
+     关键：不能用「先到先得」。旧实现按 branches 顺序 assign，遇到已占用的 commit
+     就直接跳过，结果 lane 0（主干 407 提交）会把 th-dev-0922 的 168 步历史
+     抢走 —— 实测 th-dev-0922 只在自己的 lane 上剩 5 个提交，看起来像「几乎空的轨道」。
+     正确做法：按「链长」降序处理分支，长链先占，短链只能占还没被占的部分。
+     这样每条轨道拿到的是它真正独占的历史，不会被主干吃掉。 */
+  const commitLane = new Map();
+  // 每条分支的第一父链长度（用来排序：长的先占轨道）
+  const chainLen = head => {
+    let c = head, n = 0; const s = new Set();
+    while (c && byId.has(c) && !s.has(c)) { s.add(c); n++; const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
+    return n;
+  };
+  const order = branches.slice().sort((a, b) => chainLen(b.head) - chainLen(a.head));
+  const assign = (startId, ln, guard) => {
+    if (!startId || !byId.has(startId)) return;      // 被截断的父提交不记 lane
+    if (commitLane.has(startId)) return;             // 已被更长的分支占用
+    guard = guard || new Set();
+    if (guard.has(startId)) return;
+    guard.add(startId);
+    commitLane.set(startId, ln);
+    const c = byId.get(startId);
+    if (c && c.parents) for (const p of c.parents) assign(p, ln, guard);
+  };
+  for (const b of order) assign(b.head, laneOf.get(b.name) || 0);
+  for (const t of tags) if (!byId.has(t.head)) continue; else if (!commitLane.has(t.head)) assign(t.head, 0);
+  if (data.head && !commitLane.has(data.head)) assign(data.head, 0);
+  for (const c of commits) if (!commitLane.has(c.id)) commitLane.set(c.id, 0);
+
+  /* ---- 3) 列位置：按提交序号均分（不用真实时间，避免跨度大把图压扁）---- */
+  // 行高随轨道数自适应：轨道多时收紧，避免图被撑得很高、下方大片留白
+  /* 列宽自适应。
+     概览模式（提交很多）直接按容器宽度均分，让 svg 本身就是容器宽、无需缩放：
+     这样密度条、节点、线全都是真实屏幕尺寸，不存在「被缩到看不见」的问题。
+     完整模式才用缩放，让每个提交有足够间距。 */
+  const PAD_T = 26, PAD_L = 140;                 // PAD_L 给左侧轨道名留位
+  const wrapEl = $("#ggraph-canvas-wrap");
+  const avail = Math.max(320, (wrapEl ? wrapEl.clientWidth : 700) - PAD_L - 40);
+  const overview = commits.length > 200;         // 与 renderGitGraph 末尾的判断一致
+  const COL_W = overview
+    ? Math.max(0.6, avail / commits.length)     // 概览：均分到容器宽度
+    : (commits.length > 400 ? 26 : 52);
+  const ROW_H = laneCount <= 3 ? 34 : laneCount <= 5 ? 30 : 26;
+  const colOf = new Map();
+  commits.forEach((c, i) => colOf.set(c.id, i));
+  const X = id => PAD_L + colOf.get(id) * COL_W;
+  const Y = id => PAD_T + (commitLane.get(id) || 0) * ROW_H + ROW_H / 2;
+
+  /* ---- 4) 引用（分支头/tag）挂到 commit ---- */
+  const refsAt = new Map();
+  const addRef = (cid, text, color, kind) => {
+    if (!cid) return;
+    if (!refsAt.has(cid)) refsAt.set(cid, []);
+    refsAt.get(cid).push({ text, color, kind });
+  };
+  for (const b of branches) addRef(b.head, b.name, ggColorFor(b.name, branchNames), "branch");
+  for (const t of tags) addRef(t.head, t.name, "#d9a336", "tag");
+
+  const W = PAD_L + commits.length * COL_W + 40;
+  const H = PAD_T + laneCount * ROW_H + 16;
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+  /* ---- 5) 画图形（只有点和线，不画提交文字）---- */
+  const headIds = new Set(branches.map(b => b.head).concat(tags.map(t => t.head)));
+  const mainColor = data.headBranch ? ggColorFor(data.headBranch, branchNames) : GG_BRANCH_COLORS[0];
+  const parts = [];
+  // 点击热区半径随列宽自适应：列宽被压缩时把热区撑大，保证「点得中」
+  const hitR = Math.max(6, Math.min(11, COL_W / 2));
+  const dense = COL_W < 3;                                  // 概览模式（列被压到 3px 以下）
+  const mergeIds = new Set(commits.filter(c => (c.parents || []).length > 1).map(c => c.id));
+
+  // 轨道淡线
+  parts.push('<g aria-hidden="true">');
+  for (let i = 0; i < laneCount; i++) {
+    const y = PAD_T + i * ROW_H + ROW_H / 2;
+    parts.push(`<line x1="${PAD_L + 6}" y1="${y}" x2="${W - 16}" y2="${y}" ` +
+      `stroke="var(--border-strong)" stroke-width="1" stroke-dasharray="3 8" opacity=".8" ` +
+      `vector-effect="non-scaling-stroke"/>`);
+  }
+  parts.push('</g>');
+
+  // 连线：按分支色（子 commit 继承所在轨道的分支色）
+  const laneColor = i => {
+    for (const b of branches) if (laneOf.get(b.name) === i) return ggColorFor(b.name, branchNames);
+    return "#3d4b60";
+  };
+  // vector-effect="non-scaling-stroke"：缩放时线宽不变，
+  // 否则 5% 缩放下 2px 线宽被压成 0.1px，等于整条线消失（实测概览几乎空白）
+  /* 连线分两层（Git DAG 的骨架）：
+       .gg-sem   语义边 —— 跨轨道 / 汇入 merge / 端点是分支头。粗、高亮。
+       .gg-link  同轨道连续边 —— 淡。概览模式下每 8 条采样 1，否则 800 条线是噪声。
+     概览模式只靠语义边交代拓扑：用户要看的是「谁从谁分出来、在哪合并」，
+     而不是 800 段连续历史。 */
+  const isCrossLane = (a, b) => (commitLane.get(a) || 0) !== (commitLane.get(b) || 0);
+  const semEdges = [], normalEdges = [];
+  for (const c of commits) {
+    for (const par of (c.parents || [])) {
+      if (!byId.has(par)) continue;              // 父提交被 -n 截断 → 不画这条线
+      const pc = byId.get(par);
+      const e = { c: c.id, p: par };
+      if (isCrossLane(c.id, par) || headIds.has(c.id) || headIds.has(par)
+          || mergeIds.has(c.id) || (pc && pc.parents && pc.parents.length > 1)) semEdges.push(e);
+      else normalEdges.push(e);
+    }
+  }
+  /* 概览模式聚合边（edge bundling）
+     实测 402 条语义边挤在 ~580px 宽的图里 = 每 1.4px 一条，完全无法逐条追踪，
+     视觉上只是两条粗带。做法：按「起点列分桶 × 目标轨道」把多条边合成一条 bundle，
+     bundle 上标注 ×N（合并了几条）。放大时（!dense）再展开成真实边。
+     —— 概览看「哪里发生了大量跨轨流动」，放大看「具体哪条边」。 */
+  const bucketOf = x => Math.round(x / 24);           // 24px 一桶
+  const drawEdge = (e, cls, w, op) => {
+    const x1 = X(e.c) + 5, y1 = Y(e.c), x2 = X(e.p), y2 = Y(e.p);
+    const dx = Math.max(14, Math.abs(x2 - x1) * 0.55);
+    const col = laneColor(commitLane.get(e.c) || 0);
+    return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" ` +
+      `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
+      `stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+  };
+  parts.push('<g class="gg-links">');
+  if (dense) {
+    // 概览：语义边按桶聚合
+    let edgeStat = null;            // 本次渲染的边聚合统计
+  const bundles = new Map();     // key: `${cLane}->${pLane}@${bucket}`
+    for (const e of semEdges) {
+      const cl = commitLane.get(e.c) || 0, pl = commitLane.get(e.p) || 0;
+      const key = `${cl}>${pl}@${bucketOf(X(e.c))}`;
+      if (!bundles.has(key)) bundles.set(key, []);
+      bundles.get(key).push(e);
+    }
+    for (const [, arr] of bundles) {
+      const cl = commitLane.get(arr[0].c) || 0, pl = commitLane.get(arr[0].p) || 0;
+      const col = laneColor(cl);
+      const mid = arr[Math.floor(arr.length / 2)];
+      const x1 = X(mid.c) + 5, y1 = Y(mid.c), x2 = X(mid.p), y2 = Y(mid.p);
+      const dx = Math.max(16, Math.abs(x2 - x1) * 0.55);
+      // 跨轨道(1)+数量>3 用更粗的线并标 ×N；同轨道聚合保持细
+      const cross = cl !== pl;
+      const w = cross ? (arr.length > 8 ? 3.4 : arr.length > 3 ? 2.8 : 2.2) : 1.8;
+      const op = cross ? ".9" : ".4";
+      parts.push(
+        `<path class="gg-sem gg-bundle" data-n="${arr.length}" ` +
+        `d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" ` +
+        `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
+        `stroke-linecap="round" vector-effect="non-scaling-stroke">` +
+        `<title>${arr.length} 条边${cross ? "（跨轨道）" : ""}</title></path>`);
+      if (cross && arr.length > 3) {
+        parts.push(`<text x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 4}" font-size="8.5" ` +
+          `fill="${col}" text-anchor="middle" opacity=".95" font-weight="600">×${arr.length}</text>`);
+      }
+      edgeStat = edgeStat || { bundles: 0, maxBundle: 0, covered: 0 };
+      edgeStat.bundles++;
+      edgeStat.covered += arr.length;
+      if (arr.length > edgeStat.maxBundle) edgeStat.maxBundle = arr.length;
+    }
+    // 普通边稀疏采样（每 24 条取 1）
+    for (const e of normalEdges.filter((_, i) => i % 24 === 0)) {
+      parts.push(drawEdge(e, "gg-link", 1.2, ".25"));
+    }
+  } else {
+    // 完整模式：真实边逐条画
+    for (const e of normalEdges) parts.push(drawEdge(e, "gg-link", 1.5, ".4"));
+    for (const e of semEdges) parts.push(drawEdge(e, "gg-sem", 2.4, ".95"));
+    edgeStat = { bundles: semEdges.length, maxBundle: 1, covered: semEdges.length };
+  }
+  ggEdgeStats = edgeStat;
+  parts.push('</g>');
+
+  /* 节点 + LOD（Level of Detail）
+     低缩放时若把 800 个普通提交全画出来，它们会在几个像素内重叠成一片糊，
+     反而看不出「哪里分叉、哪里合并」。做法：
+       · 算出当前缩放下相邻节点的屏幕间距 px
+       · 间距 < 3px 时，普通提交按「连续段」聚合成一根密度条（保留密度信息）
+       · 语义节点（分支头/标签/合并提交/选中项）永远独立绘制，不参与聚合
+     这样 8% 时看到的是「6 条分支的疏密节奏 + 所有分叉点」，而不是空白。 */
+  const alwaysShow = new Set(headIds);
+  for (const id of mergeIds) alwaysShow.add(id);
+  if (ggSelected) alwaysShow.add(ggSelected);
+  const nodeAt = new Map(commits.map(c => [c.id, c]));
+  const drawOne = (c, isDummy) => {
+    const x = X(c.id), y = Y(c.id);
+    const refs = refsAt.get(c.id) || [];
+    const isHead = headIds.has(c.id);
+    const isMerge = mergeIds.has(c.id);
+    const col = refs.length ? refs[0].color : laneColor(commitLane.get(c.id) || 0);
+    const sel = ggSelected === c.id;
+    return (
+      `<g class="gg-node" data-id="${esc(c.id)}"${isDummy ? "" : ' tabindex="0" role="button"'} ` +
+      `aria-label="${esc(c.id.slice(0, 7))} ${esc((c.msg || "").split("\n")[0].slice(0, 50))}">` +
+      `<circle class="gg-hit" cx="${x}" cy="${y}" r="${hitR}" fill="transparent"/>` +
+      // 合并提交用菱形（形状区分，不只靠颜色）
+      (isMerge
+        ? `<rect x="${x - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x} ${y})" ` +
+          `fill="${col}" stroke="var(--surface-content)" stroke-width="1.5"/>`
+        : `<circle cx="${x}" cy="${y}" r="${isHead ? 6 : 4}" fill="${col}" ` +
+          `stroke="var(--surface-content)" stroke-width="${isHead ? 2 : 1.2}"/>`) +
+      (isHead ? `<circle cx="${x}" cy="${y}" r="9.5" fill="none" stroke="${col}" stroke-width="1.4" opacity=".6"/>` : "") +
+      (sel ? `<circle cx="${x}" cy="${y}" r="13" fill="none" stroke="var(--text-strong)" stroke-width="2"/>` : "") +
+      `</g>`);
+  };
+
+  /* 两套元素都渲染到 DOM，靠 CSS 按缩放档切换（data-zoom-mode）：
+       .gg-full   逐提交节点（正常缩放显示）
+       .gg-dense  密度条（概览缩放显示，语义节点仍单独画）
+     一次性产出、纯 CSS 切换 —— 缩放时不再重建 800 个节点的 DOM。 */
+  parts.push('<g class="gg-full">');
+  for (const c of commits) parts.push(drawOne(c, false));
+  parts.push('</g>');
+
+  // 密度条：按轨道把连续普通提交聚合成一根条；语义节点位置留空
+  parts.push('<g class="gg-dense">');
+  const byLane = new Map();
+  for (const c of commits) {
+    const ln = commitLane.get(c.id) || 0;
+    if (!byLane.has(ln)) byLane.set(ln, []);
+    byLane.get(ln).push(c);
+  }
+  for (const [, arr] of byLane) {
+    let runStart = 0;
+    const flush = (a, b) => {
+      if (b - a < 1) return;                      // 单个提交不成条
+      const n = b - a + 1;
+      const x1 = X(arr[a].id) - 2, x2 = X(arr[b].id) + 2;
+      const ln = commitLane.get(arr[a].id) || 0;
+      const col = laneColor(ln);
+      const y = Y(arr[a].id);
+      const midId = arr[Math.floor((a + b) / 2)].id;
+      const label = `${n} 个提交`;
+      // 密度条：高度给足（9px），配合 CSS 的 min-height 保证低缩放也看得见
+      parts.push(
+        `<g class="gg-node gg-bar" data-id="${esc(midId)}" tabindex="0" role="button" ` +
+        `aria-label="${esc(label)}"><title>${esc(label)}（${esc(arr[a].date || "")} ~ ${esc(arr[b].date || "")}）</title>` +
+        `<rect class="gg-bar-rect" x="${x1}" y="${y - 4.5}" width="${Math.max(3, x2 - x1)}" ` +
+        `height="9" rx="4" fill="${col}" opacity=".7"/>` +
+        `<rect x="${x1}" y="${y - 11}" width="${Math.max(3, x2 - x1)}" height="22" fill="transparent"/>` +
+        `</g>`);
+    };
+    for (let i = 0; i < arr.length; i++) {
+      if (alwaysShow.has(arr[i].id)) { flush(runStart, i - 1); runStart = i + 1; }
+    }
+    flush(runStart, arr.length - 1);
+    // 语义节点在概览模式下也要看得见
+    for (const c of arr) if (alwaysShow.has(c.id)) parts.push(drawOne(c, false));
+  }
+  parts.push('</g>');
+
+  // 轨道名：每条轨道左侧一个胶囊，内容是该轨道上的分支（最多 2 个 + 计数）
+  parts.push('<g>');
+  const laneBranches = new Map();
+  for (const b of liveBranches) {
+    const ln = laneOf.get(b.name);
+    if (!laneBranches.has(ln)) laneBranches.set(ln, []);
+    laneBranches.get(ln).push(b);
+  }
+  const mainLaneName = (data.headBranch || "main");
+  for (const [ln, bs] of laneBranches) {
+    const y = PAD_T + ln * ROW_H + ROW_H / 2;
+    const col = ggColorFor(bs[0].name, branchNames);
+    // 主轨道标当前分支名；其余标分叉簇里的分支名
+    let names = bs.map(b => b.name);
+    names.sort((a, b2) => (a === mainLaneName ? -1 : b2 === mainLaneName ? 1 : 0));
+    let label = names[0];
+    if (names.length > 1) label += ` +${names.length - 1}`;
+    if (label.length > 20) label = label.slice(0, 19) + "…";
+    const w = 12 + label.length * 6.0;
+    const isMain = ln === 0;
+    parts.push(
+      `<g class="gg-ref" data-id="${esc(bs[0].head)}" tabindex="0" role="button" ` +
+      `aria-label="分支 ${esc(names.join('、'))}">` +
+      `<rect x="${PAD_L}" y="${y - 8}" width="${w}" height="15" rx="7.5" fill="${col}" ` +
+      `opacity="${isMain ? ".95" : ".8"}"/>` +
+      `<text x="${PAD_L + 6}" y="${y + 3}" font-size="10" fill="#0b0f16" font-weight="${isMain ? 700 : 600}" ` +
+      `font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">${esc(label)}</text>` +
+      `<title>${esc(names.join("\n"))}</title>` +
+      `</g>`);
+  }
+  parts.push('</g>');
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("height", H);
+  svg.setAttribute("width", W);
+  svg.innerHTML = parts.join("");
+  ggNaturalSize = { w: W, h: H, colW: COL_W };
+  applyGitZoom();
+
+  bindGitNodeEvents();
+
+  renderGitList(data, refsAt, headIds, mainColor);
+  renderGitLegend(data, branches, branchNames, mainColor, laneCount, danglingRefs);
+
+  const wrap = $("#ggraph-canvas-wrap");
+  // 概览模式（>200 提交）本身已按容器宽度布局，无需缩放；
+  // 完整模式才按需适应/滚动到最新
+  if (commits.length > 200) { ggZoom = 1; applyGitZoom(); }
+  if (wrap && !overview) wrap.scrollLeft = wrap.scrollWidth;
+  // 统计栏把「概览模式下做了什么聚合」讲清楚，否则用户不知道那些粗线代表多少关系
+  const statBits = [`${commits.length} 提交`, `${branches.length} 分支`, `${tags.length} 标签`];
+  if (ggEdgeStats && dense) {
+    statBits.push(`${ggEdgeStats.bundles} 组关系（最多 ×${ggEdgeStats.maxBundle}，覆盖 ${ggEdgeStats.covered} 条边）`);
+  }
+  if (data.truncated) statBits.push(`已截断（取最近 ${data.limit || 800} 条）`);
+  $("#gg-stats").textContent = statBits.join(" · ");
+}
+
+/* ---- 提交列表（文字集中在这里）---- */
+function renderGitList(data, refsAt, headIds, mainColor) {
+  const box = $("#gg-list");
+  if (!box) return;
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const rowOf = new Map();
+  // 时间倒序（最新在上），和 GitHub 一致
+  const list = data.commits.slice().sort((a, b) => colIndex(data, b.id) - colIndex(data, a.id));
+  const html = list.map(c => {
+    const refs = refsAt.get(c.id) || [];
+    const chips = refs.map(r =>
+      `<span class="gg-chip" style="background:${r.color}" title="${esc(r.text)}">${
+        esc(r.text.length > 14 ? r.text.slice(0, 13) + "…" : r.text)}</span>`).join("");
+    const dot = headIds.has(c.id)
+      ? `<span class="gg-head-badge" style="background:${refs[0] ? refs[0].color : mainColor}"></span>` : "";
+    const msg = (c.msg || "").split("\n")[0];
+    return `<div class="gg-row" data-id="${esc(c.id)}" role="option" tabindex="0" ` +
+      `title="${esc(c.msg || "")}">` +
+      `<span class="gg-msg">${dot}${chips}<span class="gg-sha">${esc(c.id.slice(0, 7))}</span>${esc(msg)}</span>` +
+      `<span class="gg-author" title="${esc(c.author)}">${esc(c.author)}</span>` +
+      `<span class="gg-date">${esc(c.date)}</span>` +
+      `</div>`;
+  }).join("");
+  box.innerHTML = html;
+  box.querySelectorAll(".gg-row").forEach(r => {
+    r.addEventListener("click", () => selectGitCommit(r.dataset.id));
+    r.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectGitCommit(r.dataset.id); }
+    });
+  });
+  // 记录 commit → 行元素，供选中时高亮联动
+  ggRowIndex = new Map();
+  box.querySelectorAll(".gg-row").forEach(r => ggRowIndex.set(r.dataset.id, r));
+}
+/* 提交在原始数组中的序号（时间序） */
+function colIndex(data, id) {
+  if (!ggColCache || ggColCache.data !== data) {
+    ggColCache = { data, map: new Map(data.commits.map((c, i) => [c.id, i])) };
+  }
+  return ggColCache.map.get(id) || 0;
+}
+/* ---- 图例 ---- */
+function renderGitLegend(data, branches, branchNames, mainColor, laneCount, danglingRefs) {
+  const box = $("#gg-legend");
+  if (!box) return;
+  const esc = s => String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  // 图例只讲「符号含义」；分支名直接标在图左侧轨道上，不在图例里重复
+  // （旧版图例把 7 个分支名列一遍又截断，反而更难读）
+  const items = [
+    `<span class="lg-item"><span class="lg-dot" style="background:var(--text-tertiary)"></span>普通提交</span>`,
+    `<span class="lg-item"><span class="gg-legend-dia"></span>合并提交</span>`,
+    `<span class="lg-item"><span class="lg-dot head" style="background:${mainColor};color:${mainColor}"></span>分支头 / 标签</span>`,
+    `<span class="lg-item"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--border-strong)" stroke-width="1.5"/></svg>连续历史</span>`,
+    `<span class="lg-item"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" stroke="${mainColor}" stroke-width="2.8"/></svg>跨轨 / 合并关系 <span style="color:var(--text-tertiary)">(×N = 聚合)</span></span>`,
+    `<span class="lg-item" style="color:var(--text-tertiary)">轨道 ${laneCount} 条 · 分支 ${branches.length - (danglingRefs || 0)}/${branches.length} 条 · 左旧 → 右新</span>`,
+  ];
+  if (danglingRefs) {
+    items.push(`<span class="lg-item" style="color:var(--warning)" title="这些引用的提交不在当前返回的 ${(data.limit || 800)} 条提交内（可能已 gc 或超出截断范围）">${danglingRefs} 个引用无对应提交</span>`);
+  }
+  box.innerHTML = items.join("");
+}
+
+
+/* 绑定节点交互（每次重绘后调用；innerHTML 重建会清掉旧监听，统一在这里挂）*/
+function bindGitNodeEvents() {
+  const svg = $("#ggraph-svg");
+  if (!svg) return;
+  svg.querySelectorAll(".gg-node, .gg-ref").forEach(g => {
+    g.addEventListener("click", () => selectGitCommit(g.dataset.id));
+    g.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectGitCommit(g.dataset.id); }
+    });
+  });
+}
+
+/* ---- 缩放 ----
+   800 提交 × 52px ≈ 4 万像素宽，不缩放没法看。缩放通过给 svg 设 CSS width 实现，
+   容器 overflow:auto 负责滚动；viewBox 保持自然尺寸，文字与线条等比缩放。 */
+let ggZoom = 1;
+let ggNaturalSize = { w: 100, h: 100 };
+/* 只压宽度、不压高度。
+   等比缩放会把高度也压扁：800 提交压到 12% 时图只剩 24px 高，
+   节点挤成一条线、点都点不中。改为 viewBox 高度锁定、只横向压缩，
+   纵向永远是自然高度（可读），横向靠缩放把更多提交塞进视口。 */
+function applyGitZoom() {
+  const svg = $("#ggraph-svg");
+  if (!svg || !ggNaturalSize) return;
+  svg.style.width = Math.max(1, Math.round(ggNaturalSize.w * ggZoom)) + "px";
+  svg.style.height = ggNaturalSize.h + "px";      // 高度不随缩放变化
+  // LOD 切换：低于阈值时只显示密度条 + 语义节点（点/菱形），隐藏逐提交节点
+  const lod = (ggNaturalSize.colW || 52) * ggZoom < 3;
+  svg.dataset.zoomMode = lod ? "dense" : "full";
+  // 概览模式：密度条按 1/zoom 反向放大，保证屏幕上仍是 ~9px 粗的可见条
+  // （上限 6，避免 zoom 极小时条飞出轨道）
+  const barScale = lod ? Math.min(6, 1 / Math.max(ggZoom, 0.02)) : 1;
+  svg.style.setProperty("--gg-bar-scale", barScale.toFixed(3));
+  const lbl = $("#gg-zoom-val");
+  if (lbl) lbl.textContent = (lod ? "概览 " : "") + Math.round(ggZoom * 100) + "%";
+}
+/* 缩放只改 CSS 尺寸，不重绘。
+   实测：800 提交全量重绘 4 次直接把浏览器 IPC 卡死（5s evaluate timeout），
+   所以缩放必须是纯 CSS 操作。LOD 的密度条与节点都在首次渲染时同时产出，
+   由 CSS 的 [data-zoom-mode] 决定显示哪一套。 */
+function setGitZoom(z) {
+  ggZoom = Math.min(4, Math.max(0.02, z));
+  applyGitZoom();
+}
+/* 适应宽度：压缩到刚好塞满容器（纵向不变） */
+function fitGitZoom() {
+  const wrap = $("#ggraph-canvas-wrap");
+  if (!wrap || !ggNaturalSize) return;
+  setGitZoom((wrap.clientWidth - 4) / ggNaturalSize.w);
+}
+(function bindGitZoom() {
+  const box = $("#gg-zoom");
+  if (!box) return;
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const z = b.dataset.z;
+    if (z === "in") setGitZoom(ggZoom * 1.35);
+    else if (z === "out") setGitZoom(ggZoom / 1.35);
+    else if (z === "fit") fitGitZoom();
+    else if (z === "head") { const w = $("#ggraph-canvas-wrap"); if (w) w.scrollLeft = w.scrollWidth; }
+  });
+})();
+
+/* ---------- 选中 / 详情 ---------- */
+function selectGitCommit(id) {
+  if (!id || !ggData) return;
+  ggSelected = id;
+  // 图上节点高亮
+  const svg = $("#ggraph-svg");
+  if (svg) {
+    svg.querySelectorAll(".gg-node.selected").forEach(n => n.classList.remove("selected"));
+    const n = svg.querySelector(`.gg-node[data-id="${CSS.escape(id)}"]`);
+    if (n) n.classList.add("selected");
+  }
+  // 列表行高亮 + 滚动到可见（列表和图是两个视图，要联动）
+  ggRowIndex.forEach(row => row.classList.remove("selected"));
+  const row = ggRowIndex.get(id);
+  if (row) {
+    row.classList.add("selected");
+    row.scrollIntoView({ block: "nearest" });
+  }
+  showGitCommitDetail(ggData, id);
+}
+
 function showGitCommitDetail(data, id) {
   const c = data.commits.find(x => x.id === id);
   if (!c) return;
   const d = $("#ggraph-detail");
   d.style.display = "block";
-  const branches = data.branches.filter(b => b.head === id).map(b => b.name);
-  const tags = data.tags.filter(t => t.head === id).map(t => t.name);
+  const branches = (data.branches || []).filter(b => b.head === id).map(b => b.name);
+  const tags = (data.tags || []).filter(t => t.head === id).map(t => t.name);
+  const full = (c.msg || "");
+  const firstLine = full.split("\n")[0];
+  const rest = full.slice(firstLine.length).trim();
   d.innerHTML =
-    `<div class="ggd-row"><span class="ggd-lbl">提交</span><span class="ggd-hash">${escapeHtml(c.id.slice(0, 12))}</span></div>` +
+    `<div class="ggd-row"><span class="ggd-lbl">提交</span><span class="ggd-hash">${escapeHtml(c.id)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">作者</span><span>${escapeHtml(c.author)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">日期</span><span>${escapeHtml(c.date)}</span></div>` +
-    (branches.length ? `<div class="ggd-row"><span class="ggd-lbl">分支</span><span>${branches.map(escapeHtml).join(", ")}</span></div>` : "") +
-    (tags.length ? `<div class="ggd-row"><span class="ggd-lbl">标签</span><span>${tags.map(escapeHtml).join(", ")}</span></div>` : "") +
-    `<div class="ggd-row"><span class="ggd-lbl">父提交</span><span class="ggd-parents">${(c.parents.map(p => p.slice(0, 8)).join(", ") || "（根提交）")}</span></div>` +
-    `<div class="ggd-msg">${escapeHtml(c.msg)}</div>`;
+    (branches.length ? `<div class="ggd-row"><span class="ggd-lbl">分支</span><span>${branches.map(escapeHtml).join("、")}</span></div>` : "") +
+    (tags.length ? `<div class="ggd-row"><span class="ggd-lbl">标签</span><span>${tags.map(escapeHtml).join("、")}</span></div>` : "") +
+    `<div class="ggd-row"><span class="ggd-lbl">父提交</span><span class="ggd-parents">${
+      (c.parents || []).length ? c.parents.map(p => escapeHtml(p.slice(0, 8))).join("、") : "（根提交）"}</span></div>` +
+    `<div class="ggd-msg">${escapeHtml(firstLine)}</div>` +
+    (rest ? `<div class="ggd-msg-full">${escapeHtml(rest)}</div>` : "");
 }
-/* 数据 → gitgraph.js：主线（第一父链）+ 分支线性段；主线 commit 处挂分叉分支 */
-function renderGitGraph(data) {
-  const wrap = $("#ggraph-canvas-wrap");
-  wrap.innerHTML = '<canvas id="ggraph-canvas"></canvas>';
-  const canvas = wrap.querySelector("canvas");
-  const byId = new Map(data.commits.map(c => [c.id, c]));
-  const headBranch = data.headBranch && data.branches.some(b => b.name === data.headBranch)
-    ? data.headBranch : (data.branches.length ? data.branches[0].name : "HEAD");
-  const mainHead = data.branches.find(b => b.name === headBranch);
-  const mainTip = mainHead ? mainHead.head : (data.head || "");
-  // 主线：主分支头沿第一父回溯
-  const mainSeq = [], seen = new Set();
-  let cur = mainTip;
-  while (cur && byId.has(cur) && !seen.has(cur)) { seen.add(cur); mainSeq.push(cur); cur = byId.get(cur).parents[0] || null; }
-  mainSeq.reverse();
-  const mainSet = new Set(mainSeq);
-  // 分支线：其他分支头沿第一父回溯到主线交点
-  const branchLines = [];
-  for (const b of data.branches) {
-    if (b.name === headBranch) continue;
-    const ids = []; const s = new Set(); let c = b.head;
-    while (c && byId.has(c) && !mainSet.has(c) && !s.has(c)) { s.add(c); ids.push(c); c = byId.get(c).parents[0] || null; }
-    ids.reverse();
-    if (ids.length) branchLines.push({ name: b.name, ids });
-  }
-  const tagOf = {};
-  for (const t of data.tags) { (tagOf[t.head] = tagOf[t.head] || []).push(t.name); }
-  const gitgraph = new GitGraph({
-    elementId: "ggraph-canvas",
-    orientation: "vertical",
-    template: {
-      colors: ["#79c0ff", "#f0883e", "#7ee787", "#ff7b72", "#d2a8ff", "#ffa657", "#a5d6ff"],
-      branch: { lineWidth: 2, spacingX: 46, color: "#79c0ff" },
-      commit: {
-        spacingY: 44,
-        dot: { size: 12 },
-        message: { color: "#c9d1d9", font: "12px sans-serif" },
-        hash: { color: "#8b949e", font: "10px monospace" },
-        tag: { color: "#1a1a1a", background: "#ffd33d", font: "10px sans-serif" },
-      },
-      arrow: { size: 6, color: "#58a6ff" },
-    },
-  });
-  const master = gitgraph.branch(headBranch);
-  const commitOf = (id) => {
-    const c = byId.get(id);
-    const opts = {
-      message: (c.msg.split("\n")[0]).slice(0, 60), hash: id,
-      onClick: () => showGitCommitDetail(data, id),   // 1.6 的 commit onClick 走 options
-    };
-    if (tagOf[id]) opts.tag = tagOf[id].join(",");
-    return opts;
-  };
-  // 主线逐 commit，分叉点挂分支
-  const usedBranch = new Set();
-  for (let i = 0; i < mainSeq.length; i++) {
-    const id = mainSeq[i];
-    master.commit(commitOf(id));
-    for (const bl of branchLines) {
-      if (usedBranch.has(bl.name)) continue;
-      const firstParent = byId.get(bl.ids[0]).parents[0];
-      if (firstParent === id) {
-        usedBranch.add(bl.name);
-        const br = gitgraph.branch(bl.name);
-        for (const bid of bl.ids) br.commit(commitOf(bid));
-      }
-    }
-  }
-  // 主线未覆盖到的分支（孤儿/主线截断）：最后追加
-  for (const bl of branchLines) {
-    if (usedBranch.has(bl.name)) continue;
-    const br = gitgraph.branch(bl.name);
-    for (const bid of bl.ids) br.commit(commitOf(bid));
-  }
-  // 无任何引用（空仓库）时给个占位
-  if (!mainSeq.length && !branchLines.length && data.commits.length) {
-    const br = gitgraph.branch("commits");
-    for (const c of data.commits) br.commit(commitOf(c.id));
-  }
-  /* 点击命中：gitgraph 自带 hitTest 在 devicePixelRatio≠1 时坐标偏差，这里按显示坐标公式自算。
-     翻转布局（spacingX/Y>0）下 commit 显示坐标 = (canvasW - marginX - d.x, canvasH - marginY - d.y)；
-     marginX = spacingX + 2*dot.size，marginY = spacingY + 2*dot.size。 */
-  const mX = 46 + 2 * 12, mY = 44 + 2 * 12;
-  canvas.addEventListener("click", (ev) => {
-    const r = canvas.getBoundingClientRect();
-    const ex = ev.clientX - r.left, ey = ev.clientY - r.top;
-    for (const c of gitgraph.commits) {
-      const cx = r.width - mX - c.x, cy = r.height - mY - c.y;
-      if (Math.abs(cx - ex) <= 14 && Math.abs(cy - ey) <= 14) {
-        if (c.onClick) c.onClick();
-        return;
-      }
-    }
-  });
-}
+
+
 $("#btn-gitgraph").addEventListener("click", gitGraphOpen);
+$("#gg-close").addEventListener("click", gitGraphClose);
+$("#gg-repo").addEventListener("change", () => loadGitGraph(""));
+$("#gg-project").addEventListener("change", async (e) => {
+  _curProject = e.target.value || null;
+  await loadGitRepos(_curProject);
+  loadGitGraph("");
+});
+$("#ggraph-mask").addEventListener("click", (e) => { if (e.target === $("#ggraph-mask")) gitGraphClose(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && $("#ggraph-mask").classList.contains("show")) gitGraphClose();
+});
 $("#gg-close").addEventListener("click", gitGraphClose);
 $("#gg-repo").addEventListener("change", loadGitGraph);
 $("#ggraph-mask").addEventListener("click", (e) => { if (e.target === $("#ggraph-mask")) gitGraphClose(); });
@@ -6573,6 +7393,7 @@ async function loadProjects() {
         `</span>`;
       item.querySelector(".proj-switch")?.addEventListener("click", (e) => { e.stopPropagation(); switchProject(p.name); });
       item.querySelector(".proj-remove")?.addEventListener("click", (e) => { e.stopPropagation(); removeProject(p.name); });
+
       if (!isCur) item.addEventListener("click", () => switchProject(p.name));
       list.appendChild(item);
     }
@@ -6640,10 +7461,11 @@ function openProjectsPanel() {
 function closeProjectsPanel() {
   $("#projects-mask").style.display = "none";
 }
-$("#btn-projects")?.addEventListener("click", openProjectsPanel);
+
 $("#projects-close")?.addEventListener("click", closeProjectsPanel);
 $("#projects-mask")?.addEventListener("click", (e) => { if (e.target === $("#projects-mask")) closeProjectsPanel(); });
 $("#projects-add-btn")?.addEventListener("click", () => addProject($("#projects-path").value));
+$("#btn-projects")?.addEventListener("click", openProjectsPanel);
 $("#projects-path")?.addEventListener("keydown", (e) => { if (e.key === "Enter") addProject(e.target.value); });
 
 /* ================= 主题（明/暗）=================
@@ -6701,7 +7523,7 @@ function initTheme() {
   initTheme();       // 明暗主题（须在首次渲染前，避免闪白）
   loadExpanded();   // 恢复展开状态（renderTree 前）
   initTreeResizer();  // 恢复目录树宽度 + 绑定拖拽分隔条
-  projectsBtnText();  // 顶栏项目按钮初始文案（当前项目/全部）
+
   await renderTree();
   if (curTabs().length) { renderActiveTab(); return; }
   // 默认打开最近产出的审查报告（如果存在）
