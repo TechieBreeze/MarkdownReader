@@ -1545,19 +1545,20 @@ body {
 .md-body, .markdown-body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
                "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  /* 旧版 980px ≈ 126 字符；改为 46rem ≈ 736px（中文 35-50 全角字最佳）*/
-  max-width: var(--measure);
+  /* 正文行宽 980px（初始快照的值，≈126 字符）。曾压到 46rem/736px「优化阅读」，
+     结果正文窄一大截、表格仍留 960px，两边不齐反而更难看 —— 已复原。 */
+  max-width: 980px;
   margin: 0 auto;
   padding: var(--sp-6) var(--sp-5) var(--sp-8);
   font-size: var(--fs-base);      /* 14 → 15px */
   line-height: var(--lh-relaxed); /* 1.75 */
   color: var(--text-primary);
 }
-/* 代码块 / 宽表格突破行宽限制（调研：差异化布局）*/
+/* 代码块 / 宽表格突破正文行宽（与正文同宽，避免表格比正文宽出一截）*/
 .md-body > pre,
 .md-body > table,
 .md-body .mermaid,
-.md-body > .table-wrap { max-width: var(--measure-wide); margin-left: 0; margin-right: 0; }
+.md-body > .table-wrap { max-width: 980px; margin-left: 0; margin-right: 0; }
 
 .md-body h1, .md-body h2, .md-body h3,
 .md-body h4, .md-body h5, .md-body h6 {
