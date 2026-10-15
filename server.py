@@ -27,7 +27,7 @@ import sys
 import time as _time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, unquote, quote
 
 # javalang AST 解析（0.13.0 vendored 在 vendor_py/；Hermes 自带 python 无 pip 时走 sys.path）
 try:
@@ -981,6 +981,40 @@ class Handler(BaseHTTPRequestHandler):
         mime = mimetypes.guess_type(abs_path)[0] or "application/octet-stream"
         with open(abs_path, "rb") as f:
             self._send(200, f.read(), mime)
+
+    def _api_html(self, qs):
+        """HTML 预览：返回文档文本并注入 <base href="file-like 路径">。
+
+        不用 iframe srcdoc 的原因：srcdoc 文档的 URL 是 about:srcdoc，
+        <a href="#锚点"> 会被当作顶层导航，跳到 reader 的 http://127.0.0.1:8765/#锚点，
+        表现为「点左侧导航后嵌套了一层 markdown reader 页面」。
+        走 /api/html?path= 后页面有真实 URL，锚点在 iframe 内滚动。
+
+        注入 <base> 让文档里的相对 src/href 解析到 /api/raw 代理，
+        这样自包含 HTML（内联 echarts 等）无需重写也能正常渲染。
+        """
+        rel = (qs.get("path") or [""])[0]
+        abs_path = self._resolve_read_path(rel)
+        if not abs_path or not os.path.isfile(abs_path):
+            self._json({"error": "not found"}, 404)
+            return
+        if not abs_path.lower().endswith((".html", ".htm")):
+            self._json({"error": "not an html file"}, 415)
+            return
+        try:
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                html = f.read()
+        except OSError:
+            self._json({"error": "read failed"}, 500)
+            return
+        # <base> 指向 /api/raw 代理：文档内相对资源（img/ css /字体）都能取到
+        base_url = "/api/raw?path=" + quote(rel, safe="")
+        base_tag = '<base href="%s">' % base_url
+        if re.search(r"<head[^>]*>", html, re.I):
+            html = re.sub(r"(<head[^>]*>)", r"\1\n" + base_tag, html, count=1, flags=re.I)
+        else:
+            html = base_tag + "\n" + html
+        self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _api_git_repos(self, qs):
         """枚举所有根下 git 仓库（含根目录自身），供 Git 版本树选择仓库。"""
@@ -2164,6 +2198,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_markdown(qs)
             elif path == "/api/code":
                 self._api_code(qs)
+            elif path == "/api/html":
+                self._api_html(qs)
             elif path == "/api/raw":
                 self._api_raw(qs)
             elif path == "/api/git/meta":

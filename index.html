@@ -2960,7 +2960,7 @@ function renderHtmlTab(tab) {
       `</div>` +
       (source
         ? `<div class="ct-scroll" id="ct-scroll"></div>`
-        : `<div class="ct-html-render" id="ct-html-render"><iframe id="html-frame" sandbox="allow-scripts allow-modals" title="HTML 渲染预览"></iframe></div>`) +
+        : `<div class="ct-html-render" id="ct-html-render"><iframe id="html-frame" sandbox="allow-scripts allow-modals allow-popups allow-top-navigation-by-user-activation" title="HTML 渲染预览"></iframe></div>`) +
     `</div>`;
   const btn = $("#ct-html-mode");
   if (btn) {
@@ -2985,7 +2985,13 @@ function renderHtmlTab(tab) {
     if (tab.scrollTop) ct.scrollTop = tab.scrollTop;
   } else {
     const frame = $("#html-frame");
-    frame.srcdoc = rewriteHtmlResources(tab.content || "", tab.path);
+    // 用 src 而不是 srcdoc：srcdoc 的文档 URL 是 about:srcdoc，<a href="#锚点">
+    // 会被当成顶层导航，跳到 reader 的 http://127.0.0.1:8765/#锚点 ——
+    // 表现是「点导航后嵌套了一层 markdown reader 页面」。
+    // 改用 /api/html?path= 后页面有真实 URL，锚点在 iframe 内滚动；
+    // 相对资源由服务端按 path 解析，不用在前端重写。
+    const abs = resolveRel("index.html", tab.path);
+    frame.src = "/api/html?path=" + encodeURIComponent(abs);
   }
 }
 
@@ -4946,9 +4952,31 @@ function modalViewportLine() {
   if (r.width < 10 || r.height < 10) return null;
   const el = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
   const line = el && el.closest ? el.closest(".cl-line") : null;
-  if (!line) return null;
-  const no = parseInt(line.dataset.line, 10);
-  return Number.isFinite(no) && no > 0 ? no : null;
+  if (line) {
+    const no = parseInt(line.dataset.line, 10);
+    if (Number.isFinite(no) && no > 0) return no;
+  }
+  // 中心点没命中行（落在行间隙、padding、或空白处）时不要返回 null ——
+  // 上层会退回到「打开时的跳转行」，返回的位置就和离开前差一大截，
+  // 表现为「返回后定位的行号变了」。改为按 scrollTop 与行高推算。
+  const st = scroll.scrollTop;
+  if (!st) return 1;
+  if (scroll.classList.contains("vscroll") && scroll.__vstate) {
+    // 虚拟滚动：行 i 的 top = 6 + i*20，取视口中心所在行
+    const i = Math.round((st + scroll.clientHeight / 2 - 6) / V_LINE_H);
+    const row = scroll.__vstate.rows[Math.max(0, Math.min(i, scroll.__vstate.total - 1))];
+    const no = row && row.no != null ? row.no : i + 1;
+    return no > 0 ? no : 1;
+  }
+  const lines = scroll.querySelectorAll(".cl-line");
+  if (!lines.length) return 1;
+  let best = 1, bestD = Infinity;
+  for (const el2 of lines) {
+    const rr = el2.getBoundingClientRect();
+    const d = Math.abs((rr.y - r.y) + rr.height / 2 - scroll.clientHeight / 2);
+    if (d < bestD) { bestD = d; best = parseInt(el2.dataset.line, 10) || best; }
+  }
+  return best > 0 ? best : 1;
 }
 
 function snapshotOfModal() {
@@ -4957,11 +4985,20 @@ function snapshotOfModal() {
     path: s.path, line: s.line, content: s.content, git: s.git,
     branchContent: s.branchContent, commit: s.commit, commitContent: s.commitContent,
     _viewBranch: s._viewBranch, lines: s.lines, size: s.size, _defbar: s._defbar || null,
-    viewportLine: modalViewportLine(),   // 当前视口中心行（而非打开时跳转行），返回时恢复
+    // 两个字段分工，别再混用：
+    //   s.line       → 返回后 hl-line 高亮在哪一行（打开这条链接时的目标行）
+    //   viewportLine → 返回后滚动停在哪（离开时视口中心所在行）
+    // 曾把 viewportLine 塞进 modalState.line，高亮就跟着视口中心跑，看起来是「高亮行变了」。
+    viewportLine: modalViewportLine(),
   };
 }
 
-function renderModalView() {
+/* opts.restore：从导航历史返回。
+   恢复时不该再 flash —— 返回是「回到刚才看到的地方」，不是「跳到一个新目标」，
+   闪一下会被读成「又跳了一次」。
+   高亮仍按 st.line 复原（这是返回要还原的东西），滚动按 st.viewportLine 复原。 */
+function renderModalView(opts) {
+  const restore = !!(opts && opts.restore);
   const st = modalState;
   $("#m-path").textContent = st.path || "";
   if (st.path) $("#m-path").dataset.full = st.path;   // 面包屑点击定位树用
@@ -4971,8 +5008,14 @@ function renderModalView() {
   const text = modalViewText();
   $("#m-textarea").value = text;
   renderCodeView(text, st.line);
-  if (st.line) requestAnimationFrame(() => scrollCodeToLine(st.line));
-  if (st.line) flashRowOnce($("#m-scroll"), st.line);   // 弹窗内跳转落地 flash
+  // 恢复模式：滚动到离开前的视口位置（viewportLine），而不是再次把 st.line 拉到中央 ——
+  // 后者会让「返回」看起来像又跳了一次。高亮位置仍由 st.line 决定。
+  if (restore && st.viewportLine != null) {
+    requestAnimationFrame(() => scrollCodeToLine(st.viewportLine));
+  } else if (st.line) {
+    requestAnimationFrame(() => scrollCodeToLine(st.line));
+  }
+  if (st.line && !restore) flashRowOnce($("#m-scroll"), st.line);   // 弹窗内跳转落地 flash
 }
 
 function restoreModalSelects(st) {
@@ -5032,14 +5075,21 @@ function modalGoBack() {
   const st = modalState._backStack.pop();
   if (!st) return;
   modalState = {
-    path: st.path, line: st.viewportLine != null ? st.viewportLine : st.line, content: st.content, git: st.git,
+    // line 必须是「返回后要高亮哪一行」，即快照里记录的 st.line（打开这条链接时的目标行）。
+    // 曾经写成 st.viewportLine —— 那是「离开前视口中心所在的行」，两者是不同的概念：
+    // 前者决定 hl-line 高亮落在哪，后者决定滚动停在哪。
+    // 用 viewportLine 填 line 的后果：从 L120 的链接打开 → 点别处跳到 L500 → 返回，
+    // 高亮跟着视口中心跑到某一任意行，看起来就是「原本的高亮行变了」。
+    // 现在：line 回到 st.line（高亮复原），viewportLine 单独用于 scrollTo（滚动复原）。
+    path: st.path, line: st.line, content: st.content, git: st.git,
     branchContent: st.branchContent, commit: st.commit, commitContent: st.commitContent,
     _branchSeq: (modalState._branchSeq || 0) + 1,
     _backStack: modalState._backStack,
     _viewBranch: st._viewBranch, lines: st.lines, size: st.size, _defbar: st._defbar,
+    viewportLine: st.viewportLine,   // 供 renderModalView 恢复滚动位置用（不影响高亮）
   };
   $("#m-gitinfo").style.display = "none";
-  renderModalView();
+  renderModalView({ restore: true });   // 返回：恢复位置，不 flash
   $("#m-back").style.display = modalState._backStack.length ? "" : "none";
   setModalDefbar(modalState._defbar);
   loadGitMeta(st.path, { skipAuto: true }).then(() => restoreModalSelects(modalState)).catch(() => {});
