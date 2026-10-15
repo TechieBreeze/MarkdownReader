@@ -993,7 +993,9 @@ body {
 }
 #ggraph-mask.show { display: flex; }
 #ggraph-panel {
-  width: min(1240px, 95vw); height: min(820px, 93vh);
+  /* 右侧提交列已删除，整个面板宽度都归版本图用，上限从 1240px 放宽到 1600px ——
+     继续锁 1240px 会让窗口拉宽后右边空一大片，提交文字还按旧宽度被裁。 */
+  width: min(1600px, 96vw); height: min(880px, 94vh);
   background: var(--surface-overlay);
   border: 1px solid var(--border-default); border-radius: var(--r-lg);
   box-shadow: var(--shadow-3);
@@ -1041,17 +1043,18 @@ body {
 }
 /* 左：纯图形（只画点、线、分支名）—— 不放提交文字，避免文字压线 */
 #gg-left {
-  flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column;
-  border-right: 1px solid var(--border-subtle);
+  flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; flex-direction: column;
 }
 #ggraph-canvas-wrap {
   position: relative;
-  flex: 1 1 auto; min-width: 0; overflow: auto;
+  /* min-height:0 是关键：flex 子项默认 min-height:auto，会被内容（本例 8044px）顶开，
+     连带把详情栏和图例挤出视口。改成 0 后由本元素自己滚动。 */
+  flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto;
   background: var(--surface-content);
-  /* 时间网格：帮助感知「这是一条时间线」 */
-  background-image: linear-gradient(to right, var(--border-subtle) 1px, transparent 1px);
-  background-size: 52px 100%;
-  background-position: 146px 0;   /* 对齐 PAD_L=140 + 节点半径 */
+  /* 竖向时间线：横向分隔线每 ROW_H(32px) 一条，帮助数「这是第几个提交」 */
+  background-image: linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px);
+  background-size: 100% 32px;
+  background-position: 0 20px;   /* 对齐 PAD_T=20 */
 }
 #ggraph-svg { display: block; transform-origin: 0 0; }
 /* LOD：概览缩放时隐藏逐提交节点、显示密度条（由 JS 设 data-zoom-mode）*/
@@ -1106,52 +1109,24 @@ body {
   background: var(--text-secondary); transform: rotate(45deg);
 }
 
-/* 中：提交列表（文字集中在这里，不再叠在图上）*/
-#gg-right {
-  flex: 0 0 460px; display: flex; flex-direction: column;
-  min-width: 0; background: var(--surface-chrome);
+/* 竖向布局：图 + 提交文字合一，右侧不再有列表列 */
+#ggraph-body { flex-direction: column; }
+
+/* 行文字：每个提交一行，跟在节点右侧 */
+#ggraph-svg .gg-line-txt {
+  fill: var(--text-primary);
+  font-family: "Cascadia Code", Consolas, "Microsoft YaHei", monospace;
+  dominant-baseline: auto;
 }
-#gg-list-head {
-  flex: 0 0 auto; display: grid; grid-template-columns: 1fr 96px 84px;
-  gap: var(--sp-2); padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border-subtle);
-  font-size: var(--fs-xs); font-weight: 600; color: var(--text-tertiary);
-  text-transform: uppercase; letter-spacing: .05em;
-}
-#gg-list { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; }
-.gg-row {
-  display: grid; grid-template-columns: 1fr 96px 84px;
-  gap: var(--sp-2); align-items: center;
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border-subtle);
-  cursor: pointer; font-size: var(--fs-sm);
-  transition: background var(--dur-fast) var(--ease-out);
-}
-.gg-row:hover { background: var(--hover-wash); }
-.gg-row.selected { background: var(--active-wash); box-shadow: inset 2px 0 0 var(--accent); }
-.gg-row .gg-msg {
-  color: var(--text-primary); overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-}
-.gg-row .gg-msg .gg-sha {
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: var(--fs-xs); color: var(--hl-number); margin-right: 6px;
-}
-.gg-row .gg-author, .gg-row .gg-date {
-  color: var(--text-tertiary); overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap;
-}
-.gg-row .gg-refs { display: inline-flex; gap: 3px; margin-right: 5px; vertical-align: 1px; }
-.gg-chip {
-  font-size: 9.5px; padding: 0 5px; height: 14px; line-height: 14px;
-  border-radius: var(--r-full); color: #0b0f16; font-weight: 600;
-  display: inline-block; max-width: 96px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
-}
-.gg-head-badge {
-  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-  margin-right: 4px; vertical-align: 2px;
-}
+#ggraph-svg .gg-sha-txt { fill: var(--hl-number); font-size: 11px; }
+#ggraph-svg .gg-msg-txt { fill: var(--text-primary); }
+#ggraph-svg .gg-chip-txt { font-size: 11px; }
+#ggraph-svg .gg-sep { fill: var(--text-tertiary); }
+/* 整行热区：hover 才显形，选中常驻 */
+#ggraph-svg .gg-rowbg { fill: transparent; transition: fill var(--dur-fast) var(--ease-out); }
+#ggraph-svg .gg-node:hover .gg-rowbg { fill: var(--hover-wash); }
+#ggraph-svg .gg-node.selected .gg-rowbg { fill: var(--active-wash); }
+#ggraph-svg .gg-node.selected .gg-msg-txt { fill: var(--text-strong); font-weight: 600; }
 /* 语义连线：跨轨道 / 汇入 merge —— 概览模式下它是 Git DAG 的骨架，必须醒目 */
 .gg-sem { filter: drop-shadow(0 0 2px rgba(255,255,255,.16)); }
 .gg-link { opacity: .38; }
@@ -1173,18 +1148,31 @@ body {
 }
 .gg-empty svg { width: 36px; height: 36px; opacity: .35; }
 
+/* 详情：贴在图区底部的横条，不占一整列、不遮挡图 */
 #ggraph-detail {
-  flex: 0 0 300px; overflow-y: auto; padding: var(--sp-3);
-  border-left: 1px solid var(--border-subtle);
-  flex-shrink: 0;
+  flex: 0 0 auto; overflow-y: auto; max-height: 190px;
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border-default);
+  position: relative;
   font-size: var(--fs-sm); color: var(--text-primary);
   background: var(--surface-chrome);
+  align-items: flex-start; gap: var(--sp-2);
 }
+#ggraph-detail .ggd-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+#ggraph-detail .ggd-close {
+  position: absolute; top: 6px; right: 8px;
+  width: 22px; height: 22px; border: none; border-radius: var(--r-sm);
+  background: transparent; color: var(--text-tertiary); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+#ggraph-detail .ggd-close:hover { background: var(--hover-wash); color: var(--text-strong); }
 #ggraph-detail .ggd-hash {
   font-family: "Cascadia Code", Consolas, monospace;
   font-size: var(--fs-sm); color: var(--hl-number); word-break: break-all;
 }
-#ggraph-detail .ggd-row { display: flex; gap: var(--sp-2); padding: 3px 0; align-items: baseline; }
+#ggraph-detail .ggd-row { display: flex; gap: var(--sp-2); padding: 1px 0; align-items: baseline; }
+#ggraph-detail .ggd-row .ggd-hash { padding-right: var(--sp-4); }
 #ggraph-detail .ggd-lbl { color: var(--text-tertiary); flex: 0 0 44px; }
 #ggraph-detail .ggd-msg {
   margin-top: var(--sp-3); padding-top: var(--sp-3);
@@ -2035,15 +2023,10 @@ html, body { max-width: 100%; overflow-x: hidden; }
         <div id="ggraph-canvas-wrap"><svg id="ggraph-svg" role="img" aria-label="Git 提交图"></svg>
           <div id="ggraph-empty" class="gg-empty" hidden></div>
         </div>
+        <!-- 选中提交的详情：贴在图区底部，不占额外一列、不遮挡图 -->
+        <div id="ggraph-detail" style="display:none"></div>
         <div id="gg-legend"></div>
       </div>
-      <div id="gg-right">
-        <div id="gg-list-head">
-          <span>提交</span><span>作者</span><span>日期</span>
-        </div>
-        <div id="gg-list" role="listbox" aria-label="提交列表"></div>
-      </div>
-      <div id="ggraph-detail" style="display:none"></div>
     </div>
   </div>
 </div>
@@ -6500,7 +6483,6 @@ let ggRepos = [];
 let ggProjects = [];
 let ggData = null;          // 当前仓库的 graph 数据
 let ggSelected = null;      // 选中的 commit id
-let ggRowIndex = new Map(); // commit id → 列表行元素（选中联动高亮）
 let ggEdgeStats = null;       // 本次渲染的边聚合统计（bundle 数 / 最大聚合 / 覆盖边数）
 let ggColCache = null;     // {data, map}：commit id → 时间序序号缓存
 
@@ -6517,6 +6499,22 @@ function ggColorFor(name, all) {
 }
 
 /* ---------- 打开 / 关闭 ---------- */
+/* 文字区宽度按容器实算，所以容器尺寸变化（窗口缩放、面板开合）后要重绘。
+   否则窗口拉宽时 SVG 仍按旧宽度画，右侧空出来一大片、文字还按旧宽度被裁。 */
+let ggResizeObs = null;
+function watchGitGraphWidth() {
+  const wrap = $("#ggraph-canvas-wrap");
+  if (!wrap) return;
+  if (ggResizeObs) { ggResizeObs.disconnect(); ggResizeObs = null; }
+  let lastW = wrap.clientWidth;
+  ggResizeObs = new ResizeObserver(() => {
+    const w = wrap.clientWidth;
+    if (!w || Math.abs(w - lastW) < 24) return;   // 抖动阈值，避免频繁重绘
+    lastW = w;
+    if (ggData) renderGitGraph(ggData);
+  });
+  ggResizeObs.observe(wrap);
+}
 function gitGraphOpen() {
   $("#ggraph-mask").classList.add("show");
   loadGitProjects().then(() => {
@@ -6524,11 +6522,13 @@ function gitGraphOpen() {
     // 默认仓库：优先「当前标签所在仓库」，且必须属于当前项目
     const initPath = tab ? tab.path : "";
     loadGitGraph(initPath);
+    watchGitGraphWidth();
   }).catch(() => {});
 }
 function gitGraphClose() {
   $("#ggraph-mask").classList.remove("show");
   ggSelected = null;
+  if (ggResizeObs) { ggResizeObs.disconnect(); ggResizeObs = null; }   // 防泄漏
 }
 
 /* ---------- 项目 / 仓库下拉（项目隔离）---------- */
@@ -6760,18 +6760,18 @@ function renderGitGraph(data) {
      概览模式（提交很多）直接按容器宽度均分，让 svg 本身就是容器宽、无需缩放：
      这样密度条、节点、线全都是真实屏幕尺寸，不存在「被缩到看不见」的问题。
      完整模式才用缩放，让每个提交有足够间距。 */
-  const PAD_T = 26, PAD_L = 140;                 // PAD_L 给左侧轨道名留位
-  const wrapEl = $("#ggraph-canvas-wrap");
-  const avail = Math.max(320, (wrapEl ? wrapEl.clientWidth : 700) - PAD_L - 40);
-  const overview = commits.length > 200;         // 与 renderGitGraph 末尾的判断一致
-  const COL_W = overview
-    ? Math.max(0.6, avail / commits.length)     // 概览：均分到容器宽度
-    : (commits.length > 400 ? 26 : 52);
-  const ROW_H = laneCount <= 3 ? 34 : laneCount <= 5 ? 30 : 26;
+  /* 竖向时间线：Y = 提交时间序（从上到下），X = 轨道（左右分开）。
+     原先是横向（X=序号、Y=轨道），提交一多每个只有 2~3px，点不中也看不清；
+     竖向后每个提交独占一行（ROW_H），文字直接跟在节点右侧，
+     于是右侧提交列表与详情列都成了重复展示，一并去掉。 */
+  const PAD_T = 20, PAD_L = 132;                 // PAD_L 给左侧轨道名留位
+  const ROW_H = 32;                              // 每个提交一行（用户选定：宽松好点）
+  const LANE_W = 22;                             // 轨道间距
+  const TEXT_X = PAD_L + laneCount * LANE_W + 22;  // 文字起点的 x
   const colOf = new Map();
   commits.forEach((c, i) => colOf.set(c.id, i));
-  const X = id => PAD_L + colOf.get(id) * COL_W;
-  const Y = id => PAD_T + (commitLane.get(id) || 0) * ROW_H + ROW_H / 2;
+  const X = id => PAD_L + (commitLane.get(id) || 0) * LANE_W;
+  const Y = id => PAD_T + colOf.get(id) * ROW_H + ROW_H / 2;
 
   /* ---- 4) 引用（分支头/tag）挂到 commit ---- */
   const refsAt = new Map();
@@ -6783,8 +6783,13 @@ function renderGitGraph(data) {
   for (const b of branches) addRef(b.head, b.name, ggColorFor(b.name, branchNames), "branch");
   for (const t of tags) addRef(t.head, t.name, "#d9a336", "tag");
 
-  const W = PAD_L + commits.length * COL_W + 40;
-  const H = PAD_T + laneCount * ROW_H + 16;
+  /* 文字区宽度 = 容器实际可用宽度（不再写死 560px —— 写死会让 SVG 比容器窄，
+     右侧明明还有大半空间，文字却在固定位置被切掉）。
+     竖向后右侧列已删除，整个面板宽度都归图用。 */
+  const wrapBox = $("#ggraph-canvas-wrap");
+  const availW = Math.max(360, (wrapBox ? wrapBox.clientWidth : 900) - TEXT_X - 28);
+  const W = TEXT_X + availW;
+  const H = PAD_T + commits.length * ROW_H + 24;
   const esc = s => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
@@ -6792,17 +6797,17 @@ function renderGitGraph(data) {
   const headIds = new Set(branches.map(b => b.head).concat(tags.map(t => t.head)));
   const mainColor = data.headBranch ? ggColorFor(data.headBranch, branchNames) : GG_BRANCH_COLORS[0];
   const parts = [];
-  // 点击热区半径随列宽自适应：列宽被压缩时把热区撑大，保证「点得中」
-  const hitR = Math.max(6, Math.min(11, COL_W / 2));
-  const dense = COL_W < 3;                                  // 概览模式（列被压到 3px 以下）
+  // 点击热区：竖向每个提交一行，整行都是热区（横向时才需要凑半径）
+  const hitR = ROW_H / 2 - 2;
+  const dense = false;                                       // 竖向不再需要密度聚合
   const mergeIds = new Set(commits.filter(c => (c.parents || []).length > 1).map(c => c.id));
 
   // 轨道淡线
   parts.push('<g aria-hidden="true">');
   for (let i = 0; i < laneCount; i++) {
-    const y = PAD_T + i * ROW_H + ROW_H / 2;
-    parts.push(`<line x1="${PAD_L + 6}" y1="${y}" x2="${W - 16}" y2="${y}" ` +
-      `stroke="var(--border-strong)" stroke-width="1" stroke-dasharray="3 8" opacity=".8" ` +
+    const x = PAD_L + i * LANE_W;
+    parts.push(`<line x1="${x}" y1="${PAD_T}" x2="${x}" y2="${PAD_T + commits.length * ROW_H}" ` +
+      `stroke="var(--border-strong)" stroke-width="1" opacity=".45" ` +
       `vector-effect="non-scaling-stroke"/>`);
   }
   parts.push('</g>');
@@ -6836,20 +6841,23 @@ function renderGitGraph(data) {
      视觉上只是两条粗带。做法：按「起点列分桶 × 目标轨道」把多条边合成一条 bundle，
      bundle 上标注 ×N（合并了几条）。放大时（!dense）再展开成真实边。
      —— 概览看「哪里发生了大量跨轨流动」，放大看「具体哪条边」。 */
-  const bucketOf = x => Math.round(x / 24);           // 24px 一桶
+  const bucketOf = y => Math.round(y / 24);           // 24px 一桶（竖向按 y 分桶）
   const drawEdge = (e, cls, w, op) => {
-    const x1 = X(e.c) + 5, y1 = Y(e.c), x2 = X(e.p), y2 = Y(e.p);
-    const dx = Math.max(14, Math.abs(x2 - x1) * 0.55);
+    // 竖向：时间自上而下，父提交在子提交上方 → 曲线控制点在 y 方向
+    const x1 = X(e.c), y1 = Y(e.c), x2 = X(e.p), y2 = Y(e.p);
+    const dy = Math.max(12, Math.abs(y2 - y1) * 0.45);
     const col = laneColor(commitLane.get(e.c) || 0);
-    return `<path class="${cls}" d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" ` +
+    return `<path class="${cls}" d="M ${x1} ${y1} C ${x1} ${y1 - dy}, ${x2} ${y2 + dy}, ${x2} ${y2}" ` +
       `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
       `stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
   };
   parts.push('<g class="gg-links">');
+  // 本次渲染的边聚合统计。必须声明在 if/else 之外 ——
+  // 放进 if (dense) 块里时 else 分支赋值会抛 ReferenceError，整张图渲染为空。
+  let edgeStat = null;
   if (dense) {
     // 概览：语义边按桶聚合
-    let edgeStat = null;            // 本次渲染的边聚合统计
-  const bundles = new Map();     // key: `${cLane}->${pLane}@${bucket}`
+    const bundles = new Map();     // key: `${cLane}->${pLane}@${bucket}`
     for (const e of semEdges) {
       const cl = commitLane.get(e.c) || 0, pl = commitLane.get(e.p) || 0;
       const key = `${cl}>${pl}@${bucketOf(X(e.c))}`;
@@ -6860,20 +6868,20 @@ function renderGitGraph(data) {
       const cl = commitLane.get(arr[0].c) || 0, pl = commitLane.get(arr[0].p) || 0;
       const col = laneColor(cl);
       const mid = arr[Math.floor(arr.length / 2)];
-      const x1 = X(mid.c) + 5, y1 = Y(mid.c), x2 = X(mid.p), y2 = Y(mid.p);
-      const dx = Math.max(16, Math.abs(x2 - x1) * 0.55);
+      const x1 = X(mid.c), y1 = Y(mid.c), x2 = X(mid.p), y2 = Y(mid.p);
+      const dy = Math.max(14, Math.abs(y2 - y1) * 0.45);
       // 跨轨道(1)+数量>3 用更粗的线并标 ×N；同轨道聚合保持细
       const cross = cl !== pl;
       const w = cross ? (arr.length > 8 ? 3.4 : arr.length > 3 ? 2.8 : 2.2) : 1.8;
       const op = cross ? ".9" : ".4";
       parts.push(
         `<path class="gg-sem gg-bundle" data-n="${arr.length}" ` +
-        `d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" ` +
+        `d="M ${x1} ${y1} C ${x1} ${y1 - dy}, ${x2} ${y2 + dy}, ${x2} ${y2}" ` +
         `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
         `stroke-linecap="round" vector-effect="non-scaling-stroke">` +
         `<title>${arr.length} 条边${cross ? "（跨轨道）" : ""}</title></path>`);
       if (cross && arr.length > 3) {
-        parts.push(`<text x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 4}" font-size="8.5" ` +
+        parts.push(`<text x="${(x1 + x2) / 2 + 5}" y="${(y1 + y2) / 2}" font-size="8.5" ` +
           `fill="${col}" text-anchor="middle" opacity=".95" font-weight="600">×${arr.length}</text>`);
       }
       edgeStat = edgeStat || { bundles: 0, maxBundle: 0, covered: 0 };
@@ -6905,6 +6913,33 @@ function renderGitGraph(data) {
   for (const id of mergeIds) alwaysShow.add(id);
   if (ggSelected) alwaysShow.add(ggSelected);
   const nodeAt = new Map(commits.map(c => [c.id, c]));
+  /* 悬停提示：竖向后每行只有一行文字，完整 message 放不进图里，靠 tooltip 补。 */
+  const tipOf = c => {
+    const refs = refsAt.get(c.id) || [];
+    const tagLine = refs.length ? " · " + refs.map(r => r.text).join("、") : "";
+    return c.id.slice(0, 8) + "  " + c.author + "  " + c.date + tagLine + "\n" + (c.msg || "").trim();
+  };
+  /* 文本裁剪：按像素预算算，中文按 2 个西文宽度计。
+     写死「最多 N 字」在中文仓库里必然失准 —— 同样的字数，中英混排的实际
+     宽度能差一倍，按字数裁会把长消息切在容器边缘。 */
+  const CH_W = 7.2;                      // 12px 等宽字体下单个西文字符宽
+  const textWidthOf = str => {
+    let w = 0;
+    for (const ch of String(str)) w += /[\u2e80-\uffef]/.test(ch) ? CH_W * 2 : CH_W;
+    return w;
+  };
+  // 给 chip（最长 16 字）+ sha(7) + 分隔留出的固定开销
+  const FIXED_W = 16 * CH_W * 2 + 7 * CH_W + 24;
+  const clipMsg = (msg, budget) => {
+    if (textWidthOf(msg) <= budget) return msg;
+    let out = "", w = 0;
+    for (const ch of msg) {
+      const cw = /[\u2e80-\uffef]/.test(ch) ? CH_W * 2 : CH_W;
+      if (w + cw > budget - CH_W * 2) break;      // 给省略号留位
+      out += ch; w += cw;
+    }
+    return out + "…";
+  };
   const drawOne = (c, isDummy) => {
     const x = X(c.id), y = Y(c.id);
     const refs = refsAt.get(c.id) || [];
@@ -6912,19 +6947,38 @@ function renderGitGraph(data) {
     const isMerge = mergeIds.has(c.id);
     const col = refs.length ? refs[0].color : laneColor(commitLane.get(c.id) || 0);
     const sel = ggSelected === c.id;
+    const msg = (c.msg || "").split("\n")[0];
+    const sha = c.id.slice(0, 7);
+    const chipTxt = refs.length
+      ? '<tspan class="gg-chip-txt" fill="' + refs[0].color + '">' +
+        esc(refs[0].text.length > 16 ? refs[0].text.slice(0, 15) + "…" : refs[0].text) + "</tspan>"
+      : "";
+    const sep = refs.length ? '<tspan class="gg-sep"> · </tspan>' : "";
+    const rowW = W - TEXT_X - 16;
+    const msgBudget = Math.max(120, rowW - (refs.length ? FIXED_W : FIXED_W - 16 * CH_W * 2));
     return (
-      `<g class="gg-node" data-id="${esc(c.id)}"${isDummy ? "" : ' tabindex="0" role="button"'} ` +
-      `aria-label="${esc(c.id.slice(0, 7))} ${esc((c.msg || "").split("\n")[0].slice(0, 50))}">` +
-      `<circle class="gg-hit" cx="${x}" cy="${y}" r="${hitR}" fill="transparent"/>` +
+      '<g class="gg-node' + (sel ? " selected" : "") + '" data-id="' + esc(c.id) + '"' +
+      (isDummy ? "" : ' tabindex="0" role="button"') +
+      ' aria-label="' + esc(sha + " " + msg.slice(0, 50)) + '">' +
+      // 整行热区：比节点圆点大得多，鼠标停到整行都能命中、都能出 tooltip
+      '<rect class="gg-rowbg" x="' + (x - 8) + '" y="' + (y - hitR) + '" width="' + (rowW + 24) +
+      '" height="' + (hitR * 2) + '" rx="4" fill="' + (sel ? "var(--hover-wash)" : "transparent") + '"/>' +
       // 合并提交用菱形（形状区分，不只靠颜色）
       (isMerge
-        ? `<rect x="${x - 5}" y="${y - 5}" width="10" height="10" transform="rotate(45 ${x} ${y})" ` +
-          `fill="${col}" stroke="var(--surface-content)" stroke-width="1.5"/>`
-        : `<circle cx="${x}" cy="${y}" r="${isHead ? 6 : 4}" fill="${col}" ` +
-          `stroke="var(--surface-content)" stroke-width="${isHead ? 2 : 1.2}"/>`) +
-      (isHead ? `<circle cx="${x}" cy="${y}" r="9.5" fill="none" stroke="${col}" stroke-width="1.4" opacity=".6"/>` : "") +
-      (sel ? `<circle cx="${x}" cy="${y}" r="13" fill="none" stroke="var(--text-strong)" stroke-width="2"/>` : "") +
-      `</g>`);
+        ? '<rect x="' + (x - 5) + '" y="' + (y - 5) + '" width="10" height="10" transform="rotate(45 ' + x + ' ' + y + ') ' +
+          'fill="' + col + '" stroke="var(--surface-content)" stroke-width="1.5"/>'
+        : '<circle cx="' + x + '" cy="' + y + '" r="' + (isHead ? 6 : 4.5) + '" fill="' + col + '" ' +
+          'stroke="var(--surface-content)" stroke-width="' + (isHead ? 2 : 1.2) + '"/>') +
+      (isHead ? '<circle cx="' + x + '" cy="' + y + '" r="9.5" fill="none" stroke="' + col +
+        '" stroke-width="1.4" opacity=".6"/>' : "") +
+      // 行内文字：分支 chip + sha + message 首行
+      '<text class="gg-line-txt" x="' + TEXT_X + '" y="' + (y + 4) + '">' +
+        chipTxt + sep +
+        '<tspan class="gg-sha-txt">' + esc(sha) + '</tspan><tspan class="gg-sep"> </tspan>' +
+        '<tspan class="gg-msg-txt">' + esc(clipMsg(msg, msgBudget)) + '</tspan>' +
+      '</text>' +
+      '<title>' + esc(tipOf(c)) + '</title>' +
+      '</g>');
   };
 
   /* 两套元素都渲染到 DOM，靠 CSS 按缩放档切换（data-zoom-mode）：
@@ -7008,63 +7062,24 @@ function renderGitGraph(data) {
   svg.setAttribute("height", H);
   svg.setAttribute("width", W);
   svg.innerHTML = parts.join("");
-  ggNaturalSize = { w: W, h: H, colW: COL_W };
+  ggNaturalSize = { w: W, h: H, rowH: ROW_H };
   applyGitZoom();
 
   bindGitNodeEvents();
 
-  renderGitList(data, refsAt, headIds, mainColor);
   renderGitLegend(data, branches, branchNames, mainColor, laneCount, danglingRefs);
 
+  // 竖向布局不缩放（每个提交固定 32px 行高，缩放会让文字糊掉），滚到顶部看最新提交
+  ggZoom = 1;
+  applyGitZoom();
   const wrap = $("#ggraph-canvas-wrap");
-  // 概览模式（>200 提交）本身已按容器宽度布局，无需缩放；
-  // 完整模式才按需适应/滚动到最新
-  if (commits.length > 200) { ggZoom = 1; applyGitZoom(); }
-  if (wrap && !overview) wrap.scrollLeft = wrap.scrollWidth;
+  if (wrap) { wrap.scrollLeft = 0; wrap.scrollTop = 0; }
   // 统计栏把「概览模式下做了什么聚合」讲清楚，否则用户不知道那些粗线代表多少关系
   const statBits = [`${commits.length} 提交`, `${branches.length} 分支`, `${tags.length} 标签`];
-  if (ggEdgeStats && dense) {
-    statBits.push(`${ggEdgeStats.bundles} 组关系（最多 ×${ggEdgeStats.maxBundle}，覆盖 ${ggEdgeStats.covered} 条边）`);
-  }
   if (data.truncated) statBits.push(`已截断（取最近 ${data.limit || 800} 条）`);
   $("#gg-stats").textContent = statBits.join(" · ");
 }
 
-/* ---- 提交列表（文字集中在这里）---- */
-function renderGitList(data, refsAt, headIds, mainColor) {
-  const box = $("#gg-list");
-  if (!box) return;
-  const esc = s => String(s == null ? "" : s)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  const rowOf = new Map();
-  // 时间倒序（最新在上），和 GitHub 一致
-  const list = data.commits.slice().sort((a, b) => colIndex(data, b.id) - colIndex(data, a.id));
-  const html = list.map(c => {
-    const refs = refsAt.get(c.id) || [];
-    const chips = refs.map(r =>
-      `<span class="gg-chip" style="background:${r.color}" title="${esc(r.text)}">${
-        esc(r.text.length > 14 ? r.text.slice(0, 13) + "…" : r.text)}</span>`).join("");
-    const dot = headIds.has(c.id)
-      ? `<span class="gg-head-badge" style="background:${refs[0] ? refs[0].color : mainColor}"></span>` : "";
-    const msg = (c.msg || "").split("\n")[0];
-    return `<div class="gg-row" data-id="${esc(c.id)}" role="option" tabindex="0" ` +
-      `title="${esc(c.msg || "")}">` +
-      `<span class="gg-msg">${dot}${chips}<span class="gg-sha">${esc(c.id.slice(0, 7))}</span>${esc(msg)}</span>` +
-      `<span class="gg-author" title="${esc(c.author)}">${esc(c.author)}</span>` +
-      `<span class="gg-date">${esc(c.date)}</span>` +
-      `</div>`;
-  }).join("");
-  box.innerHTML = html;
-  box.querySelectorAll(".gg-row").forEach(r => {
-    r.addEventListener("click", () => selectGitCommit(r.dataset.id));
-    r.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); selectGitCommit(r.dataset.id); }
-    });
-  });
-  // 记录 commit → 行元素，供选中时高亮联动
-  ggRowIndex = new Map();
-  box.querySelectorAll(".gg-row").forEach(r => ggRowIndex.set(r.dataset.id, r));
-}
 /* 提交在原始数组中的序号（时间序） */
 function colIndex(data, id) {
   if (!ggColCache || ggColCache.data !== data) {
@@ -7116,20 +7131,19 @@ let ggNaturalSize = { w: 100, h: 100 };
    等比缩放会把高度也压扁：800 提交压到 12% 时图只剩 24px 高，
    节点挤成一条线、点都点不中。改为 viewBox 高度锁定、只横向压缩，
    纵向永远是自然高度（可读），横向靠缩放把更多提交塞进视口。 */
+/* 竖向布局的缩放：等比缩放整个 SVG（宽 + 高一起）。
+   横向时代是「只缩宽、高不变」，因为高度由轨道数决定、与提交数无关；
+   竖向后高度 = 提交数 × 行高，若还只缩宽，32px 行会被压成 9.6px、文字全糊。
+   LOD 与密度条是横向时代的产物（提交被压到几像素时才需要聚合），
+   竖向下每个提交固定一行，不需要再聚合，保留缩放即可。 */
 function applyGitZoom() {
   const svg = $("#ggraph-svg");
   if (!svg || !ggNaturalSize) return;
   svg.style.width = Math.max(1, Math.round(ggNaturalSize.w * ggZoom)) + "px";
-  svg.style.height = ggNaturalSize.h + "px";      // 高度不随缩放变化
-  // LOD 切换：低于阈值时只显示密度条 + 语义节点（点/菱形），隐藏逐提交节点
-  const lod = (ggNaturalSize.colW || 52) * ggZoom < 3;
-  svg.dataset.zoomMode = lod ? "dense" : "full";
-  // 概览模式：密度条按 1/zoom 反向放大，保证屏幕上仍是 ~9px 粗的可见条
-  // （上限 6，避免 zoom 极小时条飞出轨道）
-  const barScale = lod ? Math.min(6, 1 / Math.max(ggZoom, 0.02)) : 1;
-  svg.style.setProperty("--gg-bar-scale", barScale.toFixed(3));
+  svg.style.height = Math.max(1, Math.round(ggNaturalSize.h * ggZoom)) + "px";
+  svg.dataset.zoomMode = "full";                  // 竖向不再切 LOD
   const lbl = $("#gg-zoom-val");
-  if (lbl) lbl.textContent = (lod ? "概览 " : "") + Math.round(ggZoom * 100) + "%";
+  if (lbl) lbl.textContent = Math.round(ggZoom * 100) + "%";
 }
 /* 缩放只改 CSS 尺寸，不重绘。
    实测：800 提交全量重绘 4 次直接把浏览器 IPC 卡死（5s evaluate timeout），
@@ -7143,7 +7157,10 @@ function setGitZoom(z) {
 function fitGitZoom() {
   const wrap = $("#ggraph-canvas-wrap");
   if (!wrap || !ggNaturalSize) return;
-  setGitZoom((wrap.clientWidth - 4) / ggNaturalSize.w);
+  // 竖向：按可视高度适应（提交多时一行行往下读），宽度不足再按宽度收
+  const byH = (wrap.clientHeight - 8) / ggNaturalSize.h;
+  const byW = (wrap.clientWidth - 8) / ggNaturalSize.w;
+  setGitZoom(Math.min(1, Math.max(0.25, Math.min(byH, byW))));
 }
 (function bindGitZoom() {
   const box = $("#gg-zoom");
@@ -7163,20 +7180,18 @@ function fitGitZoom() {
 function selectGitCommit(id) {
   if (!id || !ggData) return;
   ggSelected = id;
-  // 图上节点高亮
+  // 图上节点高亮。node 声明必须在 if 块之外 ——
+  // 放进 if (svg) 里时下面的 scrollIntoView 访问不到，抛 ReferenceError，
+  // 后面的 showGitCommitDetail 不执行，表现为「点了节点没反应」。
   const svg = $("#ggraph-svg");
+  let node = null;
   if (svg) {
-    svg.querySelectorAll(".gg-node.selected").forEach(n => n.classList.remove("selected"));
-    const n = svg.querySelector(`.gg-node[data-id="${CSS.escape(id)}"]`);
-    if (n) n.classList.add("selected");
+    svg.querySelectorAll(".gg-node.selected").forEach(x => x.classList.remove("selected"));
+    node = svg.querySelector(`.gg-node[data-id="${CSS.escape(id)}"]`);
+    if (node) node.classList.add("selected");
   }
-  // 列表行高亮 + 滚动到可见（列表和图是两个视图，要联动）
-  ggRowIndex.forEach(row => row.classList.remove("selected"));
-  const row = ggRowIndex.get(id);
-  if (row) {
-    row.classList.add("selected");
-    row.scrollIntoView({ block: "nearest" });
-  }
+  // 滚动到该行（右侧列表已删除，选中项可能在视口外）
+  if (node) node.scrollIntoView({ block: "nearest", behavior: "smooth" });
   showGitCommitDetail(ggData, id);
 }
 
@@ -7184,13 +7199,18 @@ function showGitCommitDetail(data, id) {
   const c = data.commits.find(x => x.id === id);
   if (!c) return;
   const d = $("#ggraph-detail");
-  d.style.display = "block";
+  d.style.display = "flex";
   const branches = (data.branches || []).filter(b => b.head === id).map(b => b.name);
   const tags = (data.tags || []).filter(t => t.head === id).map(t => t.name);
   const full = (c.msg || "");
   const firstLine = full.split("\n")[0];
   const rest = full.slice(firstLine.length).trim();
   d.innerHTML =
+    `<button class="ggd-close" id="ggd-close" aria-label="关闭提交详情" title="关闭">` +
+      `<svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">` +
+        `<path d="M2 2l8 8M10 2l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>` +
+      `</svg></button>` +
+    `<div class="ggd-main">` +
     `<div class="ggd-row"><span class="ggd-lbl">提交</span><span class="ggd-hash">${escapeHtml(c.id)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">作者</span><span>${escapeHtml(c.author)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">日期</span><span>${escapeHtml(c.date)}</span></div>` +
@@ -7199,7 +7219,12 @@ function showGitCommitDetail(data, id) {
     `<div class="ggd-row"><span class="ggd-lbl">父提交</span><span class="ggd-parents">${
       (c.parents || []).length ? c.parents.map(p => escapeHtml(p.slice(0, 8))).join("、") : "（根提交）"}</span></div>` +
     `<div class="ggd-msg">${escapeHtml(firstLine)}</div>` +
-    (rest ? `<div class="ggd-msg-full">${escapeHtml(rest)}</div>` : "");
+    (rest ? `<div class="ggd-msg-full">${escapeHtml(rest)}</div>` : "") +
+    `</div>`;
+  const cb = $("#ggd-close");
+  if (cb) cb.addEventListener("click", () => { d.style.display = "none"; ggSelected = null;
+    const svg2 = $("#ggraph-svg");
+    if (svg2) svg2.querySelectorAll(".gg-node.selected").forEach(n => n.classList.remove("selected")); });
 }
 
 
@@ -7215,9 +7240,6 @@ $("#ggraph-mask").addEventListener("click", (e) => { if (e.target === $("#ggraph
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && $("#ggraph-mask").classList.contains("show")) gitGraphClose();
 });
-$("#gg-close").addEventListener("click", gitGraphClose);
-$("#gg-repo").addEventListener("change", loadGitGraph);
-$("#ggraph-mask").addEventListener("click", (e) => { if (e.target === $("#ggraph-mask")) gitGraphClose(); });
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && $("#ggraph-mask").classList.contains("show")) gitGraphClose();
 });
