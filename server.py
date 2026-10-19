@@ -211,6 +211,22 @@ def _scan_budget(search_roots):
     return max(6000, int(total * 1.3))
 
 
+def _roots_for_project_arg(qs, default_all=False):
+    """按 project 参数选根：__all__ 全给，指定 vtop 给那个，缺省给当前项目。
+
+    搜索 / Git 仓库列表 共用，保证「项目隔离」语义一致
+    （都缺省当前项目、都只在显式 __all__ 时跨项目）。"""
+    project = (qs.get("project") or [""])[0].strip()
+    if project == "__all__":
+        return list(ROOTS)
+    if project and project in _VTOP:
+        return [_VTOP[project]]
+    if default_all:
+        return list(ROOTS)
+    cur = _current_project_name()
+    return [_VTOP[cur]] if cur in _VTOP else list(ROOTS[:1])
+
+
 def _current_project_name():
     """projects.json 里标记的当前项目 vtop 名；读不到返回 None。"""
     if not os.path.isfile(PROJECTS_FILE):
@@ -339,6 +355,38 @@ def git_run(repo, *args):
         return r.stdout
     except Exception:
         return None
+
+
+# 从 merge 提交信息里提取「被合并进来的分支名」。
+# 临时分支早已删除，ref 里查不到，但 Git 把名字写进了合并提交的信息里：
+#   Merge branch 'hotfix20260910-th' into 'test2.0_merge20240312'
+#   Merge remote-tracking branch 'origin/xxx' into yyy
+#   merge:[PVH]:合并 ck_test2.0 到 hotfix20260910-ck
+#   Merge pull request #12 from feature/x into main
+# 实测 core 195/198、customer 97/98 个 merge 能提取到 —— 这正是
+# 「临时分支也有名字和颜色」的依据，不能因为 ref 不在就当无名线处理。
+_MERGE_NAME_PATS = (
+    re.compile(r"^Merge branch '(.+?)' into '(.+?)'"),
+    re.compile(r"^Merge remote-tracking branch 'origin/(.+?)' into (.+)$"),
+    re.compile(r"^Merge branch \u0027(.+?)\u0027 into (.+)$"),
+    re.compile(r"^Merge pull request #\d+ from (.+?)/(.+?) into (.+)$"),
+    re.compile(r"^merge:\[.*?\]:\s*\u5408\u5e76\s*\S+\s*\u5230\s*(\S+)"),
+    re.compile(r"^Merge tag '(.+?)'"),
+)
+
+
+def merge_branch_name(msg):
+    """从 merge 提交信息里取被合并的分支名；取不到返回 None。"""
+    m = (msg or "").strip()
+    for pat in _MERGE_NAME_PATS:
+        mm = pat.match(m)
+        if mm:
+            g = mm.groups()
+            # pull request 形式的第 2 组才是分支名
+            if pat.pattern.startswith("^Merge pull request"):
+                return g[1]
+            return g[0]
+    return None
 
 
 def find_git_root(abs_path):
@@ -1017,15 +1065,25 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _api_git_repos(self, qs):
-        """枚举所有根下 git 仓库（含根目录自身），供 Git 版本树选择仓库。"""
+        """枚举 git 仓库，供 Git 版本树选择仓库。
+
+        默认只返回当前项目下的仓库（project=<vtop> 可指定，project=__all__ 才跨项目）——
+        与 /api/search 同一套语义。之前的实现遍历全部 ROOTS，
+        下拉里会混入另外两个项目的仓库（实测 39 个仓库来自 3 个项目），
+        选错项目后画的版本树根本不是当前项目的历史。"""
+        roots = _roots_for_project_arg(qs)
         repos = []
-        for root in ROOTS:
+        for root in roots:
             for dirpath, dirnames, filenames in os.walk(root):
                 if ".git" in dirnames:
                     repos.append(rel_of(dirpath))
                 dirnames[:] = [d for d in dirnames if not is_ignored(d)]
         repos.sort()
-        self._json({"repos": repos})
+        cur = _current_project_name()
+        self._json({
+            "repos": repos,
+            "scope": "__all__" if len(roots) > 1 else cur,
+        })
 
     def _api_git_graph(self, qs):
         """Git 版本树数据：仓库所有分支/标签引用 + 全量提交（id/parents/作者/日期/消息）。
@@ -1041,21 +1099,54 @@ class Handler(BaseHTTPRequestHandler):
         if not repo:
             self._json({"repo": None, "error": "not a git repo"}, 400)
             return
-        # 提交：--all 含所有分支/标签；--date-order 拓扑接近真实；-n 250 防超大图渲染卡死
-        out = git_run(repo, "log", "--all", "--date-order", "-n", "250",
+        # 提交：--all 含所有分支/标签；--date-order 拓扑接近真实。
+        # 数量由前端按需请求：offset=0&limit=N 分页拉取，前端滚到底再要下一批。
+        # 之前固定 -n 250（或 800）会静默截断 —— 用户看到「就这些提交」，
+        # 实际是服务端取的条数上限，且完全没有「还有更多」的提示。
+        try:
+            offset = max(0, int((qs.get("offset") or ["0"])[0] or 0))
+        except ValueError:
+            offset = 0
+        try:
+            limit = int((qs.get("limit") or ["300"])[0] or 300)
+        except ValueError:
+            limit = 300
+        limit = min(max(limit, 1), 2000)        # 单次上限，防超大响应
+        total_out = git_run(repo, "rev-list", "--all", "--count")
+        try:
+            total = int((total_out or "0").strip() or 0)
+        except ValueError:
+            total = 0
+        # 多取 offset+limit 条再切片：--skip 在 --date-order 下同样稳定
+        out = git_run(repo, "log", "--all", "--date-order",
+                      "--skip", str(offset), "-n", str(limit + 1),
                       "--pretty=format:%H%x09%P%x09%an%x09%ad%x09%s", "--date=short")
-        commits = []
-        if out:
-            for ln in out.splitlines():
-                parts = ln.split("\t")
-                if len(parts) < 5:
-                    continue
-                cid, parents, author, date, msg = parts[0], parts[1], parts[2], parts[3], parts[4]
-                commits.append({
-                    "id": cid, "parents": [p for p in parents.split() if p],
-                    "author": author, "date": date, "msg": msg,
-                })
-        # 分支 / 标签引用 → 头提交
+        # =====================================================================
+        # 一次 `git log --graph` 解析出全部绘制数据，前端只负责画。
+        # 不在前端自研轨道分配 / 连线走向 —— 那等于重新实现 git log --graph，
+        # 而它内置 lane swapping（一条线合并回主干后它的列立即释放给下一个
+        # 分叉复用），这是「拉临时分支 → 合并 → 删除」能画紧凑的唯一前提。
+        # 实测 core 147 个 merge 只占 5~6 列，前端按分支名静态分配要 8 列还画不下。
+        #
+        # 一次调用同时拿到：
+        #   · lane     每个提交所在的列号
+        #   · parents/author/date/msg
+        # =====================================================================
+        SEP = "\x01"
+        try:
+            g = git_run(repo, "log", "--all", "--graph", "--date-order",
+                        "-n", str(limit + 1),
+                        "--pretty=format:" + SEP + "%H" + SEP + "%P" + SEP +
+                        "%an" + SEP + "%ad" + SEP + "%s", "--date=short")
+        except Exception:
+            g = ""
+
+        total_out = git_run(repo, "rev-list", "--all", "--count")
+        try:
+            total = int((total_out or "0").strip() or 0)
+        except ValueError:
+            total = 0
+
         refs = git_run(repo, "for-each-ref", "--format=%(refname:short)%09%(objectname)", "refs/heads", "refs/tags")
         branches, tags = [], []
         if refs:
@@ -1069,12 +1160,61 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     branches.append({"name": name, "head": oid})
         head = git_run(repo, "rev-parse", "HEAD")
+        commits = []
+        row_index = -1
+        for raw in (g or "").splitlines():
+            if SEP not in raw:
+                continue                     # 纯 ASCII 连线行，不需要（连线由 parents 决定）
+            pre, rest = raw.split(SEP, 1)
+            f = rest.split(SEP)
+            if len(f) < 5:
+                continue
+            cid, parents, author, date, msg = f[0], f[1], f[2], f[3], f[4]
+            star = pre.find("*")
+            if star < 0:
+                continue
+            row_index += 1
+            commits.append({
+                "id": cid, "parents": [x for x in parents.split() if x],
+                "author": author, "date": date, "msg": msg,
+                "lane": star // 2,             # Git 每列 2 字符宽（含 lane swapping）
+                "row": row_index,
+                # merge 提交带出被合并的分支名（临时分支 ref 已删时唯一来源）
+                "laneBranch": merge_branch_name(msg) if len(f[1].split()) > 1 else None,
+            })
+
+        
+        # 每个提交属于哪些分支：用 `git rev-list <branch>` 精确求解。
+        # 前端做这个要跑 O(提交数 × 分支数 × 链长)，300 提交 × 9 分支就是几万步；
+        # 服务端一次 rev-list 拿全量，浏览器只做查表。
+        # 之前只在「分支 head 正好是该提交」时才算有分支，结果详情里大片空白。
+        branch_of = {}
+        for b in branches:
+            rv = git_run(repo, "rev-list", b["head"])
+            if not rv:
+                continue
+            for cid2 in rv.split():
+                if cid2 not in branch_of:
+                    branch_of[cid2] = []
+                if len(branch_of[cid2]) < 4:      # 一个提交可能属于多个分支，标 4 个封顶
+                    branch_of[cid2].append(b["name"])
+        for c in commits:
+            c["branches"] = branch_of.get(c["id"], [])
+
+        has_more = len(commits) > limit
+        if has_more:
+            commits = commits[:limit]
+        lanes = max([c["lane"] for c in commits], default=0) + 1
+
+        # 分支 / 标签引用 → 头提交
         head_branch = git_run(repo, "symbolic-ref", "--short", "HEAD")
+
         self._json({
             "repo": os.path.basename(repo), "repo_root": rel_of(repo),
             "branches": branches, "tags": tags,
             "head": (head or "").strip(), "headBranch": (head_branch or "").strip(),
-            "commits": commits, "truncated": len(commits) >= 250,
+            "total": total, "offset": offset, "limit": limit, "hasMore": has_more,
+            "commits": commits, "lanes": lanes,
         })
 
     def _api_git_meta(self, qs):
@@ -1604,14 +1744,7 @@ class Handler(BaseHTTPRequestHandler):
         results = []
         scanned = 0
         # 搜索根：project=<vtop> 优先，缺省当前项目，__all__ 才跨项目
-        project = (qs.get("project") or [""])[0].strip()
-        if project == "__all__":
-            search_roots = list(ROOTS)
-        elif project and project in _VTOP:
-            search_roots = [_VTOP[project]]
-        else:
-            cur = _current_project_name()
-            search_roots = [_VTOP[cur]] if cur in _VTOP else list(ROOTS[:1])
+        search_roots = _roots_for_project_arg(qs)
         # 扫描上限按「被搜项目的文件数」自适应，不再固定 6000：
         # 各项目规模差一个量级（微服务 ~3900 / baseline ~18800），固定值会让大项目
         # 永远扫不到结果（DFS 是 LIFO，尾部目录先被扫，配额先耗尽）。

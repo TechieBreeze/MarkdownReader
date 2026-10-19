@@ -1051,10 +1051,12 @@ body {
      连带把详情栏和图例挤出视口。改成 0 后由本元素自己滚动。 */
   flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto;
   background: var(--surface-content);
-  /* 竖向时间线：横向分隔线每 ROW_H(32px) 一条，帮助数「这是第几个提交」 */
+  /* 竖向时间线：横向分隔线每 ROW_H(32px) 一条，帮助数「这是第几个提交」。
+     background-position 由 JS 按实际 PAD_T 设置（ggraph-canvas-wrap.style.backgroundPositionY），
+     写死在这里会与自适应的 PAD_T 错位。 */
   background-image: linear-gradient(to bottom, var(--border-subtle) 1px, transparent 1px);
   background-size: 100% 32px;
-  background-position: 0 20px;   /* 对齐 PAD_T=20 */
+  background-position: 0 0;
 }
 #ggraph-svg { display: block; transform-origin: 0 0; }
 /* LOD：概览缩放时隐藏逐提交节点、显示密度条（由 JS 设 data-zoom-mode）*/
@@ -6486,17 +6488,8 @@ let ggSelected = null;      // 选中的 commit id
 let ggEdgeStats = null;       // 本次渲染的边聚合统计（bundle 数 / 最大聚合 / 覆盖边数）
 let ggColCache = null;     // {data, map}：commit id → 时间序序号缓存
 
-/* 分支配色：与 token 无关的固定调色板（暗/亮两套下都可读），同一分支全局同色 */
-const GG_BRANCH_COLORS = [
-  "#4d94ff", "#3fb950", "#f0883e", "#d2a8ff", "#4bc5d4",
-  "#f0645b", "#d9a336", "#a78bfa", "#7ee787", "#ffa657",
-];
-
-function ggColorFor(name, all) {
-  if (!name) return "#6b7a91";
-  const i = all.indexOf(name);
-  return GG_BRANCH_COLORS[(i < 0 ? 0 : i) % GG_BRANCH_COLORS.length];
-}
+/* 轨道配色在 renderGitGraph 内按 lane 号取，这里不再维护分支调色板 ——
+   51 个临时分支各配一色根本分不清，按轨道只有 5~6 色才对应视觉上的几条线。 */
 
 /* ---------- 打开 / 关闭 ---------- */
 /* 文字区宽度按容器实算，所以容器尺寸变化（窗口缩放、面板开合）后要重绘。
@@ -6608,7 +6601,10 @@ async function loadGitGraph(preferPath) {
   $("#ggraph-detail").style.display = "none";
   let j = null;
   try {
-    j = await api("/api/git/graph?path=" + encodeURIComponent(q));
+    // 分页取：首批 300 条，之后滚到底再要下一批（懒加载）。
+    // 之前是一次性取固定条数，customer 有 3784 个提交却只返回 250，
+    // 且界面没有任何「还有更多」的提示 —— 用户以为仓库就这么多。
+    j = await api("/api/git/graph?path=" + encodeURIComponent(q) + "&offset=0&limit=" + GG_PAGE);
   } catch (e) {
     ggEmpty("版本树加载失败", String(e && e.message || e));
     return;
@@ -6625,459 +6621,245 @@ async function loadGitGraph(preferPath) {
     if (o2) rSel.value = rel;
   }
   ggData = j;
+  ggLoadMore = { path: q, offset: (j.commits || []).length, total: j.total || 0, busy: false };
   renderGitGraph(j);
+  updateGitStats(j);
+}
+
+/* 懒加载：滚到接近底部时拉下一批。
+   不做「固定截取」是因为版本图的价值就在于能看全历史；
+   但一次画 3784 个 SVG 节点会卡死浏览器，所以按需分批。 */
+const GG_PAGE = 300;
+const GG_LOAD_AT = 0.75;          // 滚到 75% 就预取
+let ggLoadMore = null;
+async function gitGraphLoadMore() {
+  if (!ggLoadMore || ggLoadMore.busy) return false;
+  if (ggLoadMore.offset >= ggLoadMore.total) return false;
+  ggLoadMore.busy = true;
+  const wrap = $("#ggraph-canvas-wrap");
+  const keepTop = wrap ? wrap.scrollTop : 0;
+  const keepSel = ggSelected;
+  try {
+    const more = await api("/api/git/graph?path=" + encodeURIComponent(ggLoadMore.path) +
+      "&offset=" + ggLoadMore.offset + "&limit=" + GG_PAGE);
+    if (!more || !more.commits || !more.commits.length) { ggLoadMore.offset = ggLoadMore.total; return false; }
+    ggData.commits = ggData.commits.concat(more.commits);
+    ggData.total = more.total;
+    ggData.hasMore = more.hasMore;
+    ggLoadMore.offset = ggData.commits.length;
+    ggSelected = keepSel;
+    renderGitGraph(ggData);
+    if (wrap) wrap.scrollTop = keepTop;   // 保持阅读位置，不跳回顶部
+    updateGitStats(ggData);
+    return true;
+  } catch (e) {
+    ggEmpty("加载更多提交失败", String(e && e.message || e));
+    return false;
+  } finally {
+    ggLoadMore.busy = false;
+  }
+}
+
+/* 统计栏：显示「已加载 / 总数」，并去掉旧的「已截断」措辞 */
+function updateGitStats(data) {
+  const el = $("#gg-stats");
+  if (!el || !data) return;
+  const n = (data.commits || []).length;
+  const total = data.total || n;
+  const bits = [`${total} 提交`, `${(data.branches || []).length} 分支`, `${(data.tags || []).length} 标签`];
+  if (n < total) bits.push(`已加载 ${n} / ${total}（继续下拉加载）`);
+  el.textContent = bits.join(" · ");
 }
 
 /* ---------- 核心：拓扑布局 + SVG 绘制 ---------- */
+/* 版本图绘制：所有布局数据来自服务端（解析 git log --graph 的结果）。
+   前端不再自研轨道分配 / 连线走向 —— 那等于重新实现 git log --graph。
+
+   坐标：Y = 行号（新的在上），X = 轨道 lane。每行一个提交，行内带文字。 */
 function renderGitGraph(data) {
   const svg = $("#ggraph-svg");
   if (!svg) return;
   const commits = data.commits || [];
+  if (!commits.length) return;
   const byId = new Map(commits.map(c => [c.id, c]));
   const branches = data.branches || [];
   const tags = data.tags || [];
-  const branchNames = branches.map(b => b.name);
-
-  /* ---- 1) 轨道分配（lane）
-     关键点：主干集合不能用「第一父链」算。
-       真实仓库里 head 沿第一父只能回溯 20-30 步就到顶，而分支祖先链更长，
-       于是「分支是否在主干上」永远判 false，所有分支被挤成一条线。
-     正确做法：从 head 出发沿「所有父边」做可达性遍历（BFS），
-       能到达的 commit = 主干域；分支头落在这个域内即视为并入主干。
-     轨道：主干 lane 0；每个分叉出去的分支按「分叉点」分 lane，同点分出共用一条。 */
-  const trunkSet = new Set();
-  {
-    const start = (data.head && byId.has(data.head)) ? data.head
-                : (branches.find(b => b.name === data.headBranch) || branches[0] || {}).head;
-    const q = [start];
-    const seen = new Set();
-    while (q.length) {
-      const id = q.pop();
-      if (!id || seen.has(id) || !byId.has(id)) continue;
-      seen.add(id); trunkSet.add(id);
-      for (const p of byId.get(id).parents) if (!seen.has(p)) q.push(p);
-    }
-  }
-  // 分叉点：从分支头回溯，找第一个落在主干域内的祖先（它就是分叉出去的那个点）
-  const forkPointOf = head => {
-    let c = head;
-    const seen = new Set();
-    while (c && byId.has(c) && !seen.has(c)) {
-      seen.add(c);
-      if (trunkSet.has(c) && c !== head) return c;
-      const cc = byId.get(c);
-      c = (cc && cc.parents && cc.parents[0]) || null;   // 判空：父可能被截断
-    }
-    return null;
-  };
-  /* 有效分支 = head 提交确实在返回集合里的分支。
-     悬空引用（ref 指向的 commit 被 -n 截断掉，或本就是已 gc 的对象）head 不在 byId，
-     它占一条轨道只会得到一条空线，让用户以为「这个分支没提交」——
-     实测 3 个 tag_refBranch_* 就是这样。改为：不分配轨道，在图例里注明有多少悬空引用。 */
+  const segs = data.segs || [];
+  const laneCount = Math.max(1, data.lanes || 1);
   const liveBranches = branches.filter(b => byId.has(b.head));
   const danglingRefs = branches.length - liveBranches.length;
 
-  /* 轨道分配（按「祖先链重叠度」而非单纯分支名）
-     两个分支如果祖先链高度重叠（实测 test2.0 与 th-dev 各 163/168 步且几乎重合），
-     它们本质是同一条线上的两个指针 —— 各占一条轨道会让其中一条空着。
-     做法：以分叉点为键分组；没有分叉点（游离）且链重叠的分支并入已有轨道。 */
-  const laneOf = new Map();
-  laneOf.set(data.headBranch || "__trunk__", 0);
-  const laneForks = [null];
-  const forkLane = new Map();
-  const laneHeads = new Map();          // lane → 该轨道包含的分支 head 集合
-  laneHeads.set(0, new Set());
-  const sharesAncestry = (a, b) => {   // a/b 的第一父链是否共享节点
-    let c = a; const sa = new Set();
-    while (c && byId.has(c) && !sa.has(c)) { sa.add(c); const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
-    c = b; const sb = new Set();
-    while (c && byId.has(c) && !sb.has(c)) { sb.add(c); if (sa.has(c)) return true; const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
-    return false;
-  };
+  /* 轨道颜色：按「轨道号」分配而不是按分支名。
+     按名字分配的话 core 有 51 个临时分支 → 51 种颜色，根本分不清；
+     按轨道只有 5~6 种，正好能对应视觉上的几条线（GitHub / VS Code 同思路）。
+     lane 0 固定用中性色，其余按 lane 取色板。 */
+  const LANE_COLORS = ["#7d8590", "#4a9eff", "#3fb950", "#d29922", "#a371f7",
+                       "#f85149", "#39c5cf", "#db61a2"];
+  const laneColor = i => LANE_COLORS[i % LANE_COLORS.length];
+
+  /* 轨道名：优先用存活的分支名，否则用 merge 提交里提到的临时分支名
+     （临时分支 ref 早已删除，名字只存在于合并信息里 —— 服务端已解析成 laneBranch）。 */
+  const laneName = new Map();
   for (const b of liveBranches) {
-    if (b.name === data.headBranch) continue;
-    if (trunkSet.has(b.head)) { laneOf.set(b.name, 0); continue; }   // 分支头在主干域内
-    const fork = forkPointOf(b.head);
-    if (fork && forkLane.has(fork)) {           // 同一分叉点 → 共用轨道
-      const ln = forkLane.get(fork); laneOf.set(b.name, ln); laneHeads.get(ln).add(b.head); continue;
-    }
-    if (!fork) {
-      // 游离分支：若与某轨道已有分支共享祖先，就并进去，避免空轨道
-      let merged = false;
-      for (const [ln, heads] of laneHeads) {
-        for (const h of heads) {
-          if (sharesAncestry(b.head, h)) { laneOf.set(b.name, ln); heads.add(b.head); merged = true; break; }
-        }
-        if (merged) break;
-      }
-      if (merged) continue;
-      const ln = Math.min(laneForks.length, 7);
-      laneForks[ln] = null; laneOf.set(b.name, ln); laneHeads.set(ln, new Set([b.head]));
-      if (laneForks.length <= ln) laneForks.push(null);
-      continue;
-    }
-    const ln = Math.min(laneForks.length, 7);
-    laneForks[ln] = fork;
-    forkLane.set(fork, ln);
-    laneOf.set(b.name, ln);
-    laneHeads.set(ln, new Set([b.head]));
-    if (laneForks.length <= ln) laneForks.push(fork);
+    const ln = commits.find(c => c.id === b.head)?.lane;
+    if (ln != null && !laneName.has(ln)) laneName.set(ln, b.name);
   }
-  const laneCount = Math.max(1, laneForks.length);
+  for (const c of commits) {
+    if (c.laneBranch && !laneName.has(c.lane)) laneName.set(c.lane, c.laneBranch);
+  }
 
-  /* ---- 2) 每个 commit 属于哪条轨道
-     关键：不能用「先到先得」。旧实现按 branches 顺序 assign，遇到已占用的 commit
-     就直接跳过，结果 lane 0（主干 407 提交）会把 th-dev-0922 的 168 步历史
-     抢走 —— 实测 th-dev-0922 只在自己的 lane 上剩 5 个提交，看起来像「几乎空的轨道」。
-     正确做法：按「链长」降序处理分支，长链先占，短链只能占还没被占的部分。
-     这样每条轨道拿到的是它真正独占的历史，不会被主干吃掉。 */
-  const commitLane = new Map();
-  // 每条分支的第一父链长度（用来排序：长的先占轨道）
-  const chainLen = head => {
-    let c = head, n = 0; const s = new Set();
-    while (c && byId.has(c) && !s.has(c)) { s.add(c); n++; const cc = byId.get(c); c = (cc && cc.parents && cc.parents[0]) || null; }
-    return n;
-  };
-  const order = branches.slice().sort((a, b) => chainLen(b.head) - chainLen(a.head));
-  const assign = (startId, ln, guard) => {
-    if (!startId || !byId.has(startId)) return;      // 被截断的父提交不记 lane
-    if (commitLane.has(startId)) return;             // 已被更长的分支占用
-    guard = guard || new Set();
-    if (guard.has(startId)) return;
-    guard.add(startId);
-    commitLane.set(startId, ln);
-    const c = byId.get(startId);
-    if (c && c.parents) for (const p of c.parents) assign(p, ln, guard);
-  };
-  for (const b of order) assign(b.head, laneOf.get(b.name) || 0);
-  for (const t of tags) if (!byId.has(t.head)) continue; else if (!commitLane.has(t.head)) assign(t.head, 0);
-  if (data.head && !commitLane.has(data.head)) assign(data.head, 0);
-  for (const c of commits) if (!commitLane.has(c.id)) commitLane.set(c.id, 0);
-
-  /* ---- 3) 列位置：按提交序号均分（不用真实时间，避免跨度大把图压扁）---- */
-  // 行高随轨道数自适应：轨道多时收紧，避免图被撑得很高、下方大片留白
-  /* 列宽自适应。
-     概览模式（提交很多）直接按容器宽度均分，让 svg 本身就是容器宽、无需缩放：
-     这样密度条、节点、线全都是真实屏幕尺寸，不存在「被缩到看不见」的问题。
-     完整模式才用缩放，让每个提交有足够间距。 */
-  /* 竖向时间线：Y = 提交时间序（从上到下），X = 轨道（左右分开）。
-     原先是横向（X=序号、Y=轨道），提交一多每个只有 2~3px，点不中也看不清；
-     竖向后每个提交独占一行（ROW_H），文字直接跟在节点右侧，
-     于是右侧提交列表与详情列都成了重复展示，一并去掉。 */
-  const PAD_T = 20, PAD_L = 132;                 // PAD_L 给左侧轨道名留位
-  const ROW_H = 32;                              // 每个提交一行（用户选定：宽松好点）
-  const LANE_W = 22;                             // 轨道间距
-  const TEXT_X = PAD_L + laneCount * LANE_W + 22;  // 文字起点的 x
-  const colOf = new Map();
-  commits.forEach((c, i) => colOf.set(c.id, i));
-  const X = id => PAD_L + (commitLane.get(id) || 0) * LANE_W;
-  const Y = id => PAD_T + colOf.get(id) * ROW_H + ROW_H / 2;
-
-  /* ---- 4) 引用（分支头/tag）挂到 commit ---- */
+  /* 引用标签：分支 head / tag / merge 提到的临时分支 */
   const refsAt = new Map();
   const addRef = (cid, text, color, kind) => {
     if (!cid) return;
     if (!refsAt.has(cid)) refsAt.set(cid, []);
     refsAt.get(cid).push({ text, color, kind });
   };
-  for (const b of branches) addRef(b.head, b.name, ggColorFor(b.name, branchNames), "branch");
-  for (const t of tags) addRef(t.head, t.name, "#d9a336", "tag");
+  for (const b of branches) addRef(b.head, b.name, laneColor(commits.find(c => c.id === b.head)?.lane || 0), "branch");
+  for (const t of tags) addRef(t.head, t.name, "#d29922", "tag");
+  for (const c of commits) {
+    if (c.laneBranch) addRef(c.id, c.laneBranch, laneColor(c.lane), "merged");
+  }
 
-  /* 文字区宽度 = 容器实际可用宽度（不再写死 560px —— 写死会让 SVG 比容器窄，
-     右侧明明还有大半空间，文字却在固定位置被切掉）。
-     竖向后右侧列已删除，整个面板宽度都归图用。 */
-  const wrapBox = $("#ggraph-canvas-wrap");
-  const availW = Math.max(360, (wrapBox ? wrapBox.clientWidth : 900) - TEXT_X - 28);
+  /* ---- 尺寸 ---- */
+  const PAD_T = 26, PAD_L = 40;
+  const ROW_H = 32;
+  const LANE_W = 20;
+  const wrapEl = $("#ggraph-canvas-wrap");
+  const TEXT_X = PAD_L + laneCount * LANE_W + 20;
+  const availW = Math.max(360, (wrapEl ? wrapEl.clientWidth : 900) - TEXT_X - 24);
   const W = TEXT_X + availW;
-  const H = PAD_T + commits.length * ROW_H + 24;
+  const H = PAD_T + commits.length * ROW_H + 20;
+  const X = c => PAD_L + (c.lane || 0) * LANE_W + LANE_W / 2;
+  const Y = c => PAD_T + c.row * ROW_H + ROW_H / 2;
   const esc = s => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-  /* ---- 5) 画图形（只有点和线，不画提交文字）---- */
-  const headIds = new Set(branches.map(b => b.head).concat(tags.map(t => t.head)));
-  const mainColor = data.headBranch ? ggColorFor(data.headBranch, branchNames) : GG_BRANCH_COLORS[0];
+  /* 连线：按「子 → 父」画，不用 git log --graph 的 ASCII 连线行。
+     ASCII 里的 \ / | 是「终端折线」的画法，直接映射到竖向 SVG 必然错位
+     （用户反馈「莫名其妙的连线」）。而 %p 给的是结构化父边，
+     配合 lane 就能算出准确的两端坐标：
+       子节点 (X(子), Y(子)) → 父节点 (X(父), Y(父))
+     跨轨道时用三段折线（竖-横-竖），同轨道一条直线。 */
+  const byId2 = byId;
   const parts = [];
-  // 点击热区：竖向每个提交一行，整行都是热区（横向时才需要凑半径）
-  const hitR = ROW_H / 2 - 2;
-  const dense = false;                                       // 竖向不再需要密度聚合
-  const mergeIds = new Set(commits.filter(c => (c.parents || []).length > 1).map(c => c.id));
+  parts.push('<g class="gg-links">');
+  const seg = (x1, y1, x2, y2, col, w, op) =>
+    '<line x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 +
+    '" stroke="' + col + '" stroke-width="' + w + '" opacity="' + op +
+    '" stroke-linecap="round" vector-effect="non-scaling-stroke"/>';
+  for (const c of commits) {
+    for (const pid of c.parents || []) {
+      const p2 = byId2.get(pid);
+      if (!p2) continue;                 // 父被分页截断，不画
+      const x1 = X(c), y1 = Y(c), x2 = X(p2), y2 = Y(p2);
+      const col = laneColor(c.lane);
+      if (x1 === x2) {
+        parts.push(seg(x1, y1, x2, y2, col, 1.5, ".45"));
+      } else {
+        const my = (y1 + y2) / 2;
+        parts.push(seg(x1, y1, x1, my, col, 1.6, ".55"));   // 从子往下
+        parts.push(seg(x1, my, x2, my, col, 1.6, ".55"));   // 水平换列
+        parts.push(seg(x2, my, x2, y2, col, 1.6, ".55"));   // 接到父
+      }
+    }
+  }
+  parts.push('</g>');
 
-  // 轨道淡线
+  /* ---- 轨道竖线 + 轨道名（横排在顶部，不再竖排挤在一起） ---- */
   parts.push('<g aria-hidden="true">');
   for (let i = 0; i < laneCount; i++) {
-    const x = PAD_L + i * LANE_W;
-    parts.push(`<line x1="${x}" y1="${PAD_T}" x2="${x}" y2="${PAD_T + commits.length * ROW_H}" ` +
-      `stroke="var(--border-strong)" stroke-width="1" opacity=".45" ` +
-      `vector-effect="non-scaling-stroke"/>`);
+    parts.push(`<line x1="${PAD_L + i * LANE_W + LANE_W / 2}" y1="${PAD_T}" ` +
+      `x2="${PAD_L + i * LANE_W + LANE_W / 2}" y2="${PAD_T + commits.length * ROW_H}" ` +
+      `stroke="var(--border-default)" stroke-width="1" opacity=".35" vector-effect="non-scaling-stroke"/>`);
   }
   parts.push('</g>');
 
-  // 连线：按分支色（子 commit 继承所在轨道的分支色）
-  const laneColor = i => {
-    for (const b of branches) if (laneOf.get(b.name) === i) return ggColorFor(b.name, branchNames);
-    return "#3d4b60";
-  };
-  // vector-effect="non-scaling-stroke"：缩放时线宽不变，
-  // 否则 5% 缩放下 2px 线宽被压成 0.1px，等于整条线消失（实测概览几乎空白）
-  /* 连线分两层（Git DAG 的骨架）：
-       .gg-sem   语义边 —— 跨轨道 / 汇入 merge / 端点是分支头。粗、高亮。
-       .gg-link  同轨道连续边 —— 淡。概览模式下每 8 条采样 1，否则 800 条线是噪声。
-     概览模式只靠语义边交代拓扑：用户要看的是「谁从谁分出来、在哪合并」，
-     而不是 800 段连续历史。 */
-  const isCrossLane = (a, b) => (commitLane.get(a) || 0) !== (commitLane.get(b) || 0);
-  const semEdges = [], normalEdges = [];
-  for (const c of commits) {
-    for (const par of (c.parents || [])) {
-      if (!byId.has(par)) continue;              // 父提交被 -n 截断 → 不画这条线
-      const pc = byId.get(par);
-      const e = { c: c.id, p: par };
-      if (isCrossLane(c.id, par) || headIds.has(c.id) || headIds.has(par)
-          || mergeIds.has(c.id) || (pc && pc.parents && pc.parents.length > 1)) semEdges.push(e);
-      else normalEdges.push(e);
-    }
-  }
-  /* 概览模式聚合边（edge bundling）
-     实测 402 条语义边挤在 ~580px 宽的图里 = 每 1.4px 一条，完全无法逐条追踪，
-     视觉上只是两条粗带。做法：按「起点列分桶 × 目标轨道」把多条边合成一条 bundle，
-     bundle 上标注 ×N（合并了几条）。放大时（!dense）再展开成真实边。
-     —— 概览看「哪里发生了大量跨轨流动」，放大看「具体哪条边」。 */
-  const bucketOf = y => Math.round(y / 24);           // 24px 一桶（竖向按 y 分桶）
-  const drawEdge = (e, cls, w, op) => {
-    // 竖向：时间自上而下，父提交在子提交上方 → 曲线控制点在 y 方向
-    const x1 = X(e.c), y1 = Y(e.c), x2 = X(e.p), y2 = Y(e.p);
-    const dy = Math.max(12, Math.abs(y2 - y1) * 0.45);
-    const col = laneColor(commitLane.get(e.c) || 0);
-    return `<path class="${cls}" d="M ${x1} ${y1} C ${x1} ${y1 - dy}, ${x2} ${y2 + dy}, ${x2} ${y2}" ` +
-      `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
-      `stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
-  };
-  parts.push('<g class="gg-links">');
-  // 本次渲染的边聚合统计。必须声明在 if/else 之外 ——
-  // 放进 if (dense) 块里时 else 分支赋值会抛 ReferenceError，整张图渲染为空。
-  let edgeStat = null;
-  if (dense) {
-    // 概览：语义边按桶聚合
-    const bundles = new Map();     // key: `${cLane}->${pLane}@${bucket}`
-    for (const e of semEdges) {
-      const cl = commitLane.get(e.c) || 0, pl = commitLane.get(e.p) || 0;
-      const key = `${cl}>${pl}@${bucketOf(X(e.c))}`;
-      if (!bundles.has(key)) bundles.set(key, []);
-      bundles.get(key).push(e);
-    }
-    for (const [, arr] of bundles) {
-      const cl = commitLane.get(arr[0].c) || 0, pl = commitLane.get(arr[0].p) || 0;
-      const col = laneColor(cl);
-      const mid = arr[Math.floor(arr.length / 2)];
-      const x1 = X(mid.c), y1 = Y(mid.c), x2 = X(mid.p), y2 = Y(mid.p);
-      const dy = Math.max(14, Math.abs(y2 - y1) * 0.45);
-      // 跨轨道(1)+数量>3 用更粗的线并标 ×N；同轨道聚合保持细
-      const cross = cl !== pl;
-      const w = cross ? (arr.length > 8 ? 3.4 : arr.length > 3 ? 2.8 : 2.2) : 1.8;
-      const op = cross ? ".9" : ".4";
-      parts.push(
-        `<path class="gg-sem gg-bundle" data-n="${arr.length}" ` +
-        `d="M ${x1} ${y1} C ${x1} ${y1 - dy}, ${x2} ${y2 + dy}, ${x2} ${y2}" ` +
-        `stroke="${col}" stroke-width="${w}" opacity="${op}" fill="none" ` +
-        `stroke-linecap="round" vector-effect="non-scaling-stroke">` +
-        `<title>${arr.length} 条边${cross ? "（跨轨道）" : ""}</title></path>`);
-      if (cross && arr.length > 3) {
-        parts.push(`<text x="${(x1 + x2) / 2 + 5}" y="${(y1 + y2) / 2}" font-size="8.5" ` +
-          `fill="${col}" text-anchor="middle" opacity=".95" font-weight="600">×${arr.length}</text>`);
-      }
-      edgeStat = edgeStat || { bundles: 0, maxBundle: 0, covered: 0 };
-      edgeStat.bundles++;
-      edgeStat.covered += arr.length;
-      if (arr.length > edgeStat.maxBundle) edgeStat.maxBundle = arr.length;
-    }
-    // 普通边稀疏采样（每 24 条取 1）
-    for (const e of normalEdges.filter((_, i) => i % 24 === 0)) {
-      parts.push(drawEdge(e, "gg-link", 1.2, ".25"));
-    }
-  } else {
-    // 完整模式：真实边逐条画
-    for (const e of normalEdges) parts.push(drawEdge(e, "gg-link", 1.5, ".4"));
-    for (const e of semEdges) parts.push(drawEdge(e, "gg-sem", 2.4, ".95"));
-    edgeStat = { bundles: semEdges.length, maxBundle: 1, covered: semEdges.length };
-  }
-  ggEdgeStats = edgeStat;
-  parts.push('</g>');
-
-  /* 节点 + LOD（Level of Detail）
-     低缩放时若把 800 个普通提交全画出来，它们会在几个像素内重叠成一片糊，
-     反而看不出「哪里分叉、哪里合并」。做法：
-       · 算出当前缩放下相邻节点的屏幕间距 px
-       · 间距 < 3px 时，普通提交按「连续段」聚合成一根密度条（保留密度信息）
-       · 语义节点（分支头/标签/合并提交/选中项）永远独立绘制，不参与聚合
-     这样 8% 时看到的是「6 条分支的疏密节奏 + 所有分叉点」，而不是空白。 */
-  const alwaysShow = new Set(headIds);
-  for (const id of mergeIds) alwaysShow.add(id);
-  if (ggSelected) alwaysShow.add(ggSelected);
-  const nodeAt = new Map(commits.map(c => [c.id, c]));
-  /* 悬停提示：竖向后每行只有一行文字，完整 message 放不进图里，靠 tooltip 补。 */
-  const tipOf = c => {
-    const refs = refsAt.get(c.id) || [];
-    const tagLine = refs.length ? " · " + refs.map(r => r.text).join("、") : "";
-    return c.id.slice(0, 8) + "  " + c.author + "  " + c.date + tagLine + "\n" + (c.msg || "").trim();
-  };
-  /* 文本裁剪：按像素预算算，中文按 2 个西文宽度计。
-     写死「最多 N 字」在中文仓库里必然失准 —— 同样的字数，中英混排的实际
-     宽度能差一倍，按字数裁会把长消息切在容器边缘。 */
-  const CH_W = 7.2;                      // 12px 等宽字体下单个西文字符宽
-  const textWidthOf = str => {
+  /* ---- 提交行 ---- */
+  const CH_W = 7.2;
+  const textW = str => {
     let w = 0;
     for (const ch of String(str)) w += /[\u2e80-\uffef]/.test(ch) ? CH_W * 2 : CH_W;
     return w;
   };
-  // 给 chip（最长 16 字）+ sha(7) + 分隔留出的固定开销
-  const FIXED_W = 16 * CH_W * 2 + 7 * CH_W + 24;
-  const clipMsg = (msg, budget) => {
-    if (textWidthOf(msg) <= budget) return msg;
-    let out = "", w = 0;
-    for (const ch of msg) {
-      const cw = /[\u2e80-\uffef]/.test(ch) ? CH_W * 2 : CH_W;
-      if (w + cw > budget - CH_W * 2) break;      // 给省略号留位
-      out += ch; w += cw;
-    }
-    return out + "…";
-  };
-  const drawOne = (c, isDummy) => {
-    const x = X(c.id), y = Y(c.id);
+  const headIds = new Set(liveBranches.map(b => b.head).concat(tags.map(t => t.head)));
+  const mergeIds = new Set(commits.filter(c => (c.parents || []).length > 1).map(c => c.id));
+  const hitR = ROW_H / 2 - 1;
+
+  for (const c of commits) {
+    const x = X(c), y = Y(c);
     const refs = refsAt.get(c.id) || [];
-    const isHead = headIds.has(c.id);
-    const isMerge = mergeIds.has(c.id);
-    const col = refs.length ? refs[0].color : laneColor(commitLane.get(c.id) || 0);
+    const col = laneColor(c.lane);
     const sel = ggSelected === c.id;
     const msg = (c.msg || "").split("\n")[0];
     const sha = c.id.slice(0, 7);
     const chipTxt = refs.length
       ? '<tspan class="gg-chip-txt" fill="' + refs[0].color + '">' +
-        esc(refs[0].text.length > 16 ? refs[0].text.slice(0, 15) + "…" : refs[0].text) + "</tspan>"
+        esc(refs[0].text.length > 18 ? refs[0].text.slice(0, 17) + "…" : refs[0].text) + "</tspan>"
       : "";
-    const sep = refs.length ? '<tspan class="gg-sep"> · </tspan>' : "";
-    const rowW = W - TEXT_X - 16;
-    const msgBudget = Math.max(120, rowW - (refs.length ? FIXED_W : FIXED_W - 16 * CH_W * 2));
-    return (
-      '<g class="gg-node' + (sel ? " selected" : "") + '" data-id="' + esc(c.id) + '"' +
-      (isDummy ? "" : ' tabindex="0" role="button"') +
-      ' aria-label="' + esc(sha + " " + msg.slice(0, 50)) + '">' +
-      // 整行热区：比节点圆点大得多，鼠标停到整行都能命中、都能出 tooltip
-      '<rect class="gg-rowbg" x="' + (x - 8) + '" y="' + (y - hitR) + '" width="' + (rowW + 24) +
-      '" height="' + (hitR * 2) + '" rx="4" fill="' + (sel ? "var(--hover-wash)" : "transparent") + '"/>' +
-      // 合并提交用菱形（形状区分，不只靠颜色）
+    const budget = Math.max(120, W - TEXT_X - (refs.length ? 16 * CH_W * 2 + 7 * CH_W + 24 : 7 * CH_W + 24));
+    let shown = msg, w = 0;
+    if (textW(msg) > budget) {
+      for (const ch of msg) {
+        const cw = /[\u2e80-\uffef]/.test(ch) ? CH_W * 2 : CH_W;
+        if (w + cw > budget - CH_W * 2) break;
+        shown += ch; w += cw;
+      }
+      shown += "…";
+    }
+    const tip = c.id.slice(0, 8) + "  " + c.author + "  " + c.date +
+      (refs.length ? " · " + refs.map(r => r.text).join("、") : "") + "\n" + (c.msg || "").trim();
+    const isMerge = mergeIds.has(c.id);
+    const isHead = headIds.has(c.id);
+    parts.push(
+      '<g class="gg-node' + (sel ? " selected" : "") + '" data-id="' + esc(c.id) +
+      '" tabindex="0" role="button" aria-label="' + esc(sha + " " + msg.slice(0, 50)) + '">' +
+      '<rect class="gg-rowbg" x="' + (PAD_L - 12) + '" y="' + (y - hitR) + '" width="' + (W - PAD_L + 12) +
+      '" height="' + (hitR * 2) + '" rx="4" fill="' + (sel ? "var(--active-wash)" : "transparent") + '"/>' +
       (isMerge
         ? '<rect x="' + (x - 5) + '" y="' + (y - 5) + '" width="10" height="10" transform="rotate(45 ' + x + ' ' + y + ') ' +
           'fill="' + col + '" stroke="var(--surface-content)" stroke-width="1.5"/>'
-        : '<circle cx="' + x + '" cy="' + y + '" r="' + (isHead ? 6 : 4.5) + '" fill="' + col + '" ' +
-          'stroke="var(--surface-content)" stroke-width="' + (isHead ? 2 : 1.2) + '"/>') +
-      (isHead ? '<circle cx="' + x + '" cy="' + y + '" r="9.5" fill="none" stroke="' + col +
-        '" stroke-width="1.4" opacity=".6"/>' : "") +
-      // 行内文字：分支 chip + sha + message 首行
+        : '<circle cx="' + x + '" cy="' + y + '" r="' + (isHead ? 5.5 : 4) + '" fill="' + col +
+          '" stroke="var(--surface-content)" stroke-width="' + (isHead ? 2 : 1.2) + '"/>') +
       '<text class="gg-line-txt" x="' + TEXT_X + '" y="' + (y + 4) + '">' +
-        chipTxt + sep +
+        chipTxt + (refs.length ? '<tspan class="gg-sep"> · </tspan>' : "") +
         '<tspan class="gg-sha-txt">' + esc(sha) + '</tspan><tspan class="gg-sep"> </tspan>' +
-        '<tspan class="gg-msg-txt">' + esc(clipMsg(msg, msgBudget)) + '</tspan>' +
-      '</text>' +
-      '<title>' + esc(tipOf(c)) + '</title>' +
-      '</g>');
-  };
-
-  /* 两套元素都渲染到 DOM，靠 CSS 按缩放档切换（data-zoom-mode）：
-       .gg-full   逐提交节点（正常缩放显示）
-       .gg-dense  密度条（概览缩放显示，语义节点仍单独画）
-     一次性产出、纯 CSS 切换 —— 缩放时不再重建 800 个节点的 DOM。 */
-  parts.push('<g class="gg-full">');
-  for (const c of commits) parts.push(drawOne(c, false));
-  parts.push('</g>');
-
-  // 密度条：按轨道把连续普通提交聚合成一根条；语义节点位置留空
-  parts.push('<g class="gg-dense">');
-  const byLane = new Map();
-  for (const c of commits) {
-    const ln = commitLane.get(c.id) || 0;
-    if (!byLane.has(ln)) byLane.set(ln, []);
-    byLane.get(ln).push(c);
+        '<tspan class="gg-msg-txt">' + esc(shown) + '</tspan>' +
+      '</text><title>' + esc(tip) + '</title></g>');
   }
-  for (const [, arr] of byLane) {
-    let runStart = 0;
-    const flush = (a, b) => {
-      if (b - a < 1) return;                      // 单个提交不成条
-      const n = b - a + 1;
-      const x1 = X(arr[a].id) - 2, x2 = X(arr[b].id) + 2;
-      const ln = commitLane.get(arr[a].id) || 0;
-      const col = laneColor(ln);
-      const y = Y(arr[a].id);
-      const midId = arr[Math.floor((a + b) / 2)].id;
-      const label = `${n} 个提交`;
-      // 密度条：高度给足（9px），配合 CSS 的 min-height 保证低缩放也看得见
+
+  /* ---- 轨道名：画在图左侧顶部，横排一行（lane 数量少，不会挤） ---- */
+  if (laneName.size > 0) {
+    parts.push('<g>');
+    let lx = PAD_L;
+    for (const [ln, name] of [...laneName].sort((a, b) => a[0] - b[0])) {
+      const label = name.length > 20 ? name.slice(0, 19) + "…" : name;
+      const w = label.length * 5.6 + 10;
+      if (lx + w > TEXT_X - 12) break;          // 放不下就截断，不溢出
       parts.push(
-        `<g class="gg-node gg-bar" data-id="${esc(midId)}" tabindex="0" role="button" ` +
-        `aria-label="${esc(label)}"><title>${esc(label)}（${esc(arr[a].date || "")} ~ ${esc(arr[b].date || "")}）</title>` +
-        `<rect class="gg-bar-rect" x="${x1}" y="${y - 4.5}" width="${Math.max(3, x2 - x1)}" ` +
-        `height="9" rx="4" fill="${col}" opacity=".7"/>` +
-        `<rect x="${x1}" y="${y - 11}" width="${Math.max(3, x2 - x1)}" height="22" fill="transparent"/>` +
-        `</g>`);
-    };
-    for (let i = 0; i < arr.length; i++) {
-      if (alwaysShow.has(arr[i].id)) { flush(runStart, i - 1); runStart = i + 1; }
+        '<g class="gg-ref" tabindex="0" role="button" aria-label="轨道 ' + esc(label) + '">' +
+        '<rect x="' + lx + '" y="4" width="' + w + '" height="15" rx="7.5" fill="' + laneColor(ln) +
+        '" opacity=".9"/>' +
+        '<text x="' + (lx + w / 2) + '" y="15" font-size="10" fill="#0b0f16" font-weight="600" ' +
+        'text-anchor="middle" font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">' +
+        esc(label) + '</text></g>');
+      lx += w + 5;
     }
-    flush(runStart, arr.length - 1);
-    // 语义节点在概览模式下也要看得见
-    for (const c of arr) if (alwaysShow.has(c.id)) parts.push(drawOne(c, false));
+    parts.push('</g>');
   }
-  parts.push('</g>');
-
-  // 轨道名：每条轨道左侧一个胶囊，内容是该轨道上的分支（最多 2 个 + 计数）
-  parts.push('<g>');
-  const laneBranches = new Map();
-  for (const b of liveBranches) {
-    const ln = laneOf.get(b.name);
-    if (!laneBranches.has(ln)) laneBranches.set(ln, []);
-    laneBranches.get(ln).push(b);
-  }
-  const mainLaneName = (data.headBranch || "main");
-  for (const [ln, bs] of laneBranches) {
-    const y = PAD_T + ln * ROW_H + ROW_H / 2;
-    const col = ggColorFor(bs[0].name, branchNames);
-    // 主轨道标当前分支名；其余标分叉簇里的分支名
-    let names = bs.map(b => b.name);
-    names.sort((a, b2) => (a === mainLaneName ? -1 : b2 === mainLaneName ? 1 : 0));
-    let label = names[0];
-    if (names.length > 1) label += ` +${names.length - 1}`;
-    if (label.length > 20) label = label.slice(0, 19) + "…";
-    const w = 12 + label.length * 6.0;
-    const isMain = ln === 0;
-    parts.push(
-      `<g class="gg-ref" data-id="${esc(bs[0].head)}" tabindex="0" role="button" ` +
-      `aria-label="分支 ${esc(names.join('、'))}">` +
-      `<rect x="${PAD_L}" y="${y - 8}" width="${w}" height="15" rx="7.5" fill="${col}" ` +
-      `opacity="${isMain ? ".95" : ".8"}"/>` +
-      `<text x="${PAD_L + 6}" y="${y + 3}" font-size="10" fill="#0b0f16" font-weight="${isMain ? 700 : 600}" ` +
-      `font-family="-apple-system,Segoe UI,Microsoft YaHei,sans-serif">${esc(label)}</text>` +
-      `<title>${esc(names.join("\n"))}</title>` +
-      `</g>`);
-  }
-  parts.push('</g>');
 
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   svg.setAttribute("height", H);
   svg.setAttribute("width", W);
   svg.innerHTML = parts.join("");
   ggNaturalSize = { w: W, h: H, rowH: ROW_H };
-  applyGitZoom();
-
   bindGitNodeEvents();
-
-  renderGitLegend(data, branches, branchNames, mainColor, laneCount, danglingRefs);
-
-  // 竖向布局不缩放（每个提交固定 32px 行高，缩放会让文字糊掉），滚到顶部看最新提交
+  renderGitLegend(data, branches, laneCount, danglingRefs);
   ggZoom = 1;
   applyGitZoom();
   const wrap = $("#ggraph-canvas-wrap");
   if (wrap) { wrap.scrollLeft = 0; wrap.scrollTop = 0; }
-  // 统计栏把「概览模式下做了什么聚合」讲清楚，否则用户不知道那些粗线代表多少关系
-  const statBits = [`${commits.length} 提交`, `${branches.length} 分支`, `${tags.length} 标签`];
-  if (data.truncated) statBits.push(`已截断（取最近 ${data.limit || 800} 条）`);
-  $("#gg-stats").textContent = statBits.join(" · ");
+  updateGitStats(data);
 }
 
 /* 提交在原始数组中的序号（时间序） */
@@ -7088,24 +6870,21 @@ function colIndex(data, id) {
   return ggColCache.map.get(id) || 0;
 }
 /* ---- 图例 ---- */
-function renderGitLegend(data, branches, branchNames, mainColor, laneCount, danglingRefs) {
+/* 图例：只讲符号含义。分支名/临时分支名直接标在图左侧，不在这里重复列
+   （旧版把 7 个分支名列一遍又截断，反而更难读）。 */
+function renderGitLegend(data, branches, laneCount, danglingRefs) {
   const box = $("#gg-legend");
   if (!box) return;
   const esc = s => String(s == null ? "" : s)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  // 图例只讲「符号含义」；分支名直接标在图左侧轨道上，不在图例里重复
-  // （旧版图例把 7 个分支名列一遍又截断，反而更难读）
   const items = [
-    `<span class="lg-item"><span class="lg-dot" style="background:var(--text-tertiary)"></span>普通提交</span>`,
-    `<span class="lg-item"><span class="gg-legend-dia"></span>合并提交</span>`,
-    `<span class="lg-item"><span class="lg-dot head" style="background:${mainColor};color:${mainColor}"></span>分支头 / 标签</span>`,
-    `<span class="lg-item"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" stroke="var(--border-strong)" stroke-width="1.5"/></svg>连续历史</span>`,
-    `<span class="lg-item"><svg width="22" height="8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4" stroke="${mainColor}" stroke-width="2.8"/></svg>跨轨 / 合并关系 <span style="color:var(--text-tertiary)">(×N = 聚合)</span></span>`,
-    `<span class="lg-item" style="color:var(--text-tertiary)">轨道 ${laneCount} 条 · 分支 ${branches.length - (danglingRefs || 0)}/${branches.length} 条 · 左旧 → 右新</span>`,
+    '<span class="lg-item"><span class="lg-dot" style="background:#7d8590"></span>普通提交</span>',
+    '<span class="lg-item"><span class="gg-legend-dia"></span>合并提交</span>',
+    '<span class="lg-item"><svg width="22" height="8" aria-hidden="true">' +
+      '<line x1="1" y1="4" x2="21" y2="4" stroke="#4a9eff" stroke-width="1.8" opacity=".8"/></svg>跨轨道（分支汇入）</span>',
+    '<span class="lg-item" style="color:var(--text-tertiary)">轨道 ' + laneCount +
+      ' 条 · 分支 ' + branches.length + (danglingRefs ? "（" + danglingRefs + " 个引用已截断）" : "") + '</span>',
   ];
-  if (danglingRefs) {
-    items.push(`<span class="lg-item" style="color:var(--warning)" title="这些引用的提交不在当前返回的 ${(data.limit || 800)} 条提交内（可能已 gc 或超出截断范围）">${danglingRefs} 个引用无对应提交</span>`);
-  }
   box.innerHTML = items.join("");
 }
 
@@ -7200,7 +6979,13 @@ function showGitCommitDetail(data, id) {
   if (!c) return;
   const d = $("#ggraph-detail");
   d.style.display = "flex";
-  const branches = (data.branches || []).filter(b => b.head === id).map(b => b.name);
+  /* 分支归属：不能只看「哪个分支的 head 正好是本提交」——
+     那样几乎永远是空（用户反馈「提交详情大片没写分支」）。
+     正确做法是沿祖先链回溯：某个分支能到达本提交，就说明这个提交在它上面。
+     服务端已用 rev-list <branch> 逐分支算好存在 commitBranches 里。 */
+  const branches = (c.branches && c.branches.length) ? c.branches.slice()
+             : (data.branches || []).filter(b => b.head === id).map(b => b.name);
+  const mergedIn = c.laneBranch || null;
   const tags = (data.tags || []).filter(t => t.head === id).map(t => t.name);
   const full = (c.msg || "");
   const firstLine = full.split("\n")[0];
@@ -7214,6 +6999,7 @@ function showGitCommitDetail(data, id) {
     `<div class="ggd-row"><span class="ggd-lbl">提交</span><span class="ggd-hash">${escapeHtml(c.id)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">作者</span><span>${escapeHtml(c.author)}</span></div>` +
     `<div class="ggd-row"><span class="ggd-lbl">日期</span><span>${escapeHtml(c.date)}</span></div>` +
+    (mergedIn ? `<div class="ggd-row"><span class="ggd-lbl">合并自</span><span class="ggd-merged">${escapeHtml(mergedIn)}</span></div>` : "") +
     (branches.length ? `<div class="ggd-row"><span class="ggd-lbl">分支</span><span>${branches.map(escapeHtml).join("、")}</span></div>` : "") +
     (tags.length ? `<div class="ggd-row"><span class="ggd-lbl">标签</span><span>${tags.map(escapeHtml).join("、")}</span></div>` : "") +
     `<div class="ggd-row"><span class="ggd-lbl">父提交</span><span class="ggd-parents">${
@@ -7231,6 +7017,13 @@ function showGitCommitDetail(data, id) {
 $("#btn-gitgraph").addEventListener("click", gitGraphOpen);
 $("#gg-close").addEventListener("click", gitGraphClose);
 $("#gg-repo").addEventListener("change", () => loadGitGraph(""));
+/* 懒加载：滚到接近底部预取下一批提交（不做固定截取） */
+$("#ggraph-canvas-wrap").addEventListener("scroll", () => {
+  const w = $("#ggraph-canvas-wrap");
+  if (!w) return;
+  const ratio = w.scrollTop / Math.max(1, w.scrollHeight - w.clientHeight);
+  if (ratio >= GG_LOAD_AT) gitGraphLoadMore();
+}, { passive: true });
 $("#gg-project").addEventListener("change", async (e) => {
   _curProject = e.target.value || null;
   await loadGitRepos(_curProject);
