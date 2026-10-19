@@ -40,6 +40,32 @@ python server.py --root D:/other/workspace   # 换工作区根目录
   projects.json 里目录已被移动/删除的根启动时自动跳过（不报错退出）
 - Esc 关闭弹窗；顶栏按钮显示当前状态（"项目: xxx" / "项目(全部)"）
 
+## 检查更新（前端，Alt+U / 顶栏「同步」按钮）
+
+服务器上开发、公司电脑上手动同步最新修改——不用敲 git 命令，也不用改远程地址。
+
+- **远程地址内置默认值**（`server.py` 里的 `DEFAULT_SYNC_REPO` = 本仓库地址，
+  分支 `master`）。换地址不用改代码：写 `sync.json`（工具目录，已 gitignore）
+  或启动时加 `--sync-repo <地址> --sync-branch <分支>`。
+  优先级：**CLI 参数 > sync.json > 代码内置默认值**。
+- **两步走，不越权**：「检查更新」只 `git fetch`（只读），显示落后几个提交 +
+  逐条列出提交信息；**只有你点「拉取更新」才会真正 `git pull`**——
+  改工作区文件的破坏性操作永远由人点一下确认。
+- **origin 自动纠正**：`origin` 不存在就加、指向别处就改写成配置的地址，
+  并在面板里明说改了什么（换机器/换远端后不用手动改）。
+- **安全网**：
+  - 有未提交的**已跟踪**文件修改时拒绝拉取并列出文件名（未跟踪的新文件不算，
+    它们不影响 pull）；
+  - 只用 `git pull --ff-only`，不会产生合并提交、不会悄悄改写你的本地历史；
+  - 本地与远端**分叉**（本地有提交、远端也有新提交）时不硬来，改为说明情况并
+    给出 `git push` / `git reset --hard` 两条命令让你自己选。
+- 本地领先远端时只提示，不覆盖、不警告刷屏。
+
+```jsonc
+// sync.json（可选，不写就用代码里的默认地址）
+{ "repo": "https://github.com/TechieBreeze/MarkdownReader.git", "branch": "master" }
+```
+
 ## 一键启动（launch.py / start.bat）
 
 ```bash
@@ -161,6 +187,8 @@ tools/markdown-reader/
 | `/api/git/repos` | GET | 枚举工作区下所有 git 仓库（Git 版本树仓库下拉） |
 | `/api/git/diff?path=&commit=` | GET | 某提交对当前文件的 diff hunks（含提交作者信息） |
 | `/api/exists?path=` | GET | 路径是否存在 |
+| `/api/sync/status?fetch=1` | GET | 同步状态：仓库地址/分支/本地版本/领先落后/待拉取提交列表；`fetch=1` 才联网取远端，默认不联网 |
+| `/api/sync/pull` | POST | 执行 `git pull --ff-only`（唯一会改写工作区的同步接口；脏工作区/分叉时返回 `ok:false` + 原因） |
 | `/api/search?q=&re=&ext=` | GET | 全局搜索：整个工作区扫文本文件，返回文件 + 匹配行（不区分大小写，限量防阻塞）；`re=1` 正则模式、`ext=扩展名` 类型过滤 |
 
 > 提交查看原理：后端在文件所属 git 仓库执行 `git log` / `git show`；前端按 diff hunks 的行号把「新增/上下文」行高亮在代码视图上（删除行在当前文件中已不存在，只计入统计）。
