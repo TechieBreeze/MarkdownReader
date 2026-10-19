@@ -56,6 +56,12 @@ _VTOP = {}          # vtop 名 -> 绝对路径（同名根自动追加 _2/_3）
 _VTOP_SEQ = {}      # 根路径 -> 分配名
 _CURRENT = None     # 前端"当前项目"（vtop 名）；None = 顶层聚合展示全部项目
 PROJECTS_FILE = os.path.join(HERE, "projects.json")   # 项目管理持久化（add/remove 落盘）
+# 同步配置（内置默认值 + 可被 sync.json 覆盖）。解决「我在服务器上开发、你在公司电脑上手动同步」：
+# 服务器 push 到远端后，公司电脑上点「检查更新」→ git pull 拿到最新代码。
+# 地址写死在代码里当默认值（换机器不用配），真要改就写 sync.json（已 gitignore）。
+DEFAULT_SYNC_REPO = "https://github.com/TechieBreeze/MarkdownReader.git"
+DEFAULT_SYNC_BRANCH = "master"
+SYNC_FILE = os.path.join(HERE, "sync.json")
 # 项目增删切的互斥锁：ThreadingHTTPServer 多线程下，ROOTS/_VTOP/_CURRENT 是
 # 模块级可变状态，读-改-写必须串行，否则并发 add/remove 会丢失更新。
 _PROJECTS_LOCK = threading.RLock()
@@ -342,6 +348,341 @@ def log_line(msg: str):
         pass
 
 
+# ================= 同步（服务器开发 → 本机拉取） =================
+#
+# 场景：我在服务器上改代码并 push，用户在公司电脑上跑着这份工具。想把最新版本拿过来，
+# 但用户不想学 git 命令，也不想改远程地址。所以：
+#   1. 远程地址内置默认值（DEFAULT_SYNC_REPO），可被 sync.json 覆盖；
+#   2. 前端「检查更新」先 fetch 看看远端有没有新 commit（有就把提交列出来）；
+#   3. 用户点「拉取更新」才真正执行 git pull —— 破坏性操作永远由人点一下确认。
+
+def sync_config():
+    """读同步配置：sync.json 覆盖默认值。文件坏了不致命，回落到默认值并说明原因。"""
+    cfg = {"repo": DEFAULT_SYNC_REPO, "branch": DEFAULT_SYNC_BRANCH, "source": "default"}
+    if os.path.isfile(SYNC_FILE):
+        try:
+            with open(SYNC_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            if isinstance(data, dict):
+                if data.get("repo"):
+                    cfg["repo"] = str(data["repo"]).strip()
+                if data.get("branch"):
+                    cfg["branch"] = str(data["branch"]).strip()
+                cfg["source"] = "sync.json"
+        except Exception as e:
+            cfg["error"] = "sync.json 读取失败（已用内置默认值）: %s" % e
+    err = _validate_sync_cfg(cfg)
+    if err:
+        cfg["error"] = ((cfg["error"] + "\n") if cfg.get("error") else "") + err
+    return cfg
+
+
+def _validate_sync_cfg(cfg):
+    """校验仓库地址/分支，返回错误说明或 None。
+
+    这些值会原样进 git 的 argv（fetch / pull / remote set-url），而 git 会把
+    **位置参数里以 - 开头的值当成选项**：实测
+    `git pull --ff-only origin --upload-pack=/bin/echo master` 里
+    `--upload-pack=...` 被当选项解析、branch 名根本没起作用。
+    sync.json 又是用户可编辑的文件，所以这里必须挡一道，不能让配置变成
+    给 git 传选项的通道。"""
+    repo = (cfg.get("repo") or "").strip()
+    branch = (cfg.get("branch") or "").strip()
+    if not repo or not branch:
+        return "同步配置不完整：repo / branch 不能为空"
+    if repo.startswith("-"):
+        return "仓库地址不能以 - 开头（会被 git 当成命令行选项）"
+    if branch.startswith("-"):
+        return "分支名不能以 - 开头（会被 git 当成命令行选项）"
+    if re.search(r"\s", repo) or re.search(r"\s", branch):
+        return "仓库地址和分支名不能包含空格"
+    # ext:: / fd:: 这类 transport 能直接执行本地命令。git 默认禁 ext，
+    # 但用户若显式 protocol.ext.allow=always 就会生效 —— 配置层直接禁掉。
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*::", repo):
+        return "不支持 ext::/file:// 之类的自定义 transport，只接受 https/http/ssh/git 仓库地址"
+    # 允许本地路径（/path/to/repo.git、./rel、~/dir）—— 本地镜像/离线仓库很常见，
+    # 上一版校验把它们全拒了，等于把「用本地 bare 仓库当 origin」这种正当用法堵死。
+    # 判据：以 ~ 或 / 或 . 开头，且不含空白 → 视为本地路径，放行。
+    if repo.startswith(("~", "/", "./", "../")) or repo == "." or repo == "..":
+        return None
+    if not re.match(r"^(https?|ssh|git)://", repo) and not re.match(r"^[^/]+@[^/]+:", repo):
+        return "仓库地址需以 https://、http://、ssh://、git:// 开头，形如 git@host:path，或为本地路径"
+    return None
+
+
+def _sync_repo_state(cfg):
+    """当前仓库自身的位置与远端配置。"""
+    repo = HERE                      # 工具目录就是 git 仓库根（server.py 与 .git 同级）
+    if not os.path.isdir(os.path.join(repo, ".git")):
+        return {"error": "当前目录不是 git 仓库（缺少 .git）: " + repo}
+    remotes = {}
+    rc, out, _ = git_run_ex(repo, "remote")
+    if rc == 0:
+        for line in out.splitlines():
+            line = line.strip()
+            if line:
+                remotes[line] = True
+    return {
+        "path": repo,
+        "remotes": sorted(remotes.keys()),
+        "want": cfg["repo"],
+        "branch": cfg["branch"],
+        "configError": cfg.get("error"),
+    }
+
+
+def _ensure_remote(cfg, state):
+    """让 remote origin 指向配置的地址。
+
+    直接改配置而不动工作区：远端地址换主机（服务器内网 → 公司电脑 / 反过来）时，
+    用户的 origin 还指向 clone 时的地址，fetch 会失败或拉错仓库。
+    已有 origin 时就地改写；没有则新增。只动 remote 不会丢任何本地修改。
+
+    配置非法时**不改** —— 否则一个手滑写错的 sync.json 会把 .git/config
+    改成一个危险地址并留在那里。"""
+    want = cfg["repo"]
+    if _validate_sync_cfg(cfg):
+        return None            # 配置有问题：不动 remote，把错误交给上层显示
+    if "origin" in state["remotes"]:
+        rc, cur, _ = git_run_ex(state["path"], "remote", "get-url", "origin")
+        if rc == 0 and cur.strip() == want:
+            return None
+        rc, _, err = git_run_ex(state["path"], "remote", "set-url", "origin", want)
+        if rc != 0:
+            return "设置 origin 失败: %s" % err
+        return "origin 已从 %s 改写为 %s" % (cur.strip() or "(空)", want)
+    rc, _, err = git_run_ex(state["path"], "remote", "add", "origin", want)
+    if rc != 0:
+        return "添加 origin 失败: %s" % err
+    return "已添加 origin: %s" % want
+
+
+def _ahead_behind(repo, branch):
+    """本地相对远端领先/落后多少个 commit。拿不到就返回 None（首次同步尚无上游）。"""
+    rc, out, _ = git_run_ex(repo, "rev-list", "--left-right", "--count", "origin/%s...HEAD" % branch)
+    if rc != 0:
+        return None
+    parts = out.split()
+    if len(parts) != 2:
+        return None
+    try:
+        return {"behind": int(parts[0]), "ahead": int(parts[1])}
+    except ValueError:
+        return None
+
+
+def _local_head(repo):
+    rc, out, _ = git_run_ex(repo, "rev-parse", "--short", "HEAD")
+    return out if rc == 0 and out else None
+
+
+def _dirty_files(repo):
+    """未提交改动 —— 只算已跟踪文件的修改。
+
+    `git status --porcelain` 会把未跟踪文件也列成 `?? xxx`，而未跟踪文件
+    **不会**让 pull 失败（只要不与远端新增的同名文件撞名）。实测：整个目录全是
+    `??` 时 `--ff-only` pull 照样成功。原实现把它们算进 dirty，于是刚装好、
+    还没提交任何东西的新机器会被误判成「有未提交修改」而永远拉不了更新。
+    返回 (tracked_changes, untracked_count) 以便前端分别提示。"""
+    rc, out, _ = git_run_ex(repo, "status", "--porcelain")
+    if rc != 0:
+        return None, 0
+    tracked, untracked = [], 0
+    for ln in out.splitlines():
+        if not ln.strip():
+            continue
+        code = ln[:2]
+        if code == "??":
+            untracked += 1
+        else:
+            tracked.append(ln)
+    return tracked, untracked
+
+
+# 从 merge/常规提交信息里取短描述，用不上时回落到 "短哈希 说明"
+def _commits_since(repo, branch, limit=30):
+    """待拉取的提交（远端有、本地没有的那些）。
+
+    `A..B` 的语义是「B 有而 A 没有的」，所以这里必须写 HEAD..origin/<branch>。
+    写成 origin/<branch>..HEAD 会列出「本地领先的提交」——正好是反的，
+    结果是 behind 显示 1、待更新列表却是空的。"""
+    rc, out, err = git_run_ex(repo, "log", "--pretty=format:%h%x09%s", "-n", str(limit),
+                              "HEAD..origin/%s" % branch)
+    if rc != 0:
+        return None, err
+    items = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t", 1)
+        items.append({"sha": parts[0], "msg": parts[1] if len(parts) > 1 else ""})
+    return items, None
+
+
+def _sync_git(repo, *args, timeout=120):
+    """同步专用的 git 调用：失败时用 HTTP/2 再试一次。
+
+    实测这台机器上 `git fetch` 走 HTTP/1.1 会 GnuTLS recv error (-110)，
+    而 `-c http.version=HTTP/2` 同一地址同一时刻能成功。只在失败后重试，
+    正常路径不多付代价；用 `-c` 传参而不是改用户的 git 全局配置，
+    免得把别人的环境改了（这条路径只在同步功能里用，范围可控）。"""
+    rc, out, err = git_run_ex(repo, *args, timeout=timeout)
+    if rc == 0:
+        return rc, out, err
+    looks_network = any(k in (err or "") for k in
+                        ("GnuTLS", "TLS", "SSL", "connection was non-properly terminated",
+                         "early EOF", "RPC failed", "Could not resolve", "Connection reset",
+                         "unable to access", "timed out"))
+    if not looks_network:
+        return rc, out, err
+    rc2, out2, err2 = git_run_ex(repo, "-c", "http.version=HTTP/2", *args, timeout=timeout)
+    if rc2 == 0:
+        return 0, out2, err2
+    # 两次都失败：两次的错误都要给用户看。原来这行写成
+    # `((err2 or err2 == "") and err) or err2` 是个恒真表达式 —— 只要第一次
+    # 的 err 非空就必然返回它、重试信息被无声丢弃，注释里承诺的
+    # 「把重试信息附上」根本没发生。
+    parts = [e for e in ((err or "").strip(), (err2 or "").strip()) if e]
+    seen, merged = set(), []
+    for e in parts:
+        if e not in seen:
+            seen.add(e)
+            merged.append(e)
+    return rc2, (out2 or out), ("\n（HTTP/2 重试后仍然失败）\n".join(merged) if merged else "未知错误")
+
+
+def sync_status(fetch=False):
+    """检查更新：返回远端状态 + 待拉取提交列表。不改动工作区（除非显式 fetch）。"""
+    cfg = sync_config()
+    st = _sync_repo_state(cfg)
+    if st.get("error"):
+        return {"ok": False, "error": st["error"], "config": cfg}
+    repo = st["path"]
+
+    # 只读请求（不 fetch）不改 .git/config —— 「打开面板看状态」这种纯读操作
+    # 不该留下持久化的配置改动，那既超出用户预期也违背本函数的文档承诺。
+    # 需要纠正 origin 的只有真正联网的那次（fetch=1）与 sync_pull。
+    note = _ensure_remote(cfg, st) if fetch else None
+    fetched = False
+    fetch_error = None
+    if fetch:
+        # 必须 fetch 远端**名**而不是 URL：`git fetch <url>` 只写 FETCH_HEAD，
+        # 不更新 refs/remotes/origin/master，于是后面 _ahead_behind 永远读到 clone
+        # 时的旧值，behind 恒为 0 —— 用户点了「检查更新」永远显示「已是最新」。
+        rc, _, err = _sync_git(repo, "fetch", "--prune", "origin", timeout=120)
+        fetched = rc == 0
+        if rc != 0:
+            fetch_error = err or "fetch 失败（返回码 %d）" % rc
+
+    head = _local_head(repo)
+    branch = cfg["branch"]
+    cur_branch = None
+    rc, out, _ = git_run_ex(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc == 0 and out:
+        cur_branch = out
+
+    ab = _ahead_behind(repo, branch) if fetched else None
+    pending, perr = (None, None)
+    if fetched and not fetch_error:
+        pending, perr = _commits_since(repo, branch)
+    tracked, untracked = _dirty_files(repo)
+
+    # behind/ahead 在没联网时是「未知」，不是 0。返回 0 会让前端据此显示
+    # 「已是最新」—— 那是编造的结论。没数据就给 null。
+    result = {
+        "ok": fetch_error is None,
+        "config": cfg,
+        "repo": repo,
+        "branch": branch,
+        "currentBranch": cur_branch,
+        "head": head,
+        "remotes": st["remotes"],
+        "fetched": fetched,
+        "fetchError": fetch_error,
+        "aheadBehind": ab,
+        "behind": (ab or {}).get("behind"),
+        "ahead": (ab or {}).get("ahead"),
+        "pending": pending,
+        "pendingError": perr,
+        "dirty": tracked,
+        "untracked": untracked,
+        "note": note,
+        "configError": cfg.get("error") or st.get("configError"),
+    }
+    return result
+
+
+def sync_pull():
+    """真正执行拉取。这是破坏性操作（会改工作区文件），只由前端按钮显式触发。
+
+    先检查脏文件：有未提交修改时 git pull 可能直接失败或产生难解的冲突，
+    这里明确拦下来告诉用户，而不是让 git 自己报错。"""
+    cfg = sync_config()
+    st = _sync_repo_state(cfg)
+    if st.get("error"):
+        return {"ok": False, "error": st["error"]}
+    repo = st["path"]
+
+    note = _ensure_remote(cfg, st)
+    dirty, _untracked = _dirty_files(repo)
+    if dirty is None:
+        # git status 自己失败了 → 状态未知。绝不能当成「干净」直接放行 pull：
+        # 这正好是「有未提交修改时拦截」要防的情况，宁可拦住也不能瞎拉。
+        return {"ok": False, "error": "无法读取 git 工作区状态（git status 失败），已中止拉取。"
+                                  "请在工具目录手动执行 git status 确认。"}
+    if dirty:
+        return {"ok": False, "needCommit": True, "dirty": dirty[:50],
+                "error": "有 %d 处未提交的本地修改，直接拉取可能冲突。请先处理后再试。" % len(dirty)}
+
+    # 拉取前记下当前 HEAD，出问题可以据此告诉你退回到哪个版本
+    before = _local_head(repo)
+    rc, _, err = _sync_git(repo, "fetch", "--prune", "origin", timeout=120)
+    if rc != 0:
+        return {"ok": False, "error": "获取远端失败: %s" % (err or "未知错误")}
+
+    ab = _ahead_behind(repo, cfg["branch"])
+    if ab is None:
+        # 拿不到领先/落后（分支在远端不存在、或还没有上游）→ 直接拉会报
+        # 难懂的 "couldn't find remote ref"。这里提前说清楚。
+        return {"ok": False, "head": before,
+                "error": "无法比较本地与远端：远端可能没有分支「%s」。"
+                         "请确认 sync.json 里的 branch 写对了。" % cfg["branch"]}
+    if ab["behind"] == 0:
+        return {"ok": True, "changed": False, "head": before, "headBefore": before,
+                "note": note, "message": "已经是最新，无需更新。"}
+
+    rc, out, err = _sync_git(repo, "pull", "--ff-only", "origin", cfg["branch"], timeout=120)
+    if rc != 0:
+        msg = (err or out or "未知错误")
+        # 分叉（本地有提交 + 远端也有新提交）时，--ff-only 会拒绝，
+        # 直接把 git 的英文 hint 甩给用户等于没解释。这里换成人话 + 给出选择。
+        diverged = ("Not possible to fast-forward" in msg
+                    or "Diverging branches" in msg
+                    or "non-fast-forward" in msg)
+        if diverged:
+            return {"ok": False, "diverged": True, "behind": ab.get("behind", 0),
+                    "ahead": ab.get("ahead", 0), "head": before,
+                    "error": "本地有 %d 个自己的提交，远端也有 %d 个新提交，双方历史分叉了，"
+                             "无法自动合并。\n\n"
+                             "你的本地提交不会丢。请在工具目录下用命令二选一处理：\n"
+                             "  · 保留本地提交（推到远端）：git push -u origin %s\n"
+                             "  · 放弃本地提交（以远端为准）：git reset --hard origin/%s\n"
+                             "处理完再点一次「拉取更新」。"
+                             % (ab.get("ahead", 0), ab.get("behind", 0),
+                                cfg["branch"], cfg["branch"])}
+        return {"ok": False, "error": "拉取失败: %s" % msg, "head": before}
+
+    after = _local_head(repo)
+    if after != before:
+        _invalidate_gits_cache()
+        try:
+            _SCAN_COUNT_CACHE.clear()
+        except Exception:
+            pass
+    return {"ok": True, "changed": after != before, "headBefore": before, "head": after,
+            "note": note, "message": "已更新到 %s。" % after if after != before else "已是最新。"}
+
+
 # ================= git 辅助 =================
 
 def git_run(repo, *args):
@@ -355,6 +696,22 @@ def git_run(repo, *args):
         return r.stdout
     except Exception:
         return None
+
+
+def git_run_ex(repo, *args, timeout=60):
+    """同 git_run，但失败时把 stderr 带回来 —— 同步功能要把「为什么拉不了」告诉用户，
+    只返回 None 的话前端只能说「检查失败」，用户没法自己解决（代理/鉴权/分支不存在）。"""
+    try:
+        r = subprocess.run(["git", "-C", repo] + list(args),
+                           capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=timeout)
+        return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
+    except subprocess.TimeoutExpired:
+        return 124, "", "git %s 超时（%ds）" % (" ".join(args), timeout)
+    except FileNotFoundError:
+        return 127, "", "找不到 git 命令，请确认已安装并加入 PATH"
+    except Exception as e:
+        return 1, "", str(e)
 
 
 # 从 merge 提交信息里提取「被合并进来的分支名」。
@@ -2345,6 +2702,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_git_diff(qs)
             elif path == "/api/git/file":
                 self._api_git_file(qs)
+            elif path == "/api/sync/status":
+                self._api_sync_status(qs)
             elif path == "/api/exists":
                 self._api_exists(qs)
             elif path == "/api/search":
@@ -2371,6 +2730,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_web_def()
             elif path == "/api/projects":
                 self._api_projects_post(qs)
+            elif path == "/api/sync/pull":
+                self._api_sync_pull()
             else:
                 self._json({"error": "not found"}, 404)
         except Exception as e:  # noqa
@@ -2442,6 +2803,27 @@ class Handler(BaseHTTPRequestHandler):
         return {"current": _CURRENT, "single": len(ROOTS) == 1,
                 "projects": [{"name": n, "path": r} for n, r in sorted(_VTOP.items())]}
 
+    # ---------- 同步 ----------
+    def _api_sync_status(self, qs):
+        """GET /api/sync/status[?fetch=1]
+
+        fetch=1 时会联网取远端（慢，几秒），默认不 fetch —— 面板打开时只想显示
+        「当前版本 + 远端地址」，按了「检查更新」才真的联网。"""
+        want_fetch = (qs.get("fetch") or ["0"])[0] in ("1", "true", "yes")
+        try:
+            self._json(sync_status(fetch=want_fetch))
+        except Exception as e:  # noqa
+            self._json({"ok": False, "error": str(e)}, 500)
+
+    def _api_sync_pull(self):
+        """POST /api/sync/pull —— 唯一会改写工作区文件的同步接口。"""
+        try:
+            r = sync_pull()
+            # 脏工作区/拉取失败不是服务器错误，是用户要看的业务结果 → 200 带 ok:false
+            self._json(r, 200)
+        except Exception as e:  # noqa
+            self._json({"ok": False, "error": str(e)}, 500)
+
 
 def main():
     global PORT, ROOT
@@ -2450,8 +2832,17 @@ def main():
     ap.add_argument("--port", type=int, default=PORT)
     ap.add_argument("--root", action="append", default=[], help="工作区根（可多次指定实现多项目聚合；默认：工具目录上两级）")
     ap.add_argument("--roots", default="", help="逗号分隔的多个工作区根（等价于多次 --root）")
+    ap.add_argument("--sync-repo", default="", help="同步用的远程仓库地址（覆盖代码内置默认值；也可写 sync.json）")
+    ap.add_argument("--sync-branch", default="", help="同步用的分支（默认 master）")
     args = ap.parse_args()
     PORT = args.port
+    # CLI 同步参数 > sync.json > 代码内置默认值。CLI 优先级最高：临时用别的远端
+    # 试一下时不该为此改文件（改了还得记得改回来）。
+    global DEFAULT_SYNC_REPO, DEFAULT_SYNC_BRANCH
+    if args.sync_repo:
+        DEFAULT_SYNC_REPO = args.sync_repo
+    if args.sync_branch:
+        DEFAULT_SYNC_BRANCH = args.sync_branch
     roots = list(args.root)
     if args.roots:
         roots += [r.strip() for r in args.roots.split(",") if r.strip()]

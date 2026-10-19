@@ -710,6 +710,56 @@ body {
 }
 .proj-item button:hover { background: #2a4a8f; }
 .proj-item .proj-remove { border-color: var(--border); color: var(--fg-dim); }
+
+/* ---------- 同步面板 ---------- */
+/* 层级对齐 #projects-mask(950)：原先用 160，会被 #mmd-zoom-mask(300)、.peek-card(180)、
+   #toast(200) 盖住 —— 而 toast 恰恰是本面板自己触发的。 */
+#sync-mask { position: fixed; inset: 0; background: rgba(3,6,12,.66); backdrop-filter: blur(3px); z-index: 960; display: none; align-items: center; justify-content: center; }
+#sync-mask.show { display: flex; }
+#sync-panel {
+  width: min(620px, 92vw); max-height: 82vh; display: flex; flex-direction: column;
+  background: var(--surface-overlay); border: 1px solid var(--border-default);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-3); overflow: hidden;
+  animation: modalIn var(--dur-slow) var(--ease-out);
+}
+#sync-head {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3); border-bottom: 1px solid var(--border-subtle); flex: 0 0 auto;
+}
+#sync-head .sync-title { font-weight: 600; color: var(--text-strong); }
+#sync-head .sync-sub { color: var(--text-tertiary); font-size: 12px; }
+#sync-body { padding: var(--sp-3); overflow-y: auto; display: flex; flex-direction: column; gap: var(--sp-3); }
+.sync-meta { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.sync-meta-row { display: flex; gap: 8px; align-items: baseline; }
+.sync-meta-row .k { color: var(--text-tertiary); flex: 0 0 62px; }
+.sync-meta-row .v { color: var(--text-primary); font-family: ui-monospace, Consolas, monospace; word-break: break-all; flex: 1; }
+.sync-status-line { font-size: 13px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-subtle); background: var(--surface-raised); }
+.sync-status-line.ok { color: var(--p-green, #3fb950); border-color: rgba(63,185,80,.35); background: rgba(63,185,80,.08); }
+.sync-status-line.upd { color: var(--p-accent-1, #4d94ff); border-color: var(--accent-border); background: var(--accent-subtle); }
+.sync-status-line.err { color: var(--p-red, #f0645b); border-color: rgba(240,100,91,.35); background: rgba(240,100,91,.08); }
+.sync-status-line.busy { color: var(--text-secondary); }
+.sync-list { display: flex; flex-direction: column; border: 1px solid var(--border-subtle); border-radius: 8px; overflow: hidden; }
+.sync-list .sync-list-head { padding: 7px 12px; font-size: 12px; color: var(--text-tertiary); background: var(--surface-chrome); border-bottom: 1px solid var(--border-subtle); }
+.sync-commit { display: flex; gap: 10px; padding: 8px 12px; font-size: 12.5px; align-items: baseline; border-bottom: 1px solid var(--border-subtle); }
+.sync-commit:last-child { border-bottom: none; }
+.sync-commit .sc-sha { color: var(--p-accent-1, #4d94ff); font-family: ui-monospace, Consolas, monospace; flex: 0 0 auto; }
+.sync-commit .sc-msg { color: var(--text-primary); flex: 1; word-break: break-word; }
+.sync-note { font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; word-break: break-all;
+  background: var(--surface-inset); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 8px 10px; }
+.sync-note.err { color: var(--p-red, #f0645b); }
+#sync-foot { display: flex; gap: var(--sp-2); justify-content: flex-end; padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--border-subtle); flex: 0 0 auto; }
+.sync-btn {
+  background: var(--accent-bg); color: var(--text-primary); border: 1px solid var(--accent-border);
+  border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 12.5px;
+}
+.sync-btn:hover:not(:disabled) { background: var(--p-accent-2, #2f6fd0); border-color: var(--p-accent-2, #2f6fd0); }
+.sync-btn:disabled { opacity: .45; cursor: default; }
+.sync-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--text-inverse); font-weight: 600; }
+.sync-btn.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+.sync-btn.ghost { background: transparent; border-color: var(--border-default); color: var(--text-secondary); }
+.sync-btn.ghost:hover:not(:disabled) { color: var(--text-strong); border-color: var(--text-tertiary); background: var(--surface-raised); }
+#btn-sync.has-update { color: var(--p-accent-1, #4d94ff); border-color: var(--accent-border); }
+#btn-sync.busy { opacity: .55; }
 .proj-item .proj-remove:hover { color: var(--red); border-color: var(--red); background: rgba(248,81,73,.1); }
 
 
@@ -1943,6 +1993,10 @@ html, body { max-width: 100%; overflow-x: hidden; }
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
     <span id="btn-projects-label">项目</span>
   </button>
+  <button id="btn-sync" class="btn-ghost" title="检查更新（从远程仓库拉取最新修改）" aria-label="检查更新">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    <span id="btn-sync-label">同步</span>
+  </button>
   <button id="btn-gitgraph" class="btn-ghost" title="Git 版本树（查看分支/合并/提交）" aria-label="Git 版本树">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="3"/><circle cx="18" cy="19" r="3"/><circle cx="6" cy="19" r="3"/><path d="M6 8v8M9 5h4a5 5 0 0 1 5 5v6"/></svg>
     Git 图
@@ -1973,6 +2027,34 @@ html, body { max-width: 100%; overflow-x: hidden; }
     </div>
     <div id="projects-list"></div>
     <div id="projects-footer" style="padding:8px 14px;color:var(--fg-dim);font-size:12px"></div>
+  </div>
+</div>
+
+<!-- 同步 / 检查更新（Alt+U） -->
+<div id="sync-mask">
+  <div id="sync-panel" role="dialog" aria-label="检查更新" aria-modal="true">
+    <div id="sync-head">
+      <span class="sync-title">检查更新</span>
+      <span class="sync-sub">从远程仓库拉取服务器上的最新修改</span>
+      <span style="flex:1"></span>
+      <button class="sync-btn ghost" id="sync-close" aria-label="关闭同步面板">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="sync-body">
+      <div class="sync-meta" id="sync-meta"></div>
+      <div class="sync-status-line busy" id="sync-status">等待检查…</div>
+      <div class="sync-list" id="sync-list-wrap" style="display:none">
+        <div class="sync-list-head" id="sync-list-head"></div>
+        <div id="sync-list"></div>
+      </div>
+      <div class="sync-note err" id="sync-error" style="display:none"></div>
+      <div class="sync-note" id="sync-note" style="display:none"></div>
+    </div>
+    <div id="sync-foot">
+      <button class="sync-btn ghost" id="sync-recheck">重新检查</button>
+      <button class="sync-btn primary" id="sync-pull" disabled>拉取更新</button>
+    </div>
   </div>
 </div>
 
@@ -7305,9 +7387,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-/* Esc：先关全局搜索，再关文件内搜索/项目管理（各自检查可见性） */
+/* Esc：先关全局搜索，再关文件内搜索/项目管理/同步面板（各自检查可见性） */
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if ($("#sync-mask")?.classList.contains("show")) { closeSyncPanel(); return; }
   if ($("#gsearch-mask").classList.contains("show")) { globalSearchClose(); return; }
   if ($("#projects-mask").style.display !== "none") { closeProjectsPanel(); return; }
   if (fsVisible()) fileSearchClose();
@@ -7498,6 +7581,235 @@ $("#projects-close")?.addEventListener("click", closeProjectsPanel);
 $("#projects-mask")?.addEventListener("click", (e) => { if (e.target === $("#projects-mask")) closeProjectsPanel(); });
 $("#projects-add-btn")?.addEventListener("click", () => addProject($("#projects-path").value));
 $("#btn-projects")?.addEventListener("click", openProjectsPanel);
+
+/* ================= 同步 / 检查更新 =================
+   场景：我在服务器上开发并 push，用户在公司电脑上跑着这份工具，点一下拿到最新代码。
+   两步走：先「检查更新」（只 fetch，只读，显示有几个新提交），确认后再「拉取更新」
+   （会改工作区文件）——破坏性操作永远由人点。 */
+let _syncLast = null;          // 最近一次 status 结果
+let _syncBusy = false;         // 防连点：fetch/pull 期间禁用按钮
+
+// 未联网检查时后端返回 behind=null（未知，不是 0）。集中一处判断，
+// 免得各处写 `d.behind > 0` 时 null 的隐式转换被后人改坏。
+function syncBehind(d) {
+  const n = d && typeof d.behind === "number" ? d.behind : 0;
+  return n > 0 ? n : 0;
+}
+
+function syncMetaRow(k, v) {
+  return `<div class="sync-meta-row"><span class="k">${escapeHtml(k)}</span>` +
+         `<span class="v">${escapeHtml(v == null || v === "" ? "—" : String(v))}</span></div>`;
+}
+
+function syncSetStatus(text, kind) {
+  const el = $("#sync-status");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "sync-status-line " + (kind || "busy");
+}
+
+function syncShowError(msg) {
+  const el = $("#sync-error");
+  if (!el) return;
+  if (!msg) { el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "block";
+  el.textContent = msg;
+}
+
+function syncRender(d) {
+  const meta = $("#sync-meta");
+  if (meta && d) {
+    const cfg = d.config || {};
+    const dirty = (d.dirty || []).length;
+    const untracked = d.untracked || 0;
+    meta.innerHTML = [
+      syncMetaRow("仓库地址", cfg.repo),
+      syncMetaRow("分支", d.branch || cfg.branch),
+      syncMetaRow("本地版本", d.head),
+      syncMetaRow("当前分支", d.currentBranch),
+      // 未跟踪文件不算「修改」：不会阻止拉取，单独一行说清楚免得误解
+      syncMetaRow("未提交", dirty ? dirty + " 处修改" : "无"),
+      syncMetaRow("未跟踪", untracked ? untracked + " 个新文件" : "无"),
+    ].join("");
+  }
+
+  // 状态行 + 是否允许拉取
+  const pullBtn = $("#sync-pull");
+  const recheckBtn = $("#sync-recheck");
+  let canPull = false;
+
+  if (d && d.ok === false) {
+    syncSetStatus("检查失败", "err");
+    // 真正的失败原因在 fetchError 里（鉴权/网络/代理），d.error 只是「不是仓库」那类。
+    // 只读 d.error 的话最常见的失败原因永远显示成「未知错误」。
+    syncShowError(d.fetchError || d.error || "未知错误");
+    _syncLast = null;        // 服务端明确判定失败 → 丢弃旧结果，别拿它驱动按钮
+  } else if (d && d.fetchError) {
+    // ok=true 但 fetch 失败（面板仍拿到本地信息）——必须显式说失败，不能显示「已是最新」
+    syncSetStatus("检查失败", "err");
+    syncShowError(d.fetchError);
+    _syncLast = null;        // 同上：behind/ahead 此时是未联网的假 0
+  } else if (d && d.fetched && syncBehind(d) > 0) {
+    const n = syncBehind(d);
+    syncSetStatus(`有 ${n} 个新提交可拉取`, "upd");
+    syncShowError(d.pendingError || "");
+    canPull = true;
+  } else if (d && d.fetched) {
+    syncSetStatus("已是最新", "ok");
+    syncShowError("");
+  } else {
+    syncSetStatus("点「重新检查」获取远端最新状态", "busy");
+  }
+
+  // 待拉取提交列表
+  const wrap = $("#sync-list-wrap"), list = $("#sync-list"), head = $("#sync-list-head");
+  if (wrap && list && head) {
+    const items = (d && d.pending) || [];
+    if (items.length) {
+      wrap.style.display = "flex";
+      head.textContent = `待拉取提交（最新在上，共 ${items.length} 条` +
+        (syncBehind(d) > items.length ? `，还有 ${syncBehind(d) - items.length} 条未显示` : "") + "）";
+      list.innerHTML = items.map(c =>
+        `<div class="sync-commit"><span class="sc-sha">${escapeHtml(c.sha)}</span>` +
+        `<span class="sc-msg">${escapeHtml(c.msg)}</span></div>`).join("");
+    } else {
+      wrap.style.display = "none";
+      list.innerHTML = "";
+    }
+  }
+
+  if (pullBtn) { pullBtn.disabled = !canPull || _syncBusy; pullBtn.textContent = syncBehind(d) > 0 ? `拉取更新（${syncBehind(d)}）` : "拉取更新"; }
+  if (recheckBtn) recheckBtn.disabled = _syncBusy;
+
+  // 顶栏按钮：有更新时高亮提示
+  const btn = $("#btn-sync");
+  if (btn) btn.classList.toggle("has-update", !!(d && d.ok && d.fetched && syncBehind(d) > 0));
+
+  // 远端地址被自动改写 / sync.json 坏了 —— 都要让用户看见，不能静默
+  const notes = [];
+  if (d && d.note) notes.push(d.note);
+  if (d && d.configError) notes.push(d.configError);
+  if (d && d.ahead > 0) notes.push(`本地领先远端 ${d.ahead} 个提交（你的本地提交不会被覆盖）`);
+  const noteEl = $("#sync-note");
+  if (noteEl) {
+    noteEl.textContent = notes.join("\n");
+    noteEl.style.display = notes.length ? "block" : "none";
+  }
+}
+
+async function syncCheck(silent, force) {
+  // syncPull 内部还要复用一次检查，但它自己已持有 _syncBusy —— 不加 force
+  // 的话这次检查会被自己的守卫挡掉、返回 null，界面就永远停在「正在拉取…」
+  // 且 behind/提交列表全是拉取前的旧值（拉取按钮还一直可点）。
+  if (_syncBusy && !force) return null;
+  const wasBusy = _syncBusy;
+  _syncBusy = true;
+  _syncSetBusy(true);
+  syncSetStatus(silent ? "检查中…" : "正在连接远端…", "busy");
+  try {
+    const r = await fetch("/api/sync/status?fetch=1");
+    const d = await r.json();
+    _syncLast = d;
+    syncRender(d);
+    return d;
+  } catch (e) {
+    syncSetStatus("检查失败", "err");
+    syncShowError("无法连接本地服务: " + e);
+    // 检查失败时必须把「上次成功的结果」作废：否则 _syncSetBusy(false) 会拿
+    // 上一次的 behind>0 把拉取按钮点亮 —— 面板一边说「检查失败」，
+    // 一边提供基于过期数据的可点按钮。
+    _syncLast = null;
+    return null;
+  } finally {
+    _syncBusy = wasBusy;
+    _syncSetBusy(wasBusy);
+  }
+}
+
+function _syncSetBusy(b) {
+  const btn = $("#btn-sync");
+  if (btn) btn.classList.toggle("busy", b);
+  const p = $("#sync-pull"), r = $("#sync-recheck");
+  if (p) p.disabled = b || syncBehind(_syncLast) === 0;
+  if (r) r.disabled = b;
+}
+
+async function syncPull() {
+  if (_syncBusy) return;
+  const d = _syncLast;
+  if (!d || syncBehind(d) === 0) { toast("没有可拉取的更新", "err"); return; }
+  const dirty = (d.dirty || []).length;
+  const msg = dirty
+    ? `有 ${dirty} 处未提交的本地修改，拉取会被拒绝。请先提交或丢弃这些修改。继续？`
+    : `将拉取 ${syncBehind(d)} 个新提交。继续？`;
+  if (!confirm(msg)) return;
+  _syncBusy = true;
+  _syncSetBusy(true);
+  syncSetStatus("正在拉取…", "busy");
+  syncShowError("");
+  try {
+    const r = await fetch("/api/sync/pull", { method: "POST" });
+    const res = await r.json();
+    if (!res.ok) {
+      syncSetStatus("拉取失败", "err");
+      // 括号不能省：`a || "x" + b` 会解析成 `a || ("x"+b)`，
+      // 于是 dirty 列表只在 a 为空时才拼上去 —— 而 a 恰恰几乎总是有值，
+      // 结果是服务端真正的错误说明被整段吞掉、用户只看到空错误框。
+      const detail = res.dirty && res.dirty.length ? "\n" + res.dirty.join("\n") : "";
+      syncShowError((res.error || "未知错误") + detail);
+      // 重新检查会覆盖状态行/错误框，所以先记下这次失败原因，
+      // 检查完再把错误重新贴回去，否则「拉取失败」的原因被刷新冲掉。
+      const failMsg = (res.error || "未知错误") + detail;
+      await syncCheck(true, true);
+      syncSetStatus("拉取失败", "err");
+      syncShowError(failMsg);
+      return;
+    }
+    if (res.changed) {
+      toast(res.message || "已更新", "ok");
+      // 拉到的可能是前端文件本身：提示刷新页面才生效
+      alert((res.message || "已更新") +
+        "\n\n如果界面没变化，请刷新浏览器（Ctrl+F5）加载新版本。");
+    } else {
+      toast(res.message || "已是最新");
+    }
+    await syncCheck(true, true);
+  } catch (e) {
+    syncSetStatus("拉取失败", "err");
+    syncShowError("请求失败: " + e);
+  } finally {
+    _syncBusy = false;
+    _syncSetBusy(false);
+  }
+}
+
+function openSyncPanel() {
+  $("#sync-mask").classList.add("show");
+  syncRender(_syncLast);          // 先用缓存渲染，避免面板空白
+  syncCheck(true);                // 再真的联网检查
+}
+function closeSyncPanel() {
+  $("#sync-mask").classList.remove("show");
+}
+
+$("#btn-sync")?.addEventListener("click", openSyncPanel);
+$("#sync-close")?.addEventListener("click", closeSyncPanel);
+$("#sync-recheck")?.addEventListener("click", () => syncCheck(false));
+$("#sync-pull")?.addEventListener("click", syncPull);
+$("#sync-mask")?.addEventListener("click", (e) => { if (e.target === $("#sync-mask")) closeSyncPanel(); });
+
+// Alt+U 打开（与 Alt+P 项目管理对称）
+document.addEventListener("keydown", (e) => {
+  // 输入框里不劫持：否则在代码编辑器里按 Alt+U 会凭空弹出面板
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || (e.target && e.target.isContentEditable)) return;
+  if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === "u" || e.key === "U")) {
+    if ($("#sync-mask")?.classList.contains("show")) { closeSyncPanel(); return; }
+    e.preventDefault();
+    openSyncPanel();
+  }
+});
+
 $("#projects-path")?.addEventListener("keydown", (e) => { if (e.key === "Enter") addProject(e.target.value); });
 
 /* ================= 主题（明/暗）=================
