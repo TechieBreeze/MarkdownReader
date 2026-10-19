@@ -4876,7 +4876,7 @@ function isExternalFqn(text, typeName) {
   const pkg = fqn || typeName;
   const ownRoot = (parsePackage(text) || "").split(".").slice(0, 2).join(".");
   const EXT = ["java.", "javax.", "jdk.", "sun.", "com.baomidou", "com.alibaba", "org.", "com.github",
-    "lombok", "io.", "cn.", "com.fasterxml", "org.mybatis", "com.pvh.utils", "com.pvh.db"];
+    "lombok", "io.", "cn.", "com.fasterxml", "org.mybatis"];
   if (EXT.some(p => pkg.startsWith(p))) return true;
   if (imp.simple[typeName] && ownRoot && !pkg.startsWith(ownRoot)) return true;
   return false;
@@ -4891,7 +4891,7 @@ function isFrameworkParent(text) {
   let m;
   while ((m = re.exec(stripCodeNoise(text)))) names.push(m[1]);
   const EXT = ["com.baomidou", "com.alibaba", "org.springframework", "org.apache", "java.", "javax.",
-    "com.github", "org.slf4j", "lombok", "io.", "cn.", "org.jeasy", "com.fasterxml", "com.pvh.utils", "com.pvh.db"];
+    "com.github", "org.slf4j", "lombok", "io.", "cn.", "org.jeasy", "com.fasterxml"];
   return names.some(n => { const f = imp.simple[n]; return f && EXT.some(p => f.startsWith(p)); });
 }
 

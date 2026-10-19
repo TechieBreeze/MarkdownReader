@@ -41,7 +41,7 @@ except ImportError:
 # 外部/框架包前缀：类型或父类落到这些包 → 无本地定义（fastjson / MyBatis-Plus / Spring / java.* 等）
 JAVA_EXT_PKG_PREFIXES = (
     "java.", "javax.", "jdk.", "sun.", "com.baomidou", "com.alibaba", "org.", "com.github",
-    "lombok", "io.", "cn.", "com.fasterxml", "org.mybatis", "com.pvh.utils", "com.pvh.db",
+    "lombok", "io.", "cn.", "com.fasterxml", "org.mybatis",
 )
 
 HERE = os.path.dirname(os.path.abspath(__file__))
