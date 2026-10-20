@@ -44,10 +44,13 @@ python server.py --root D:/other/workspace   # 换工作区根目录
 
 服务器上开发、公司电脑上手动同步最新修改——不用敲 git 命令，也不用改远程地址。
 
-- **远程地址内置默认值**（`server.py` 里的 `DEFAULT_SYNC_REPO` = 本仓库地址，
+- **远程地址内置默认值**（`server.py` 里的 `DEFAULT_SYNC_REPO` = 本仓库的 **SSH 地址**，
   分支 `master`）。换地址不用改代码：写 `sync.json`（工具目录，已 gitignore）
   或启动时加 `--sync-repo <地址> --sync-branch <分支>`。
   优先级：**CLI 参数 > sync.json > 代码内置默认值**。
+- **为什么默认 SSH 而不是 HTTPS**：HTTPS 在没配凭据的机器上会直接报
+  `could not read Username for 'https://github.com'`（这台开发服务器就撞过一次）；
+  SSH 只需要一把部署密钥。公司电脑若没配 SSH，见下方「没配 SSH 怎么办」。
 - **两步走，不越权**：「检查更新」只 `git fetch`（只读），显示落后几个提交 +
   逐条列出提交信息；**只有你点「拉取更新」才会真正 `git pull`**——
   改工作区文件的破坏性操作永远由人点一下确认。
@@ -62,9 +65,41 @@ python server.py --root D:/other/workspace   # 换工作区根目录
 - 本地领先远端时只提示，不覆盖、不警告刷屏。
 
 ```jsonc
-// sync.json（可选，不写就用代码里的默认地址）
+// sync.json（可选，不写就用代码里的默认地址 = git@github.com:...）
+{ "repo": "git@github.com:TechieBreeze/MarkdownReader.git", "branch": "master" }
+```
+
+### 没配 SSH 怎么办
+
+公司电脑上如果没配 SSH 密钥，`git fetch` 会报
+`could not read Username for 'https://github.com'` 或 `Permission denied (publickey)`。
+
+**方案 A（推荐）：配一把部署密钥给 GitHub**
+
+1. 生成（Windows 用 Git Bash / PowerShell 都行）：
+
+   ```bash
+   ssh-keygen -t ed25519 -C "you@company-pc"
+   ```
+
+2. 公钥（`~/.ssh/id_ed25519.pub`）贴到 GitHub → Settings → SSH and GPG keys → New SSH key
+3. 验证：
+
+   ```bash
+   ssh -T git@github.com     # 看到 "Hi <用户名>! You've successfully authenticated" 即成功
+   ```
+
+**方案 B：用 Personal Access Token 走 HTTPS**
+
+写 `sync.json` 覆盖地址即可：
+
+```jsonc
 { "repo": "https://github.com/TechieBreeze/MarkdownReader.git", "branch": "master" }
 ```
+
+Token 在 GitHub → Settings → Developer settings → Personal access tokens 生成，
+权限只需 `repo`。**注意**：配之前先把账号里其它旧 token 轮换掉
+（Personal access tokens 页面可以列出并删除历史 token），别用新建的替代旧的。
 
 ## 一键启动（launch.py / start.bat）
 
