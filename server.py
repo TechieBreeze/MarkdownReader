@@ -59,7 +59,12 @@ PROJECTS_FILE = os.path.join(HERE, "projects.json")   # 项目管理持久化（
 # 同步配置（内置默认值 + 可被 sync.json 覆盖）。解决「我在服务器上开发、你在公司电脑上手动同步」：
 # 服务器 push 到远端后，公司电脑上点「检查更新」→ git pull 拿到最新代码。
 # 地址写死在代码里当默认值（换机器不用配），真要改就写 sync.json（已 gitignore）。
-DEFAULT_SYNC_REPO = "https://github.com/TechieBreeze/MarkdownReader.git"
+# 默认用 SSH 地址而不是 HTTPS：HTTPS 在没配凭据的机器上会直接
+# "could not read Username for 'https://github.com'"，而 SSH 只需一把
+# 部署密钥（github 的 Settings → SSH keys）。Windows 建议用 Git Bash 自带的
+# ssh 或 Git for Windows 的 bundled OpenSSH；没配 SSH 的机器写 sync.json
+# 覆盖成 HTTPS + Personal Access Token 也行。
+DEFAULT_SYNC_REPO = "git@github.com:TechieBreeze/MarkdownReader.git"
 DEFAULT_SYNC_BRANCH = "master"
 SYNC_FILE = os.path.join(HERE, "sync.json")
 # 项目增删切的互斥锁：ThreadingHTTPServer 多线程下，ROOTS/_VTOP/_CURRENT 是
