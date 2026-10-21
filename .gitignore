@@ -18,6 +18,10 @@ projects.json
 projects.json.tmp
 projects.json.broken
 
+# sync.json 覆盖同步用的远程地址/分支（可能含内网地址或带 token 的 URL），
+# 不该进仓库；默认地址已写死在 server.py 里，不配也能用。
+sync.json
+
 # ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
