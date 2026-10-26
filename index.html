@@ -2455,8 +2455,9 @@ let _vtops = [];
 
 /* 目录树状态声明。
    必须放在这里（顶层早期、initTasks() 之前）：initTasks() → renderTabbar()
-   → syncTreeActiveFile() 会在 L2015 顶层同步执行，而 syncTreeActiveFile 要读 expanded。
-   若这些 const 声明留在文件后部（原来在 4800+ 行），会撞 TDZ 抛
+   → syncTreeActiveFile() 会在 L2015 顶层同步执行，它会读 _curProject / _vtops
+   （多项目路径前缀）。若这些 const 声明留在文件后部
+   （原来在 4800+ 行），会撞 TDZ 抛
    "Cannot access 'expanded' before initialization"，导致整个 script 中断，
    后面的所有事件绑定都不执行（目录树/按钮全部点不动）。 */
 const expanded = new Set([""]);          // 已展开目录（path 相对根）
@@ -5683,19 +5684,11 @@ async function loadTree(dirPath) {
 async function locateInTree(filePath) {
   const p = (filePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
   if (!p) return false;
-  const parts = p.split("/").filter(Boolean);
-  if (parts.length <= 1) {          // 根目录下的文件：树根本来就展开
-    await renderTree();
-    return highlightTreeFile(p);
-  }
-  const dirs = parts.slice(0, -1);   // 逐级累积：gits / gits/employee / ... / 父目录
-  let cur = "";
-  expanded.add("");                  // 保证根在展开集合内
-  for (const seg of dirs) {
-    cur = cur ? cur + "/" + seg : seg;
-    expanded.add(cur);
-  }
-  await renderTree();                // 按新的 expanded 集合重建整棵树
+  expanded.add("");                    // 保证根在展开集合内
+  // 祖先目录必须用「树节点实际路径」：多项目下树节点带 vtop 前缀
+  // （20261020-jjy/docs/...），直接用无前缀的 docs/... 展开不到任何节点
+  for (const d of _treeAncestorDirs(p)) expanded.add(d);
+  await renderTree();                  // 按新的 expanded 集合重建整棵树
   saveExpanded();
   return highlightTreeFile(p);
 }
@@ -5703,7 +5696,13 @@ async function locateInTree(filePath) {
 /* 高亮 + 滚动到树中的目标文件节点；找不到（类型不在树里展示/文件已删）返回 false */
 function highlightTreeFile(filePath) {
   const tree = $("#tree");
-  const node = tree.querySelector(`.tree-item.file[data-path="${CSS.escape(filePath)}"]`);
+  // 树节点 data-path 带 vtop 前缀（如「20261020-jjy/docs/x.md」），
+  // 标签页/跳转给的路径可能不带前缀 —— 两种写法都要试，否则定位到了却不高亮
+  let node = null;
+  for (const cand of _pathCandidates(filePath)) {
+    node = tree.querySelector(`.tree-item.file[data-path="${CSS.escape(cand)}"]`);
+    if (node) break;
+  }
   if (!node) return false;
   tree.querySelectorAll(".tree-item.located").forEach(n => n.classList.remove("located"));
   node.classList.add("located");
@@ -5729,39 +5728,22 @@ function bindLocateButton(btn, filePath) {
   };
 }
 
-function syncTreeActiveFile(forceExpand) {
+/* 同步树中「当前打开文件」的高亮。
+   只在文件【已经可见】（父目录处于展开态）时标高亮 —— 不再强制展开父目录：
+     · 打开文件不应改变用户自己的目录展开状态（否则树会被文件路径带着一路展开）
+     · 手动折叠某个目录也不会被立刻重新展开
+   需要把文件在树里定位出来时，用标签页/弹窗头部的「定位」按钮（locateInTree）——
+   那是用户主动要求展开，与这里的被动高亮是两回事。 */
+function syncTreeActiveFile() {
   const t = curActiveTab();
   const path = t ? t.path : null;
   document.querySelectorAll("#tree .tree-item.file.active-file").forEach(n => n.classList.remove("active-file"));
   if (!path) return;
-  const node = document.querySelector(`#tree .tree-item.file[data-path="${CSS.escape(path)}"]`);
-  if (node) { node.classList.add("active-file"); return; }
-  if (forceExpand === false) return;
-
-  // 展开祖先。两个方向的路径不一致，必须都构造候选：
-  //   树节点 data-path 带 vtop 前缀：「20260917-微服务/docs/梳理」
-  //   标签页 path 可能无前缀：「docs/梳理/x.md」（旧文档 / 单根 / 服务端兜底解析）
-  const candidates = _pathCandidates(path);   // 与 _ancestorDirs 共用同一套前缀规则
-  let changed = false;
-  for (const base of candidates) {
-    const parts = base.split("/");
-    for (let i = 1; i < parts.length; i++) {
-      const dir = parts.slice(0, i).join("/");
-      if (dir && !expanded.has(dir)) { expanded.add(dir); changed = true; }
-    }
+  // 树节点 data-path 带 vtop 前缀，标签页 path 可能没有 —— 两种写法都试
+  for (const cand of _pathCandidates(path)) {
+    const node = document.querySelector(`#tree .tree-item.file[data-path="${CSS.escape(cand)}"]`);
+    if (node) { node.classList.add("active-file"); return; }
   }
-  if (!changed) return;
-  saveExpanded();
-  renderTree().then(() => {
-    for (const cand of candidates) {
-      const n2 = document.querySelector(`#tree .tree-item.file[data-path="${CSS.escape(cand)}"]`);
-      if (n2) {
-        n2.classList.add("active-file");
-        n2.scrollIntoView({ block: "nearest" });   // 滚动到可见，不强制居中
-        return;
-      }
-    }
-  }).catch(() => {});
 }
 
 
@@ -5823,6 +5805,26 @@ function _pathCandidates(path) {
   if (_vtops.includes(segs[0])) out.push(segs.slice(1).join("/"));
   else for (const v of _vtops) out.push(v + "/" + path);
   return out;
+}
+
+/* 目标文件在「树里」的各级父目录路径（可直接放进 expanded 展开）。
+   树节点 data-path 带 vtop 前缀，多项目模式下必须带对前缀，否则展开不到任何节点：
+     · 路径自带前缀（20261020-jjy/docs/x.md）→ 用它自己的前缀
+     · 否则用当前项目前缀（_curProject）
+     · 聚合模式（无当前项目）→ 各 vtop 前缀都试
+   根目录下的文件没有父目录 → 返回空数组。 */
+function _treeAncestorDirs(filePath) {
+  const segs = (filePath || "").replace(/\\/g, "/").replace(/^\/+/, "").split("/").filter(Boolean);
+  if (segs.length <= 1) return [];
+  const prefixes = _vtops.includes(segs[0]) ? [segs[0]]
+                : (_curProject ? [_curProject] : _vtops);
+  const out = new Set();
+  for (const pfx of prefixes) {
+    const full = pfx ? pfx + "/" + segs.join("/") : segs.join("/");
+    const fs = full.split("/");
+    for (let i = 1; i < fs.length; i++) out.add(fs.slice(0, i).join("/"));
+  }
+  return [...out];
 }
 
 async function renderTree() {
