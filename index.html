@@ -511,6 +511,16 @@ body {
   margin-right: 4px; vertical-align: -0.12em;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237ee787' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E") no-repeat center / contain;
 }
+/* 行锚点：零尺寸，不参与布局，只作 #L行号 定位的落点 */
+.md-body .md-ln { display: block; height: 0; overflow: hidden; }
+/* 定位到行时的闪烁高亮（与代码 tab 的 flash 一致） */
+.md-body .md-ln.md-flash { animation: mdLnFlash 1.1s ease-out 1; }
+@keyframes mdLnFlash {
+  0%   { box-shadow: 0 0 0 0 rgba(210,153,34,.85); background: rgba(210,153,34,.30); height: 1.6em; }
+  70%  { box-shadow: 0 0 0 6px rgba(210,153,34,0); background: rgba(210,153,34,.18); height: 1.6em; }
+  100% { box-shadow: 0 0 0 0 rgba(210,153,34,0); background: rgba(210,153,34,0); height: 0; }
+}
+
 .md-body a.md-jump, .md-body a.html-jump, .md-body a.img-jump {
   color: #79c0ff; background: rgba(79,140,255,0.08);
   border: 1px solid rgba(79,140,255,0.35); border-radius: 4px;
@@ -1498,6 +1508,8 @@ body {
 }
 /* 内容行：只做缩进，不参与背景 */
 #tree .tree-item > .t-row {
+  /* relative：层级竖线的 ::after 相对本行定位（父项箭头正下方往下贯穿） */
+  position: relative;
   display: flex; align-items: center; gap: 6px;
   /* 不收缩：长文件名把内容撑出树宽（行本身 width:100% 不变），
      溢出宽度由 .tree-sub 承载 → #tree 出现横向滚动。 */
@@ -1526,12 +1538,23 @@ body {
   /* 抵消旧实现的 margin，避免子项盒子被内缩 */
   margin-left: 0; padding-left: 0; border-left: none;
 }
-/* 竖线：绝对定位，不参与布局，因此不压缩子项宽度 */
-#tree .tree-sub::before {
+/* 层级竖线：画在【父项】上，从父项箭头正下方往下贯穿整个子树。
+   之前画在 .tree-sub::before 上，但 tree-sub 是父项的【兄弟节点】
+   （item.after(ns)），不是子容器 —— 于是：
+     · left 用的是子层缩进（--indent 来自 depth+1），位置偏右一层，压到子项文字上
+     · top:0 从 tree-sub 顶部起算，竖线与父项脱节、看起来向上超出
+   改法：竖线挂到父项的 .t-row 上，::after 绝对定位、bottom:-100% 向下贯穿。
+   父项的行高即子树起点，所以竖线从父项底部往���延伸到所有子项。
+   位置 = 父项箭头中心（与 .t-row 的 padding-left + 图标宽度对齐）。 */
+#tree .tree-item.dir > .t-row::after {
   content: ""; position: absolute;
-  left: calc(var(--indent, 10px) - 9px);
-  top: 0; bottom: 0; width: 1px;
-  background: var(--border-subtle);
+  /* 父项箭头中心：t-row 的 padding-left(=--indent+4) + 箭头宽 14 的一半 */
+  left: calc(var(--indent, 10px) + 4px + 7px);
+  top: 100%;
+  /* 高度由 JS 按实际子树高度设置（--guide-h），默认 0 = 不画 */
+  height: var(--guide-h, 0px);
+  border-left: 1px solid var(--border-subtle);
+  opacity: .8;
   pointer-events: none;
 }
 /* 短横线：从竖线连到子项内容，画在 .t-row 内（跟着缩进走） */
@@ -2958,7 +2981,17 @@ async function loadMarkdown(tab) {
   try {
     const j = await api("/api/markdown?path=" + encodeURIComponent(tab.path));
     tab.content = j.content;
-    if (curActiveId() === tab.id) renderContent(tab.content, tab.path);
+    if (curActiveId() === tab.id) {
+      renderContent(tab.content, tab.path);
+      if (tab.jumpLine) {
+        // 等 mermaid/图片异步插入完成后再定位，否则行高会变导致落点偏移
+        requestAnimationFrame(() => {
+          scrollMdToLine(tab.jumpLine);
+          setTimeout(() => scrollMdToLine(tab.jumpLine), 120);
+          setTimeout(() => scrollMdToLine(tab.jumpLine), 420);
+        });
+      }
+    }
   } catch (e) {
     toast("打开失败: " + e.message, "err");
     closeTab(tab.id);
@@ -2992,7 +3025,10 @@ function renderTabContent(tab) {
   if (tab.kind === "code") renderCodeTabContent(tab);
   else if (tab.kind === "html") renderHtmlTab(tab);
   else if (tab.kind === "image") renderImageTab(tab);
-  else renderContent(tab.content, tab.path);
+  else {
+    renderContent(tab.content, tab.path);
+    if (tab.jumpLine) requestAnimationFrame(() => scrollMdToLine(tab.jumpLine));
+  }
 }
 
 /* ================= HTML 标签页：渲染视图 / 源代码视图 ================= */
@@ -3466,6 +3502,105 @@ function markScrollableTables(scope) {
   });
 }
 
+/* ================= Markdown 行锚点（支持 #L行号 定位） =================
+   需求：[文档](路径.md#L85) 要能跳到目标文件的那一行。
+   代码 tab 靠 .cl-line[data-line] 实现；md tab 的 HTML 是 marked 生成的、没有行号，
+   所以渲染时按「顶层块的源行号」插入锚点 span，再由 scrollMdToLine 定位。
+
+   行号来源：marked.lexer() 的顶层 token 保留了 raw（原始文本），
+   按顺序在原文中定位 raw 的出现位置即可反推起始行。
+   （不能用「累加 raw.length」推算：块之间的空行会被 space token 吃掉，
+     也不含被 parser 吞掉的换行，会整体偏移。）
+   注意：md.indexOf(raw, pos) 必须带 pos 游标 —— 同一段 raw 可能重复出现。 */
+function mdTopLevelLineMap(mdText) {
+  const map = [];
+  let toks;
+  try { toks = marked.lexer(mdText); } catch (e) { return map; }
+  let pos = 0;
+  for (const t of toks) {
+    const raw = t.raw || "";
+    if (!raw) continue;
+    let start = mdText.indexOf(raw, pos);
+    if (start < 0) start = pos;
+    const line = mdText.slice(0, start).split("\n").length;
+    map.push({ line, type: t.type });
+    pos = start + raw.length;
+  }
+  return map;
+}
+
+/* 顶层 token 类型 → 渲染出的顶层标签名。
+   marked 的 lexer 顶层 token 与 parse 出的顶层块一一对应（顺序、数量都一致），
+   用标签名做匹配比「按字符串切 HTML」可靠：后者会被嵌套的 <li>/<td> 切错。 */
+const MD_BLOCK_TAG = {
+  heading: null,        // 标题按层级有 h1~h6，单独处理
+  paragraph: "p",
+  table: "table",
+  list: null,           // ul / ol
+  code: "pre",
+  blockquote: "blockquote",
+  hr: "hr",
+  html: "div",
+  space: null,          // 空白，不产生块
+  def: null,
+  text: "p",
+};
+
+/* 渲染 md 为 HTML，并给每个顶层块前置行号锚点。
+   锚点是零尺寸的 span，不影响布局；定位时用它做 scrollIntoView 的锚点。 */
+function renderMdWithLineAnchors(mdText) {
+  const html = marked.parse(mdText, { gfm: true, breaks: true });
+  const map = mdTopLevelLineMap(mdText);
+  if (!map.length) return html;
+  // 找出 HTML 里所有顶层块的开标签位置（只匹配不在标签内部的名字）
+  const tagRe = /<(\w+)(?:\s[^>]*)?>/g;
+  const opens = [];
+  let m;
+  while ((m = tagRe.exec(html))) opens.push({ tag: m[1].toLowerCase(), idx: m.index });
+  // 顶层块标签集合
+  const TOP = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol",
+                       "blockquote", "pre", "table", "hr", "div"]);
+  // 逐个 token 找匹配的顶层标签：
+  //   - heading：找下一个 h1~h6
+  //   - list：找下一个 ul/ol
+  //   - 其它：按映射表找对应标签
+  const used = new Set();
+  const anchors = [];   // {pos, line}
+  let oi = 0;
+  for (const entry of map) {
+    const t = entry.type;
+    if (t === "space" || t === "def") continue;
+    let want = MD_BLOCK_TAG[t];
+    let found = -1;
+    if (t === "heading") {
+      for (let k = oi; k < opens.length; k++) {
+        if (/^h[1-6]$/.test(opens[k].tag)) { found = k; break; }
+      }
+    } else if (t === "list") {
+      for (let k = oi; k < opens.length; k++) {
+        if (opens[k].tag === "ul" || opens[k].tag === "ol") { found = k; break; }
+      }
+    } else if (want) {
+      for (let k = oi; k < opens.length; k++) {
+        if (opens[k].tag === want) { found = k; break; }
+      }
+    }
+    if (found < 0) continue;
+    anchors.push({ pos: opens[found].idx, line: entry.line });
+    oi = found + 1;
+  }
+  if (!anchors.length) return html;
+  // 从后往前插，避免位移影响前面的位置
+  let out = html;
+  for (let i = anchors.length - 1; i >= 0; i--) {
+    const a = anchors[i];
+    out = out.slice(0, a.pos) +
+      `<span class="md-ln" data-line="${a.line}" aria-hidden="true"></span>` +
+      out.slice(a.pos);
+  }
+  return out;
+}
+
 function renderContent(mdText, mdPath) {
   const box = $("#content");
   box.className = "";
@@ -3475,7 +3610,7 @@ function renderContent(mdText, mdPath) {
       `<span class="mt-path" title="${escapeHtml(mdPath)}">${escapeHtml(mdPath)}</span>` +
       `<span class="mt-actions"><button id="ct-locate" title="在左侧目录树中定位本文件（展开所有父目录）">定位</button></span>` +
     `</div>` +
-    `<div class="md-body">${marked.parse(mdText, { gfm: true, breaks: true })}</div>`;
+    `<div class="md-body">${renderMdWithLineAnchors(mdText)}</div>`;
   bindLocateButton($("#ct-locate"), mdPath);   // 公共定位：markdown 标签页
   markScrollableTables(box);
   // 图片相对路径 → /api/raw
@@ -3540,9 +3675,12 @@ function renderContent(mdText, mdPath) {
       });
     } else if (lkind === "md") {
       a.classList.add("md-jump");
+      // 标题里带行号时说明会定位到该行（#L85 → 打开并跳到第 85 行）
+      a.title = "打开文档: " + abs + (line ? " :第 " + line + " 行" : "");
       a.addEventListener("click", (e) => {
         e.preventDefault();
-        openTab(abs);
+        pushNav(abs, line);
+        openTab(abs, { line });
       });
     } else if (lkind === "html" || lkind === "image") {
       a.classList.add(lkind === "html" ? "html-jump" : "img-jump");
@@ -4080,6 +4218,42 @@ function resolveRel(mdPath, rel) {
     else base.push(p);
   }
   return base.join("/");
+}
+
+/* ================= Markdown 行定位（#L行号） =================
+   md tab 的正文是 marked 生成的 HTML，行号锚点由 renderMdWithLineAnchors 插入
+   （.md-ln[data-line]）。定位策略：找到【行号 ≤ 目标行】的最后一个锚点，
+   滚到那里 —— 因为一个顶层块可能覆盖多行，锚点标的是块的起始行。 */
+function scrollMdToLine(line, container) {
+  if (!line) return false;
+  const scroll = container || $("#content");
+  if (!scroll) return false;
+  const anchors = [...scroll.querySelectorAll(".md-ln[data-line]")]
+    .map(el => ({ el, line: parseInt(el.dataset.line, 10) || 0 }))
+    .filter(a => a.line > 0)
+    .sort((a, b) => a.line - b.line);
+  if (!anchors.length) return false;
+  // 最后一个 ≤ 目标行的锚点；没有则取第一个
+  let target = anchors[0];
+  for (const a of anchors) { if (a.line <= line) target = a; else break; }
+  // 若目标行正好落在某个锚点上，优先精确匹配
+  const exact = anchors.find(a => a.line === line);
+  if (exact) target = exact;
+  // 滚动：让锚点落在视口上部偏一点（不是正中，便于看上下文）
+  const top = target.el.getBoundingClientRect().top - scroll.getBoundingClientRect().top
+            + scroll.scrollTop - 24;
+  scroll.scrollTop = Math.max(0, top);
+  flashMdLine(target.el);
+  return true;
+}
+
+/* 定位落地的一次性闪烁高亮 */
+function flashMdLine(el) {
+  if (!el) return;
+  el.classList.remove("md-flash");
+  void el.offsetWidth;      // 强制回流，让动画能重放
+  el.classList.add("md-flash");
+  setTimeout(() => el.classList.remove("md-flash"), 1300);
 }
 
 /* ================= 代码弹窗 ================= */
@@ -5613,6 +5787,30 @@ function treeFileIconHtml(ext) {
     `stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">${cat.inner}</svg></span>`;
 }
 
+/* 层级竖线长度 = 子树实际高度。
+   竖线画在父项 .t-row 的 ::after 上（top:100% 起、向下延伸 --guide-h），
+   所以要量出「父项底部到子树最后一个子项底部」的距离。
+   用绝对定位的高度不能用 offsetHeight 差值（子树可能更高），
+   直接取子树容器的 scrollHeight 最准。 */
+function updateTreeGuides(item) {
+  if (!item) return;
+  const row = item.querySelector(":scope > .t-row");
+  if (!row) return;
+  const sub = item.nextElementSibling;
+  if (!sub || !sub.classList.contains("tree-sub")) {
+    row.style.setProperty("--guide-h", "0px");
+    return;
+  }
+  // 子树最后一个可见子项的底边 - 父项行底边
+  const kids = sub.querySelectorAll(":scope > .tree-item");
+  if (!kids.length) { row.style.setProperty("--guide-h", "0px"); return; }
+  const last = kids[kids.length - 1];
+  const itemRect = item.getBoundingClientRect();
+  const lastRect = last.getBoundingClientRect();
+  const h = Math.max(0, lastRect.bottom - itemRect.bottom);
+  row.style.setProperty("--guide-h", h + "px");
+}
+
 async function renderTreeDir(container, dirPath, depth) {
   let entries;
   try {
@@ -5649,11 +5847,11 @@ async function renderTreeDir(container, dirPath, depth) {
         expanded.add(d.path);
         const ns = document.createElement("div");
         ns.className = "tree-sub";
-        // 竖线位置按该层缩进（--indent）计算，见 CSS 里 .tree-sub::before 的 left
         ns.style.setProperty("--indent", (10 + depth * 14) + "px");
         item.after(ns);
         icon.textContent = "▾";
         await renderTreeDir(ns, d.path, depth + 1);
+        updateTreeGuides(item);   // 竖线长度 = 子树高度
         saveExpanded();
         syncTreeActiveFile();   // 展开后活动文件若在其中 → 标记高亮
       }
@@ -5665,6 +5863,7 @@ async function renderTreeDir(container, dirPath, depth) {
       sub.style.setProperty("--indent", (10 + depth * 14) + "px");
       item.after(sub);
       await renderTreeDir(sub, d.path, depth + 1);
+      updateTreeGuides(item);   // 竖线长度 = 子树高度
     }
   }
   for (const f of files) {
