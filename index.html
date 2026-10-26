@@ -204,9 +204,9 @@ body {
 .tab.dragging { opacity: 0.45; }
 #topbar button svg { display: block; }
 #topbar button:disabled { opacity: 0.45; cursor: default; }
-/* 目录树工具栏（刷新按钮；sticky 上下+左右都钉住，横向滚动时仍可见） */
+/* 目录树工具栏（刷新按钮）：现在是 #tree 的固定头部（不参与滚动） */
 .tree-toolbar {
-  position: sticky; top: 0; left: 0; z-index: 2;
+  flex: none;
   display: flex; align-items: center; gap: 6px;
   padding: 6px 10px 6px; background: var(--bg2);
   border-bottom: 1px solid var(--border); margin-bottom: 2px;
@@ -295,7 +295,9 @@ body {
 #tree {
   flex: 0 0 auto; width: var(--tree-w, 260px); min-width: 150px;
   max-width: 85vw; background: var(--bg2);
-  border-right: 1px solid var(--border); overflow: auto; padding: 0 0 6px;
+  /* 滚动交给 #tree-items（见下方新样式）：#tree 自身不滚动，
+     滚动条才不会一路顶到「目录」标题那一块区域 */
+  border-right: 1px solid var(--border); overflow: hidden; padding: 0 0 6px;
   font-size: 13px;
 }
 /* 拖拽分隔条：拖动调整目录树宽度 */
@@ -1470,11 +1472,20 @@ body {
 #tabbar .tab.dirty .x::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 
 /* ---------- 5. 目录树：提升密度与当前位置反馈 ---------- */
+/* #tree = 固定头部（.tree-toolbar）+ 滚动区（#tree-items）的纵向 flex 列。
+   滚动容器是 #tree-items 而不是 #tree：滚动条只出现在「目录」标题下方，
+   不会沿着标题区域一路拉上去（标题也不再需要 sticky）。 */
 #tree {
   width: var(--tree-w);
   background: var(--surface-chrome);
   border-right: 1px solid var(--border-subtle);
   font-size: var(--fs-md);
+  display: flex; flex-direction: column;
+  overflow: hidden;                 /* 滚动由 #tree-items 负责 */
+}
+#tree-items {
+  flex: 1 1 auto; min-height: 0;    /* min-height:0 才能在 flex 列里收缩并滚动 */
+  overflow: auto;                   /* 纵向+横向滚动条都只出现在标题下方 */
 }
 #tree-head {
   height: 32px; padding: 0 var(--sp-3);
@@ -1942,8 +1953,10 @@ body {
 
    Chrome 没有「只隐藏横向滚动条」的纯 CSS 方案
    （::-webkit-scrollbar 的 height:0 对经典滚动条无效），只能整体隐藏。
-   横向滚动能力保留：overflow-x 仍是 auto —— 滚轮横向/Shift+滚轮/触控板
-   均可滚动，标签拖拽排序时 setupTabDrag 里已有边缘自动横向滚动。
+   横向滚动能力保留：overflow-x 仍是 auto —— 触控板横向滑动、Shift+滚轮均可滚动；
+   另外 JS 里给 #tabbar 挂了 wheel 处理，【普通纵向滚轮悬停在标签栏上也会横向滚动】
+   （到两端自动放行给外层），不用再按 Shift。
+   标签拖拽排序时 setupTabDrag 里还有边缘自动横向滚动。
    右侧渐隐提示还有标签（JS 按实际溢出打 .has-right）。 */
 #tabbar {
   scrollbar-width: none;                /* Firefox / Edge */
@@ -2621,6 +2634,26 @@ function renderTabbar() {
       bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
     }, { passive: true });
     bar.__hintBound = true;
+  }
+  // 纵向滚轮 → 标签栏横向滚动（不用再按 Shift）。
+  // 浏览器只把 Shift+滚轮 映射成横向滚动，标签一多就只能靠 Shift+滚轮，很别扭。
+  // 这里把 deltaY 折算成 scrollLeft；到两端时不再拦截，把滚动交还给外层。
+  if (!bar.__wheelBound) {
+    bar.addEventListener("wheel", (e) => {
+      if (e.deltaY === 0) return;                 // 触控板横向滑动交给浏览器自己处理
+      const max = bar.scrollWidth - bar.clientWidth;
+      if (max <= 0) return;                       // 没有横向溢出 → 不拦截，页面照常纵向滚
+      // deltaMode: 0=像素 1=行 2=页 —— 统一折算成像素
+      const dy = e.deltaMode === 1 ? e.deltaY * 16
+                : e.deltaMode === 2 ? e.deltaY * bar.clientWidth
+                : e.deltaY;
+      const next = bar.scrollLeft + dy;
+      if (dy < 0 && next <= 0) return;            // 已到最左 → 放行
+      if (dy > 0 && next >= max) return;          // 已到最右 → 放行
+      e.preventDefault();
+      bar.scrollLeft = next;
+    }, { passive: false });
+    bar.__wheelBound = true;
   }
   const plus = document.createElement("span");
   plus.className = "tab-new"; plus.textContent = "＋";
@@ -5595,10 +5628,11 @@ function treeStoreKey() {
 
 function saveExpanded() {
   try {
-    const tree = $("#tree");
+    // 滚动容器是 #tree-items（#tree 自身不滚动，滚动条只出现在「目录」标题下方）
+    const box = $("#tree-items");
     localStorage.setItem(treeStoreKey(), JSON.stringify({
       paths: Array.from(expanded),
-      scrollTop: tree ? tree.scrollTop : 0,
+      scrollTop: box ? box.scrollTop : 0,
     }));
   } catch (e) { /* 存储不可用静默 */ }
 }
@@ -5792,14 +5826,14 @@ function _pathCandidates(path) {
 }
 
 async function renderTree() {
-  const tree = $("#tree");
   const box = $("#tree-items");
-  const st = _treeScrollRestore || tree.scrollTop || 0;
+  // 滚动容器是 #tree-items（#tree 只做布局，滚动条不经过「目录」标题区）
+  const st = _treeScrollRestore || box.scrollTop || 0;
   _treeScrollRestore = 0;
   box.innerHTML = "";
   _ancestorPathSet = _ancestorDirs();
   await renderTreeDir(box, "", 0);
-  tree.scrollTop = st;          // 刷新/恢复后保持滚动位置
+  box.scrollTop = st;           // 刷新/恢复后保持滚动位置
   saveExpanded();               // 同步一次（含 scrollTop）
   syncTreeActiveFile();         // 树重建后重新标记当前打开文件
 }
