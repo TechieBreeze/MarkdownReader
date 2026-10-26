@@ -74,6 +74,9 @@
 
   /* 代码高亮（GitHub Dark + One Dark Pro 混合，取值已实测 ≥4.5:1） */
   --code-bg:        var(--surface-inset);
+  /* 代码正文基础色（未被任何 hljs-* 命中的普通文本）：
+     代码视图（.cl-code）与 md 代码块（pre code）共用同一个值，两处底色观感一致 */
+  --code-fg:        #d4d4d4;
   --hl-keyword:     #ff7b72;   /* 6.6:1 */
   --hl-string:      #a5d6ff;   /* 10.9:1 */
   --hl-comment:     #8b9bb4;   /* 5.4:1 */
@@ -131,6 +134,7 @@
   --accent-subtle: rgba(37, 99, 235, 0.09);
   --accent-border: rgba(37, 99, 235, 0.35);
   --surface-inset: #f6f8fb;
+  --code-fg: #24292f;
   --hl-keyword: #cf222e; --hl-string: #0a3069; --hl-comment: #6e7781;
   --hl-number: #0550ae; --hl-function: #8250df; --hl-type: #953800;
   --hl-title: #953800; --hl-attr: #0550ae; --hl-builtin: #cf222e;
@@ -1721,7 +1725,10 @@ body {
   overflow-x: auto;
   box-shadow: var(--shadow-1);
 }
-.md-body pre code { background: none; border: none; padding: 0; font-size: inherit; color: inherit; }
+/* 代码块正文底色：与代码视图（.cl-code）共用 --code-fg，
+   保证同一段代码在「md 代码块」和「代码视图」里基础文字色一致。
+   背景/边框/圆角保持 md 侧卡片样式（--surface-inset），容器形态不同、底色分层不同。 */
+.md-body pre code { background: none; border: none; padding: 0; font-size: inherit; color: var(--code-fg); }
 
 /* 引用块：左侧 3px 强调线（截图分析：当前像临时嵌入的灰盒子）*/
 .md-body blockquote {
@@ -2343,7 +2350,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
 /* ===== 代码标签页（.ct-scroll）复用同一套 VSCode Dark+ 配色 ===== */
 /* ===== VSCode Dark+ 代码弹窗配色覆盖（仅作用于代码弹窗 #m-scroll，不动 vendor 主题） ===== */
 .ct-scroll .cl-no { color: #858585; border-right-color: #3E3E42; }
-.ct-scroll .cl-code { color: #D4D4D4; }
+.ct-scroll .cl-code { color: var(--code-fg); }
 /* 关键字 / 标签名 / 属性名 / 指令 / @tag / 标题：蓝 */
 .ct-scroll .hljs-keyword,
 .ct-scroll .hljs-doctag,
@@ -3836,7 +3843,8 @@ function hljsLang(lang) {
   return "";
 }
 
-/* md 正文中带 ```lang 标注的代码块 → hljs 语法高亮（无标注保持原样） */
+/* md 正文中带 ```lang 标注的代码块 → 与代码视图同一套高亮渲染
+   （共用 highlightCodeHtml / highlightToLines，着色与代码视图逐 token 一致） */
 function highlightCodeBlocks() {
   if (typeof hljs === "undefined") return;
   const blocks = [...document.querySelectorAll("#content .md-body pre code[class*='language-']")];
@@ -3857,7 +3865,8 @@ function highlightCodeBlocks() {
       const hl = hljsLang(lang);          // 归一化：vue→xml、js→javascript 等
       if (!hl) continue;                  // 未收录语言 → 保持原文不高亮
       try {
-        code.innerHTML = hljs.highlight(code.textContent, { language: hl, ignoreIllegals: true }).value;
+        // 与代码视图同源：Java/Kotlin 补色 + 类型增强 + 逐行转义，两处着色一致
+        code.innerHTML = renderHighlightedCode(code.textContent, lang);
         code.classList.add("hljs");
       } catch (e) { /* 保留原文 */ }
       // 单个大块超预算时也要让出主线程（当前块已处理完）
@@ -4653,13 +4662,47 @@ function langForPath(path) {
   return map[ext] || "plaintext";
 }
 
-/* Java/Kotlin 后处理（VSCode Dark+ 观感）：hljs 不标方法调用名与变量/字段引用。
+/* ================= 代码高亮统一管线 =================
+   代码视图（代码标签页 / 弹窗 / 源码模式）与 md 正文代码块共用同一条管线：
+     highlightCodeHtml → hljs 高亮 + Java/Kotlin 类型增强 → HTML 字符串
+     highlightToLines  → HTML 字符串 → 每行 token（HTML 转义 + Java/Kotlin 标识符补色）
+   两边都走这两个函数，所以同一段代码在两处的着色（token class 集合）完全一致，
+   配色也自动一致 —— 配色由 class 决定（.hljs-* 规则），class 相同颜色就相同。 */
+
+/* Java/Kotlin？这两种语言额外做类型增强与标识符补色 */
+function isJavaKtLang(lang) {
+  return lang === "java" || lang === "kotlin" || lang === "kt";
+}
+
+/* Java/Kotlin 类型增强（VSCode Dark+ 观感）：hljs 的 Java/Kotlin 语法只对
+   「带赋值的声明」识别类型（hljs-type），静态调用点（JSONObject.parseObject）、
+   无初始化声明、字段/返回类型里的类名都不高亮。
+   精确增强（只补类型语义位置，统一用 hljs-type 类型色，不碰已高亮的 token，
+   不误伤字符串/注释/常量）：
+     · 后跟 . 或 空白 → 类名（静态调用 / 声明 / 返回类型）
+     · 泛型 <Type>（hljs 会把 < 转义成 HTML 实体）
+   排除全大写标识符（常量/枚举），排除已被 span 包裹的内容。
+   注：正则里的 \x26lt; 表示「&」+「lt;」两个字符（即 < 的 HTML 实体），
+   「&」写成 \x26 是为了避免它在源码里被当成 HTML 实体起始。 */
+function enhanceJavaKtTypes(html) {
+  return html.replace(
+    /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|(?<=<|\x26lt;)\b[A-Z]\w*\b/g,
+    (m) => {
+      if (m.startsWith("<span")) return m;
+      if (!/[a-z]/.test(m)) return m;   // 全大写常量/枚举 → 跳过
+      return `<span class="hljs-type">${m}</span>`;
+    });
+}
+
+/* Java/Kotlin 标识符补色：hljs 不标方法调用名与变量/字段引用。
    只处理「未被任何 span 包裹」的纯文本标识符（绝无双重包裹）：
-   · xxx.yyy( 的 yyy / 独立的 yyy( → hljs-title function_（黄 #DCDCAA）
-   · 其余小写开头标识符（变量/字段/参数引用）→ hljs-variable（浅蓝 #9CDCFE）
+   · xxx.yyy( 的 yyy / 独立的 yyy( → hljs-title function_（函数名色）
+   · 其余小写开头标识符（变量/字段/参数引用）→ hljs-variable（变量色）
    显式排除 Java/Kotlin 关键字与字面量、PascalCase 类型/全大写常量；
-   字符串/注释/数字已被 hljs 包裹（classes 非空），不会走到这里，本函数也不匹配数字。 */
-function hljsPostProcJavaKt(txt) {
+   字符串/注释/数字已被 hljs 包裹（classes 非空），不会走到这里，本函数也不匹配数字。
+   返回 token 数组而不是拼好的 HTML：调用方负责转义与拼接，
+   避免把已转义的 HTML 实体当正文再处理一遍（实体名会被误判成标识符）。 */
+function hljsPostProcJavaKtTokens(txt) {
   var KW = {};
   ("abstract assert boolean break byte case catch char class const continue default do double " +
    "else enum extends final finally float for goto if implements import instanceof int interface " +
@@ -4670,44 +4713,42 @@ function hljsPostProcJavaKt(txt) {
    "external final infix init inline inner internal lateinit noinline open operator out override " +
    "private protected public reified sealed suspend tailrec vararg actual abstract annotation " +
    "fun val typeof typealias when where in is object").split(" ").forEach(function (k) { KW[k] = 1; });
-  return txt.replace(/\b[A-Za-z_$][\w$]*\b/g, function (m, off, s) {
-    if (KW[m] || /^[A-Z]/.test(m)) return m;               // 关键字/字面量、PascalCase 类型/常量 → 不动
-    return s.charAt(off + m.length) === "("
-      ? '<span class="hljs-title function_">' + m + "</span>"  // 方法调用名 → 黄
-      : '<span class="hljs-variable">' + m + "</span>";        // 变量/字段/参数引用 → 浅蓝
-  });
+  const out = [];
+  let last = 0;
+  const re = /\b[A-Za-z_$][\w$]*\b/g;
+  let m;
+  while ((m = re.exec(txt)) !== null) {
+    const word = m[0];
+    if (KW[word] || /^[A-Z]/.test(word)) continue;   // 关键字/字面量、PascalCase 类型/常量 → 不动
+    const cls = txt.charAt(m.index + word.length) === "(" ? "hljs-title function_" : "hljs-variable";
+    if (m.index > last) out.push({ cls: "", txt: txt.slice(last, m.index) });
+    out.push({ cls, txt: word });
+    last = m.index + word.length;
+  }
+  if (last < txt.length) out.push({ cls: "", txt: txt.slice(last) });
+  return out;
 }
 
-/* hljs 高亮整个文件后按行重建 DOM，返回每行 HTML（跨行 token 保持正确） */
-function highlightByLine(content, lang) {
-  let html;
+/* hljs 高亮 → HTML 字符串（未收录语言 / 高亮异常 → 转义后的原文） */
+function highlightCodeHtml(content, lang) {
   const hl = hljsLang(lang);   // 归一化：vue→xml、js→javascript、未知→""（不高亮）
-  const isJavaKt = lang === "java" || lang === "kotlin" || lang === "kt";
-  if (typeof hljs !== "undefined" && hljs.highlight && hl) {
-    try {
-      html = hljs.highlight(content, { language: hl, ignoreIllegals: true }).value;
-    } catch (e) {
-      html = escapeHtml(content);
-    }
-  } else {
-    html = escapeHtml(content);
+  if (typeof hljs === "undefined" || !hljs.highlight || !hl) return escapeHtml(content);
+  let html;
+  try {
+    html = hljs.highlight(content, { language: hl, ignoreIllegals: true }).value;
+  } catch (e) {
+    return escapeHtml(content);
   }
-  // hljs 的 Java/Kotlin 语法只对「带赋值的声明」识别类型（hljs-type），静态调用点
-  // （JSONObject.parseObject）、无初始化声明、字段/返回类型里的类名都不高亮。
-  // 精确增强（只补类型语义位置，统一用 hljs-type 类型色，不碰已高亮的 token，
-  // 不误伤字符串/注释/常量）：
-  //   · 后跟 . 或 空白 → 类名（静态调用 / 声明 / 返回类型）
-  //   · 泛型 <Type>（hljs 会把 < 转义为 &lt;）
-  //   排除全大写标识符（常量/枚举），排除已被 span 包裹的内容
-  if (isJavaKt) {
-    html = html.replace(
-      /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|(?<=<|&lt;)\b[A-Z]\w*\b/g,
-      (m) => {
-        if (m.startsWith("<span")) return m;
-        if (!/[a-z]/.test(m)) return m;   // 全大写常量/枚举 → 跳过
-        return `<span class="hljs-type">${m}</span>`;
-      });
-  }
+  if (isJavaKtLang(lang)) html = enhanceJavaKtTypes(html);
+  return html;
+}
+
+/* HTML 字符串 → 每行 token（按行重建 DOM，跨行 token 保持正确）
+   · 文本节点是【解码后】的内容（HTML 实体已还原成 < > 等字符），
+     重新拼回 HTML 时必须再转义一次，否则 < 会被浏览器当成标签开头，
+     代码内容丢失（如 a<b 会被当成 <b 标签）。
+   · Java/Kotlin：未被 span 包裹的纯文本 → 补方法调用名与变量/字段引用。 */
+function highlightToLines(html, isJavaKt) {
   const tmpl = document.createElement("template");
   tmpl.innerHTML = html;
   const lines = [];
@@ -4719,14 +4760,18 @@ function highlightByLine(content, lang) {
       for (let i = 0; i < parts.length; i++) {
         if (i > 0) { current = []; lines.push(current); }
         if (parts[i] !== "") {
-          // Java/Kotlin：未被任何 span 包裹的纯文本 → 补方法调用名(黄)与变量/字段引用(浅蓝)
-          const txt = (!classes.length && isJavaKt) ? hljsPostProcJavaKt(parts[i]) : parts[i];
-          current.push({ cls: classes.slice(), txt: txt });
+          // Java/Kotlin：未被任何 span 包裹的纯文本 → 补方法调用名与变量/字段引用
+          const toks = (!classes.length && isJavaKt)
+            ? hljsPostProcJavaKtTokens(parts[i])
+            : [{ cls: "", txt: parts[i] }];
+          for (const t of toks) {
+            current.push({ cls: classes.concat(t.cls ? t.cls.split(" ") : []), txt: escapeHtml(t.txt) });
+          }
         }
       }
     } else if (node.nodeType === 1 || node.nodeType === 11) {  // element / DocumentFragment
       // 保留 title 的语义子类（class_/function_/inherited__/invoke__），
-      // 使函数名(#DCDCAA)与类名(#4EC9B0)在 VSCode Dark+ 配色下可区分
+      // 使函数名与类名在配色下可区分
       const cls = (node.className || "").split(" ")
         .filter(c => c.startsWith("hljs-") || c === "class_" || c === "function_" || c === "inherited__" || c === "invoke__");
       const childClasses = classes.concat(cls);
@@ -4737,6 +4782,16 @@ function highlightByLine(content, lang) {
   return lines.map(tokens =>
     tokens.map(t => t.cls.length ? `<span class="${t.cls.join(" ")}">${t.txt}</span>` : t.txt).join("")
   );
+}
+
+/* 代码视图：hljs 高亮整个文件后按行重建 DOM，返回每行 HTML */
+function highlightByLine(content, lang) {
+  return highlightToLines(highlightCodeHtml(content, lang), isJavaKtLang(lang));
+}
+
+/* md 正文代码块：与代码视图同源同结果（逐行管线拼回整块） */
+function renderHighlightedCode(content, lang) {
+  return highlightToLines(highlightCodeHtml(content, lang), isJavaKtLang(lang)).join("\n");
 }
 
 function fmtSize(n) {
