@@ -198,7 +198,14 @@ body {
 #tabbar {
   display: flex; align-items: flex-end; gap: 2px;
   background: var(--bg2); border-bottom: 1px solid var(--border);
-  overflow-x: auto; flex: 0 0 auto; min-height: 36px;
+  /* overflow:hidden = 关掉原生滚动，横向位移全部由 JS 控制。
+     为什么不用 overflow-x:auto：Chrome 对「只能横向滚动的元素」会把纵向滚轮
+     锁到横向轴上（轴锁定），实际表现是【一下滚到一头】，之后继续滚没反应 ——
+     正是用户报的「滚动一下瞬间滚到一端，再滚就没反应」。
+     关掉原生滚动后这个路径不存在了，滚多少、到边停住全部由 wheel 处理器说了算。
+     overflow:hidden 不影响 scrollWidth（仍能算出可滚范围），
+     也不影响 scrollLeft 赋值（隐藏溢出的盒子仍可被脚本滚动）。 */
+  overflow: hidden; flex: 0 0 auto; min-height: 36px;
   /* 位于 #main 右侧列（#right）顶部，与 #content 天然左对齐，无需 margin-left */
 }
 .tab.dragging { opacity: 0.45; }
@@ -1948,14 +1955,15 @@ body {
 ::-webkit-scrollbar-corner { background: transparent; }
 
 /* ---- 标签栏：隐藏横向滚动条 ----
-   #tabbar 是 overflow-x:auto，标签一多就出横向滚动条。它高度固定
-   （height: var(--tabbar-h)），滚动条会占掉标签栏内部空间把标签压扁。
+   标签一多就出横向滚动条。标签栏高度固定（height: var(--tabbar-h)），
+   滚动条会占掉标签栏内部空间把标签压扁。
 
    Chrome 没有「只隐藏横向滚动条」的纯 CSS 方案
    （::-webkit-scrollbar 的 height:0 对经典滚动条无效），只能整体隐藏。
-   横向滚动能力保留：overflow-x 仍是 auto —— 触控板横向滑动、Shift+滚轮均可滚动；
-   另外 JS 里给 #tabbar 挂了 wheel 处理，【普通纵向滚轮悬停在标签栏上也会横向滚动】
-   （到两端自动放行给外层），不用再按 Shift。
+   横向滚动能力由 JS 提供（见 renderTabbar 里的 wheel 处理）：
+   #tabbar 改成 overflow:hidden 关掉了原生滚动 —— 原生滚动会把纵向滚轮
+   锁到横向轴、一下滚到一头（用户报的「滚一下瞬间滚到一端，再滚没反应」），
+   现在普通滚轮 / Shift+滚轮 / 触控板横滑都由我们自己算位移。
    标签拖拽排序时 setupTabDrag 里还有边缘自动横向滚动。
    右侧渐隐提示还有标签（JS 按实际溢出打 .has-right）。 */
 #tabbar {
@@ -2641,22 +2649,29 @@ function renderTabbar() {
     bar.__hintBound = true;
   }
   // 纵向滚轮 → 标签栏横向滚动（不用再按 Shift）。
-  // 浏览器只把 Shift+滚轮 映射成横向滚动，标签一多就只能靠 Shift+滚轮，很别扭。
-  // 这里把 deltaY 折算成 scrollLeft；到两端时不再拦截，把滚动交还给外层。
+  // 全部位移由这里算：#tabbar 已改成 overflow:hidden（原生横向滚动被关掉），
+  // 所以浏览器不会再「把纵向滚轮锁到横向轴、一下滚到一头」，
+  // 也不会在我们到达两端时自作主张地滚别的地方 —— 一律拦截、我们自己夹取。
   if (!bar.__wheelBound) {
     bar.addEventListener("wheel", (e) => {
-      if (e.deltaY === 0) return;                 // 触控板横向滑动交给浏览器自己处理
+      // 触控板横向滑动用 deltaX；纵向滚轮用 deltaY；
+      // 按住 Shift 时浏览器会把手势转成 deltaX，也走这里。
+      const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!raw) return;                        // 无方向分量（如捏合缩放）→ 不管
       const max = bar.scrollWidth - bar.clientWidth;
-      if (max <= 0) return;                       // 没有横向溢出 → 不拦截，页面照常纵向滚
+      if (max <= 0) return;                    // 没有横向溢出 → 不拦截
       // deltaMode: 0=像素 1=行 2=页 —— 统一折算成像素
-      const dy = e.deltaMode === 1 ? e.deltaY * 16
-                : e.deltaMode === 2 ? e.deltaY * bar.clientWidth
-                : e.deltaY;
-      const next = bar.scrollLeft + dy;
-      if (dy < 0 && next <= 0) return;            // 已到最左 → 放行
-      if (dy > 0 && next >= max) return;          // 已到最右 → 放行
-      e.preventDefault();
-      bar.scrollLeft = next;
+      let dy = e.deltaMode === 1 ? raw * 16
+            : e.deltaMode === 2 ? raw * bar.clientWidth
+            : raw;
+      // 小增量（高精度触控板 deltaY 常为 1~3 甚至小数）先累加：
+      // 直接取整会把不足 1px 的位移整段吃掉，表现为「滚了没反应」。
+      bar.__wheelRem = (bar.__wheelRem || 0) + dy;
+      const step = Math.round(bar.__wheelRem);
+      if (!step) return;                       // 还不足 1px → 攒着，不拦截
+      bar.__wheelRem -= step;
+      e.preventDefault();                      // 一律拦截，位移完全由我们控制
+      bar.scrollLeft = Math.max(0, Math.min(max, bar.scrollLeft + step));
     }, { passive: false });
     bar.__wheelBound = true;
   }
