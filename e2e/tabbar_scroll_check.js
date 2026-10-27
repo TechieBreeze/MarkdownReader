@@ -1,13 +1,17 @@
 /* 标签栏横向滚动回归检查
    背景（回归守卫）：
-     标签栏用普通纵向滚轮横向滚动（不用按 Shift）。这条链路最容易坏在
-     「重建标签栏把 scrollLeft 归零」上 —— 滚过去了，一切换标签就被弹回最左，
-     表现为「时灵时不灵」。本脚本守住这条链路：
-       1. 普通滚轮能横向滚动
-       2. 重建标签栏 / 切换标签后，用户滚到的位置不丢
-       3. 重建后还能继续滚
-       4. 小增量（高精度触控板）与行模式（deltaMode=1）都有效
-       5. 活动标签切换到不可见的那个时，会滚入可视区
+     标签栏要支持「普通纵向滚轮横向滚动」（不用按 Shift）。
+     这条链路有两个坑，都必须守住：
+
+       1) 原生横向滚动会把纵向滚轮「锁到横向轴」，一下滚到一头，
+          之后继续滚没反应 —— 用户报的就是这个（滚动一下瞬间滚到一端，再滚没反应）。
+          修法：#tabbar 改 overflow:hidden 关掉原生滚动，位移全部由 JS 的 wheel 处理算。
+       2) 重建标签栏（innerHTML=""）会把 scrollLeft 归零，用户滚到的位置一被
+          重建就丢（切换标签/关闭标签/打开标签都会触发重建）—— 同样是「时灵时不灵」。
+
+   必须用【真实滚轮事件】验证：page.mouse.wheel() 走 CDP Input.dispatchMouseEvent，
+   会带上浏览器自己的默认滚动行为；用 new WheelEvent() 合成的事件绕过了这条路径，
+   测不出上面的坑（本次就是这样漏测的）。
 
    运行方式（需先启动服务 python server.py）：
      node e2e/tabbar_scroll_check.js
@@ -17,9 +21,6 @@
 
    退出码：0 = 全部通过，1 = 存在失败。
 */
-const path = require('path');
-
-const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765/';
 const PUPPETEER_PATHS = [
   process.env.MDREADER_PUPPETEER,
   'puppeteer',
@@ -34,6 +35,8 @@ function loadPuppeteer() {
   process.exit(2);
 }
 
+const BASE_URL = process.env.BASE_URL || 'http://127.0.0.1:8765/';
+
 (async () => {
   const puppeteer = loadPuppeteer();
   const browser = await puppeteer.launch({ headless: 'new', args: ['--no-sandbox', '--disable-gpu'] });
@@ -44,15 +47,9 @@ function loadPuppeteer() {
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
   await new Promise(r => setTimeout(r, 2000));
 
-  const res = await page.evaluate(async () => {
-    const bar = document.querySelector('#tabbar');
-    const out = {};
-    const wheel = (dy, mode = 0) => bar.dispatchEvent(
-      new WheelEvent('wheel', { deltaY: dy, deltaMode: mode, bubbles: true, cancelable: true }));
-
-    // 造 20 个标签，走真实的 task.tabs → renderTabbar 流程
+  // 造 20 个标签，走真实的 task.tabs → renderTabbar 流程
+  await page.evaluate(async () => {
     const task = curTask();
-    const saved = task.tabs.slice();
     task.tabs = Array.from({ length: 20 }, (_, i) => ({
       id: 'probe' + i, path: 'probe/doc-' + i + '.md', name: '标签栏滚动检查-' + i + '.md',
       kind: 'md', content: '', dirty: false, jumpLine: null, scrollTop: 0, mmdRendered: [],
@@ -60,55 +57,88 @@ function loadPuppeteer() {
     task.activeTabId = task.tabs[0].id;
     renderTabbar();
     await new Promise(r => setTimeout(r, 300));
-    out.overflow = bar.scrollWidth - bar.clientWidth;
-
-    bar.scrollLeft = 0;
-    wheel(300);
-    out.afterWheel = bar.scrollLeft;
-
-    const before = bar.scrollLeft;
-    renderTabbar();                       // 重建标签栏
-    out.keptAfterRender = bar.scrollLeft === before;
-
-    const before2 = bar.scrollLeft;
-    activateTab(task.tabs[0].id);         // 切换标签（同一标签 → 活动标签没变）
-    await new Promise(r => setTimeout(r, 400));
-    out.keptAfterActivate = bar.scrollLeft === before2;
-
-    const before3 = bar.scrollLeft;
-    wheel(200);
-    out.wheelAfterRender = bar.scrollLeft - before3;
-
-    bar.scrollLeft = 0;
-    for (let i = 0; i < 5; i++) wheel(1);        // 高精度触控板的小增量
-    out.smallDelta = bar.scrollLeft;
-
-    bar.scrollLeft = 0;
-    wheel(3, 1);                                // 行模式
-    out.lineMode = bar.scrollLeft;
-
-    bar.scrollLeft = 0;
-    activateTab(task.tabs[19].id);              // 切到最右那个（不可见）
-    await new Promise(r => setTimeout(r, 400));
-    const act = bar.querySelector('.tab.active');
-    const r = act.getBoundingClientRect(), br = bar.getBoundingClientRect();
-    out.activeVisible = r.left >= br.left - 1 && r.right <= br.right + 1;
-
-    task.tabs = saved;
-    task.activeTabId = saved.length ? saved[0].id : null;
-    renderTabbar();
-    return out;
   });
 
+  const target = await page.evaluate(() => {
+    const r = document.querySelectorAll('#tabbar .tab')[3].getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const scrollLeft = () => page.evaluate(() => document.querySelector('#tabbar').scrollLeft);
+  const setScroll = (v) => page.evaluate((v) => { document.querySelector('#tabbar').scrollLeft = v; }, v);
+  const overflowX = await page.evaluate(() => getComputedStyle(document.querySelector('#tabbar')).overflowX);
+
+  await page.mouse.move(target.x, target.y);
+
+  // ① 原生横向滚动必须关掉（否则浏览器会把纵向滚轮锁到横向轴、一下滚到一头）
+  const nativeOff = overflowX === 'hidden';
+
+  // ② 连续滚 6 次：每次只走一格，不能跳
+  await setScroll(0);
+  let prev = 0, maxStep = 0, anyJump = false;
+  for (let i = 0; i < 6; i++) {
+    await page.mouse.wheel({ deltaY: 120 });
+    await new Promise(r => setTimeout(r, 220));
+    const now = await scrollLeft();
+    const step = now - prev;
+    if (step > 200 || step < 0) anyJump = true;
+    if (step > maxStep) maxStep = step;
+    prev = now;
+  }
+  const smooth = !anyJump && prev > 0;
+
+  // ③ 到底后继续滚：停在末尾，不能乱跳
+  await page.evaluate(() => {
+    const b = document.querySelector('#tabbar');
+    b.scrollLeft = b.scrollWidth - b.clientWidth;
+  });
+  const endBefore = await scrollLeft();
+  await page.mouse.wheel({ deltaY: 120 });
+  await new Promise(r => setTimeout(r, 300));
+  const endAfter = await scrollLeft();
+
+  // ④ 反向能滚回来
+  await page.mouse.wheel({ deltaY: -120 });
+  await new Promise(r => setTimeout(r, 300));
+  const back = await scrollLeft();
+
+  // ⑤ Shift+滚轮（浏览器转成 deltaX）
+  await setScroll(0);
+  await page.keyboard.down('Shift');
+  await page.mouse.wheel({ deltaY: 120 });
+  await page.keyboard.up('Shift');
+  await new Promise(r => setTimeout(r, 300));
+  const shiftScroll = await scrollLeft();
+
+  // ⑥ 触控板横滑（deltaX）
+  await setScroll(0);
+  await page.mouse.wheel({ deltaX: 150, deltaY: 0 });
+  await new Promise(r => setTimeout(r, 300));
+  const trackpadScroll = await scrollLeft();
+
+  // ⑦ 小增量累计（高精度触控板 deltaY=1 × 5）
+  await setScroll(0);
+  for (let i = 0; i < 5; i++) {
+    await page.mouse.wheel({ deltaY: 1 });
+    await new Promise(r => setTimeout(r, 60));
+  }
+  const smallDelta = await scrollLeft();
+
+  // ⑧ 重建标签栏后位置不丢
+  await setScroll(400);
+  const keepBefore = await scrollLeft();
+  await page.evaluate(() => renderTabbar());
+  await new Promise(r => setTimeout(r, 300));
+  const keepAfter = await scrollLeft();
+
   const checks = [
-    ['标签栏有横向溢出', res.overflow > 0],
-    ['普通滚轮横向滚动', res.afterWheel > 0],
-    ['重建标签栏后位置不丢', res.keptAfterRender],
-    ['切换标签后位置不丢', res.keptAfterActivate],
-    ['重建后还能继续滚', res.wheelAfterRender > 0],
-    ['小增量累计生效', res.smallDelta > 0],
-    ['行模式(deltaMode=1)生效', res.lineMode > 0],
-    ['活动标签滚入可视区', res.activeVisible],
+    ['原生横向滚动已关闭(overflow-x:hidden)', nativeOff],
+    ['连续滚轮每格一档、不跳到一头', smooth],
+    ['滚到末尾后停住', endAfter === endBefore],
+    ['到底后能反向滚回来', back < endAfter],
+    ['Shift+滚轮可横向滚', shiftScroll > 0],
+    ['触控板横滑可横向滚', trackpadScroll > 0],
+    ['小增量累计生效', smallDelta > 0],
+    ['重建标签栏后位置不丢', keepAfter === keepBefore],
   ];
   console.log('=== 标签栏横向滚动 ===');
   let fail = 0;
@@ -116,6 +146,7 @@ function loadPuppeteer() {
     if (!ok) fail++;
     console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}`);
   }
+  console.log(`  （单次最大位移 ${maxStep}px / 6 次滚轮后 scrollLeft=${prev}）`);
   if (pageErrors.length) {
     fail++;
     console.log('  [FAIL] 页面 JS 错误: ' + pageErrors.join('; '));
