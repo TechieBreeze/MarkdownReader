@@ -1258,6 +1258,111 @@ def _git_find_file(repo, view_commit, base):
     return None
 
 
+# 仓库视角的文件链接：GitLab 的 /-/blob/<ref>/<path>、GitHub 的 /blob/<ref>/<path>
+_GIT_BLOB_MARKERS = ("/-/blob/", "/blob/", "/-/raw/", "/raw/")
+
+
+def _parse_git_repo_url(url):
+    """解析仓库文件链接 → {project, tail, line}；不是仓库文件链接返回 None。
+
+    例：https://git.tommy.com.cn/middle-platform/microservices/customer/-/blob/
+        test2.0_merge20240312/src/main/java/com/pvh/customer/api/CustomerApi.java#L143
+    → project=customer, tail=<ref>/<path>, line=143
+    ref 里可能带 /（如 feature/x），所以 tail 整段留着，后面用「后缀匹配」定位文件。"""
+    if not url:
+        return None
+    m = re.match(r"^https?://[^/]+/(.+)$", url.strip())
+    if not m:
+        return None
+    rest = m.group(1)
+    line = None
+    lm = re.search(r"#L(\d+)", rest)
+    if lm:
+        line = int(lm.group(1))
+        rest = rest[:lm.start()]
+    for marker in _GIT_BLOB_MARKERS:
+        i = rest.find(marker)
+        if i < 0:
+            continue
+        head = rest[:i]
+        tail = rest[i + len(marker):]
+        segs = [s for s in head.split("/") if s]
+        if not segs or not tail:
+            return None
+        return {"project": segs[-1], "tail": tail, "line": line}
+    return None
+
+
+@functools.lru_cache(maxsize=64)
+def _git_files_by_base(repo):
+    """仓库 HEAD 的文件表：{文件名: (相对路径, ...)}，供按后缀定位文件。"""
+    m = {}
+    for rel in _git_tree_files(repo, "HEAD"):
+        m.setdefault(os.path.basename(rel), []).append(rel)
+    return {k: tuple(v) for k, v in m.items()}
+
+
+def _resolve_git_repo_url(url, prefer_root=None):
+    """仓库视角链接 → 本地工作区里的文件。
+
+    远端链接的路径是「相对仓库根」的（<ref>/<path>），本地则是 gits/<project>/<path>，
+    且本地仓库可能是多模块（core/utils-web/... 对应远端 core 的 utils-web/...），
+    所以按「后缀匹配」定位：逐个去掉 tail 头部段（ref 可能带 /），取最长能匹配上的后缀。
+    解析不到返回 None（调用方退回「新标签页打开远端」）。"""
+    info = _parse_git_repo_url(url)
+    if not info:
+        return None
+    project, tail = info["project"], info["tail"]
+    cands = []
+    for root in ([prefer_root] if prefer_root else []) + list(ROOTS):
+        if not root:
+            continue
+        cand = os.path.join(root, "gits", project)
+        if os.path.isdir(cand) and cand not in cands:
+            cands.append(cand)
+    if not cands:
+        cands = [r for r in _all_git_repos() if os.path.basename(r) == project]
+    if not cands:
+        return None
+    segs = [s for s in tail.split("/") if s]
+    for repo in cands:
+        by_base = _git_files_by_base(repo)
+        if not by_base:
+            continue
+        for k in range(len(segs)):
+            suffix = "/".join(segs[k:])
+            base = os.path.basename(suffix)
+            if "." not in base:
+                continue
+            for rel in by_base.get(base, ()):
+                rel_n = rel.replace("\\", "/")
+                if rel_n == suffix or rel_n.endswith("/" + suffix):
+                    ref = "/".join(segs[:k])
+                    return {
+                        "path": rel_of(os.path.join(repo, rel.replace("/", os.sep))),
+                        "line": info["line"],
+                        "repo": project,
+                        "ref": ref,
+                        # 该 ref（分支/标签）本地是否存在：存在则前端可按这个 git 版本打开
+                        "refExists": bool(ref) and _git_ref_exists(repo, ref),
+                    }
+    return None
+
+
+@functools.lru_cache(maxsize=256)
+def _git_ref_exists(repo, ref):
+    """本地是否有这个 ref（分支/标签/提交）。只认本地分支与 origin/* 远端分支。
+
+    加缓存：一篇文档里上百个链接往往只对应少数几个分支，逐个 URL 起一次
+    git rev-parse 子进程会把解析拖到好几秒（链接要等这么久才能变成可点的）。"""
+    if not ref:
+        return False
+    for name in (ref, "origin/" + ref):
+        if git_run(repo, "rev-parse", "--verify", "--quiet", name + "^{commit}") is not None:
+            return True
+    return False
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "MDReader/1.0"
 
@@ -1713,6 +1818,23 @@ class Handler(BaseHTTPRequestHandler):
                         resolved = found
             result[rel] = {"abs": resolved, "exists": bool(resolved)}
         self._json({"exists": result})
+
+    def _api_git_resolve(self, qs):
+        """批量把「仓库视角链接」解析成本地工作区文件。
+
+        url=https://git.tommy.com.cn/<group>/<sub>/<project>/-/blob/<ref>/<path>#L12
+        → {path: "<vtop>/gits/<project>/<...>", line: 12}（解析不到则不出现在结果里）。
+        前端拿它把远端链接变成「点开本地代码弹窗」的链接。"""
+        urls = qs.get("url") or []
+        prefer_root = _root_for((qs.get("path") or [""])[0]) if (qs.get("path") or [""]) else None
+        resolved = {}
+        for u in urls:
+            if not u or u in resolved:
+                continue
+            hit = _resolve_git_repo_url(u, prefer_root=prefer_root)
+            if hit:
+                resolved[u] = hit
+        self._json({"resolved": resolved})
 
     def _search_file(self, base, view_commit=None, prefer_repo=None, prefer_root=None):
         """在工作区常见目录中按文件名搜索（限定深度，避免全盘遍历）。
@@ -2741,6 +2863,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._api_sync_status(qs)
             elif path == "/api/exists":
                 self._api_exists(qs)
+            elif path == "/api/git/resolve":
+                self._api_git_resolve(qs)
             elif path == "/api/search":
                 self._api_search(qs)
             else:
