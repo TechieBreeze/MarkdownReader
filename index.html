@@ -3331,7 +3331,16 @@ function renderCodeTabContent(tab) {
   if (diffView) {
     renderFileWithDiff(tab.diffData.fileLines, tab.diffData.hunks, tab.diffData.meta, ct, tab.path);
   } else {
-    if (fileView) content = tab.diffData.fileLines.join("\n");   // 该提交版本完整文件（无红删绿）
+    if (fileView) {
+      if (Array.isArray(tab.diffData.fileLines)) {
+        content = tab.diffData.fileLines.join("\n");   // 该提交版本完整文件（无红删绿）
+      } else {
+        // 该提交取不到文件内容 → 不渲染空壳（fileLines 为 null 时 .join 会抛）
+        const rows = [{ no: 1, kind: "plain", text: "" }];
+        renderRows(rows, ["（该提交下取不到此文件的内容：文件可能在该提交中不存在）"], null, ct);
+        return;
+      }
+    }
     let rowHtml = [];
     try {
       rowHtml = highlightByLine(content, lang);
@@ -3555,7 +3564,10 @@ async function onCodeTabCommitChange(tab) {
       `<span class="gi-hash">${m.short}</span><span class="gi-author">${escapeHtml(m.author)}</span>` +
       `<span class="gi-date">${m.date}</span><span class="gi-subject">${escapeHtml(m.subject)}</span>` +
       `<span class="gi-stat">+${added} −${removed} 行</span>`;
-    tab.diffData = { fileLines: fj ? fj.content.split("\n") : [], hunks: j.hunks, meta: m };
+    // fileLines 传 null = 该提交取不到文件内容（文件接口失败/文件在该提交不存在）：
+    // renderFileWithDiff 据此只渲染改动块、不补「未改动区域」——
+    // 若按空数组处理，那些区域会被补成一长串空行（diff 视图里一大片「莫名空行」）
+    tab.diffData = { fileLines: fj ? fj.content.split("\n") : null, hunks: j.hunks, meta: m };
     tab.diffOn = true;   // 默认 diff 视图
     if (curActiveId() === tab.id) renderCodeTabContent(tab);
   } catch (e) {
@@ -4607,7 +4619,8 @@ async function onCommitChange() {
       `<span class="gi-stat">+${added} −${removed} 行</span>`;
     $("#m-gitinfo").style.display = "flex";
     // 完整文件 + 改动标记视图
-    const fileLines = fj ? fj.content.split("\n") : [];
+    // fileLines 为 null = 取不到该提交的文件内容 → 只渲染改动块（见 renderFileWithDiff）
+    const fileLines = fj ? fj.content.split("\n") : null;
     renderFileWithDiff(fileLines, j.hunks, j.meta);
   } catch (e) {
     toast("加载提交改动失败: " + e.message, "err");
@@ -4749,9 +4762,13 @@ function renderFileWithDiff(fileLines, hunks, meta, container, path) {
   const rows = [];
   let fileIdx = 0;   // 0-indexed 指向 fileLines 当前未处理位置
   const pushRow = (no, kind, text) => rows.push({ no, kind, text });
+  // fileLines 为 null = 该提交取不到文件内容（文件接口失败 / 文件在该提交不存在）。
+  // 这时只渲染改动块本身，不补「未改动区域」：没有内容可补，补出来的全是空行，
+  // diff 视图会出现一大片莫名空行（仓库路径深 + 长文件名时 /api/git/file 会失败）。
+  const hasFile = Array.isArray(fileLines);
   hunks.forEach(h => {
     // 改动块之前的未改动区域（plain）
-    while (fileIdx < h.new_start - 1) {
+    while (hasFile && fileIdx < h.new_start - 1) {
       pushRow(fileIdx + 1, "plain", fileLines[fileIdx] || "");
       fileIdx++;
     }
@@ -4763,7 +4780,7 @@ function renderFileWithDiff(fileLines, hunks, meta, container, path) {
     });
   });
   // 尾部未改动区域
-  while (fileIdx < fileLines.length) {
+  while (hasFile && fileIdx < fileLines.length) {
     pushRow(fileIdx + 1, "plain", fileLines[fileIdx]);
     fileIdx++;
   }
@@ -5223,7 +5240,8 @@ function modalViewCommit() {
   return null;
 }
 function tabViewText(tab) {
-  if (tab.commit && tab.diffData) return tab.diffData.fileLines.join("\n");
+  // fileLines 可能为 null（该提交取不到文件内容）→ 跳过，走下面的分支
+  if (tab.commit && tab.diffData && Array.isArray(tab.diffData.fileLines)) return tab.diffData.fileLines.join("\n");
   if (tab.branchContent != null) return tab.branchContent;
   return tab.content || "";
 }
