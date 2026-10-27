@@ -518,6 +518,11 @@ body {
 }
 /* GitLab 仓库链接：复用 code-jump 样式，加仓库图标区分（SVG data-uri，非 emoji） */
 .md-body a.code-jump.gitlab-jump { color: #7ee787; }
+/* 已解析到本地文件：可点开应用内弹窗，用点状下划线与「只能开远端页面」区分 */
+.md-body a.code-jump.gitlab-jump.repo-local {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
 .md-body a.code-jump.gitlab-jump::before {
   content: "";
   display: inline-block; width: 0.95em; height: 0.95em;
@@ -1732,6 +1737,29 @@ body {
 .md-body a > code, .md-body code.pth {
   border-color: transparent; background: var(--surface-raised); color: var(--text-secondary);
 }
+/* 跳转链接（code/md/html/img）里的行内代码：marked 把 `文本` 渲染成 a > code。
+   内层 code 自带**不透明底色 + 内边距**，会把链接自己的底色/边框/hover 效果整个盖住 ——
+   链接看着还是「一个代码块」，hover 时也看不出是链接（底色被内层 code 挡着）。
+   这里让内层 code 完全透明：底色/边框/内边距/外边距都交还给链接自己，
+   文字色与字号也跟随链接（否则内层 code 的 0.875em 还会盖掉链接的 0.85em）。 */
+.md-body a.code-jump > code,
+.md-body a.md-jump > code,
+.md-body a.html-jump > code,
+.md-body a.img-jump > code {
+  color: inherit;
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+  margin: 0;
+  font-size: inherit;
+  font-family: inherit;
+}
+/* 跳转链接的 hover：.md-body a:hover 会把文字色改成 accent-hover（蓝），
+   绿色/蓝色芯片 hover 时就串色了 —— 这里钉住各芯片自己的颜色。 */
+.md-body a.code-jump:hover { color: #7ee787; }
+.md-body a.md-jump:hover,
+.md-body a.html-jump:hover,
+.md-body a.img-jump:hover { color: #79c0ff; }
 
 .md-body pre {
   font-family: "Cascadia Code", "JetBrains Mono", Consolas, "SF Mono", monospace;
@@ -3693,6 +3721,83 @@ function renderMdWithLineAnchors(mdText) {
   return out;
 }
 
+/* 仓库视角的文件链接（GitLab /-/blob/<ref>/<path>、GitHub /blob/<ref>/<path>）。 */
+function isRepoBlobUrl(href) {
+  if (!/^https?:\/\//.test(href || "")) return false;
+  return /\/(-\/)?(blob|raw)\//.test(href);
+}
+
+/* 仓库视角链接 → 本地工作区文件；解析到就把链接换成「点开本地代码弹窗」。
+   交互与普通相对路径代码链接一致：
+     · 点击          → 打开代码弹窗（md 文档则开新标签页）
+     · Ctrl/Cmd+点击 → 打开为标签页
+     · Shift+点击    → 走浏览器原生（新窗口打开远端页面）
+     · 右键          → 走浏览器原生菜单（复制链接地址等，链接仍是原始远端 URL）
+   href 保持原样不改，右键/Shift+点击等原生操作拿到的仍是仓库链接。
+
+   解析是异步的，而文档在这期间可能重渲染（锚点被替换成新节点，之前挂到旧节点上的
+   样式/事件就丢了）。所以解析结果放全局缓存 _repoLinkHits，重渲染后按当前 DOM
+   重新套用；已经解析过的链接同步套用，不再重复请求。 */
+const _repoLinkHits = new Map();
+
+/* 给一个锚点套上「打开本地代码」的行为（幂等：同一元素只处理一次） */
+function applyRepoLinkHit(a, r) {
+  if (!a || !r || !r.path) return;
+  if (a.dataset.repoApplied === "1") return;
+  a.dataset.repoApplied = "1";
+  const abs = r.path;
+  const line = r.line || null;
+  // URL 里的 ref（分支/标签）：本地有就按那个 git 版本打开，没有就退回工作区版本
+  const ref = r.refExists ? (r.ref || null) : null;
+  a.removeAttribute("target");
+  a.classList.add("repo-local");
+  a.dataset.repoRef = ref || "";
+  a.title = "打开本地代码: " + abs + (line ? " :" + line : "") +
+    (ref ? "（" + ref + " 版本）" : "") +
+    "（Ctrl+点击开为标签页；Shift+点击/右键按常规方式打开仓库链接）";
+  a.addEventListener("click", (e) => {
+    if (e.shiftKey) return;    // Shift+点击 → 浏览器原生（新窗口打开远端）
+    e.preventDefault();
+    const kind = tabKindForPath(abs);
+    if (kind === "md") { pushNav(abs, line); openTab(abs, { line, branch: ref }); return; }
+    pushNav(abs, line);
+    if (e.ctrlKey || e.metaKey) openTab(abs, { line, branch: ref });
+    else openCodeModal(abs, line, { branch: ref });
+  });
+}
+
+/* 把缓存里的解析结果套到当前 DOM 的仓库链接上（重渲染后补挂） */
+function applyRepoLinkHitsToDom() {
+  const box = $("#content .md-body");
+  if (!box || !_repoLinkHits.size) return;
+  box.querySelectorAll("a.gitlab-jump").forEach(a => {
+    const hit = _repoLinkHits.get(a.getAttribute("href") || "");
+    if (hit) applyRepoLinkHit(a, hit);
+  });
+}
+
+async function resolveRepoLinks(links) {
+  if (!links || !links.length) return;
+  const urls = links.map(a => a.getAttribute("href") || "");
+  // 已解析过的同步套用（不必等请求）
+  urls.forEach((u, i) => { const hit = _repoLinkHits.get(u); if (hit) applyRepoLinkHit(links[i], hit); });
+  const todo = urls.filter(u => u && !_repoLinkHits.has(u));
+  if (!todo.length) { applyRepoLinkHitsToDom(); return; }
+  try {
+    // 分批请求：一篇文档可能有上百个仓库链接，一次塞进 query 会让 URL 过长
+    const CHUNK = 60;
+    for (let i = 0; i < todo.length; i += CHUNK) {
+      const part = todo.slice(i, i + CHUNK);
+      const q = part.map(u => "url=" + encodeURIComponent(u)).join("&");
+      const j = await api("/api/git/resolve?" + q);
+      const map = j.resolved || {};
+      part.forEach(u => { const hit = map[u]; if (hit) _repoLinkHits.set(u, hit); });
+      // 每批解析完就套用到当前 DOM（文档可能已重渲染）
+      applyRepoLinkHitsToDom();
+    }
+  } catch (e) { /* 解析失败 → 保持原行为（新标签页打开远端） */ }
+}
+
 function renderContent(mdText, mdPath) {
   const box = $("#content");
   box.className = "";
@@ -3714,15 +3819,20 @@ function renderContent(mdText, mdPath) {
     }
   });
   // 代码跳转链接：md-code-jump 格式 [文件](相对路径) `行号`（行号在链接外）
+  const repoLinks = [];
   box.querySelectorAll("a[href]").forEach(a => {
     let href = a.getAttribute("href");
     if (/^(#|mailto:)/.test(href) || href.startsWith("/api/")) return;
-    // GitLab 仓库链接：加 code-jump 样式，点击新标签页打开（GitLab X-Frame-Options: SAMEORIGIN 禁止 iframe 嵌入）
-    if (/git\.tommy\.com\.cn\/middle-platform\/microservices\/.+\/-\/blob\//.test(href)) {
+    // 仓库视角链接（GitLab /-/blob/<ref>/<path>、GitHub /blob/<ref>/<path>）：
+    // 先按仓库视角解析成本地文件，解析到就能在应用内点开代码弹窗；
+    // 解析不到则退回「新标签页打开远端页面」（GitLab X-Frame-Options 禁止 iframe 嵌入）。
+    // 这里先挂上远端行为，解析成功后由 resolveRepoLinks() 换成应用内打开。
+    if (isRepoBlobUrl(href)) {
       a.classList.add("code-jump", "gitlab-jump");
       a.title = "在 GitLab 新标签页打开";
       a.target = "_blank";
       a.rel = "noopener";
+      repoLinks.push(a);
       return;
     }
     if (/^https?:/.test(href)) return;
@@ -3788,6 +3898,10 @@ function renderContent(mdText, mdPath) {
       });
     }
   });
+  // 仓库视角链接 → 本地文件（点开弹窗）；解析失败保持「新标签页打开远端」
+  // 先套用已解析过的（重渲染后不必等请求），再解析没解析过的
+  applyRepoLinkHitsToDom();
+  if (repoLinks.length) resolveRepoLinks(repoLinks);
   // mermaid 渲染
   renderMermaid();
   // 标注语言的代码块做语法高亮（mermaid 已单独处理）
@@ -4475,7 +4589,7 @@ function flashMdLine(el) {
 /* ================= 代码弹窗 ================= */
 let modalState = { path: null, line: null, content: "", git: null, commit: null, branchContent: null, _branchSeq: 0 };
 
-async function openCodeModal(path, line) {
+async function openCodeModal(path, line, view) {
   try {
     const j = await api("/api/code?path=" + encodeURIComponent(path));
     modalState = { path, line, content: j.content, git: null, branchContent: null, commit: null, commitContent: null, _branchSeq: 0, _backStack: [], _viewBranch: null, lines: j.lines, size: j.size, _defbar: null };
@@ -4490,7 +4604,16 @@ async function openCodeModal(path, line) {
     $("#m-back").style.display = "none";
     setModalDefbar(null);
     if (line) requestAnimationFrame(() => scrollCodeToLine(line));
-    loadGitMeta(path);
+    // view.branch：按指定 git 版本（分支）打开 —— 仓库链接里带 ref 时用
+    const wantBranch = view && view.branch;
+    await loadGitMeta(path, { skipAuto: !!wantBranch });
+    if (wantBranch) {
+      const sel = $("#m-branch");
+      if (sel && [...sel.options].some(o => o.value === wantBranch)) {
+        sel.value = wantBranch;
+        await onBranchChange();
+      }
+    }
   } catch (e) {
     toast("打开代码失败: " + e.message, "err");
   }
