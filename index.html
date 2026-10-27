@@ -2606,6 +2606,12 @@ function openTab(path, { focus = true, fromLink = false, line = null, branch = n
 
 function renderTabbar() {
   const bar = $("#tabbar");
+  // 重建标签栏（innerHTML="")会把 scrollLeft 归零 —— 用户横向滚到的位置就没了，
+  // 表现为「滚轮横向滚动时灵时不灵」：滚过去了，一切换标签就被弹回最左。
+  // 所以先记住位置，重建后恢复（内容变短时浏览器会自动 clamp 到合法范围）。
+  const keepScroll = bar.scrollLeft;
+  const prevActiveEl = bar.querySelector(".tab.active");
+  const prevActiveId = prevActiveEl ? prevActiveEl.dataset.tabId : null;
   bar.innerHTML = "";
   const tabs = curTabs(), activeId = curActiveId();
   tabs.forEach(t => {
@@ -2628,8 +2634,6 @@ function renderTabbar() {
   });
   const rf = $("#btn-refresh");
   if (rf) rf.disabled = !curActiveId();
-  // 横向滚动条已隐藏（见 CSS 注释），按实际溢出打 .has-right 做右侧渐隐提示
-  bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
   if (!bar.__hintBound) {
     bar.addEventListener("scroll", () => {
       bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
@@ -2664,7 +2668,27 @@ function renderTabbar() {
     if (p) openTab(p.trim());
   });
   bar.appendChild(plus);
+  // 恢复用户滚到的横向位置
+  bar.scrollLeft = keepScroll;
+  // 只有「活动标签确实换了」且它不在可视区时才滚过去；
+  // 活动标签没换（只是增删标签/重绘）就保持用户自己滚到的位置，
+  // 否则每次重建都把用户拉回活动标签 —— 滚轮横向滚动又会变成「时灵时不灵」。
+  const activeEl = bar.querySelector(".tab.active");
+  if (activeEl && activeEl.dataset.tabId !== prevActiveId) ensureActiveTabVisible(bar);
+  // 横向滚动条已隐藏（见 CSS 注释），按实际溢出打 .has-right 做右侧渐隐提示
+  bar.classList.toggle("has-right", bar.scrollWidth - bar.scrollLeft - bar.clientWidth > 1);
   syncTreeActiveFile();   // 标签激活/切换/关闭后同步树中「当前打开文件」高亮
+}
+
+/* 活动标签不在可视区时横向滚入；已经完整可见则不动 —— 尊重用户手动滚到的位置。
+   不用 scrollIntoView：它会连带滚动祖先容器，这里只改标签栏自身的 scrollLeft。 */
+function ensureActiveTabVisible(bar) {
+  const el = bar.querySelector(".tab.active");
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  const br = bar.getBoundingClientRect();
+  if (r.left >= br.left && r.right <= br.right) return;   // 完整可见 → 不动
+  bar.scrollLeft = Math.max(0, bar.scrollLeft + (r.left - br.left) - 8);
 }
 
 /* ================= 标签页拖拽排序（HTML5 Drag & Drop） ================= */
