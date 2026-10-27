@@ -4935,12 +4935,16 @@ function renderCodeView(content, line) {
   renderRows(rows, hlByLine, line || null);
 }
 
-/* 弹窗可见后把目标行滚动到可视区中央 */
+/* 弹窗可见后把目标行滚动到可视区中央。
+   注意：这里只负责「滚动」，不碰高亮行 —— 高亮行由 renderRows(rows, hl, hlLine) 决定。
+   之前虚拟滚动分支里顺手写了 scroll.__vstate.hlLine = line，等于「滚到哪行就把哪行
+   标成高亮」：返回（modalGoBack → renderModalView → scrollCodeToLine(viewportLine)）
+   会把高亮行从「打开时的目标行」改成「视口中心那行」，看起来就是高亮行自己变了。
+   非虚拟滚动分支没有这行行为，两条路径因此不一致。 */
 function scrollCodeToLine(line, container) {
   const scroll = container || $("#m-scroll");
   if (scroll.classList.contains("vscroll") && scroll.__vstate) {
     scroll.scrollTop = Math.max(0, (line - 1) * V_LINE_H - scroll.clientHeight / 2 + V_LINE_H / 2);
-    scroll.__vstate.hlLine = line;
     const wrap = scroll.querySelector(".v-wrap");
     if (wrap) paintVirtualWindow(scroll, wrap);
     return;
