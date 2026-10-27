@@ -812,18 +812,29 @@ def git_file_diff(repo, commit, rel_path):
     hunks = []
     cur = None
     old_no = new_no = 0
+    in_diff = False   # 已进入 "diff --git" 之后的正文区（提交信息在它之前）
     for raw in out.splitlines():
-        if raw.startswith("diff ") or raw.startswith("index ") or raw.startswith("--- ") \
-                or raw.startswith("+++ ") or raw.startswith("\\ No newline"):
+        if raw.startswith("diff "):
+            in_diff = True
+            cur = None
+            continue
+        if raw.startswith("index ") or raw.startswith("\\ No newline"):
             continue
         m = _HUNK_RE.match(raw)
         if m:
+            # 提交信息里也可能出现 @@ 开头的行，只有进入正文区才是真的 hunk 头
+            if not in_diff:
+                continue
             old_no = int(m.group(1))
             new_no = int(m.group(3))
             cur = {"old_start": old_no, "new_start": new_no, "lines": []}
             hunks.append(cur)
             continue
         if cur is None:
+            # hunk 之前的文件头（--- a/xxx / +++ b/xxx）在这里被跳过。
+            # 注意：hunk 内部同样可能以 --- / +++ 开头的行，那是**真实正文**
+            # （SQL 注释 "-- xxx"、Markdown 分隔线 "--- xxx"），不能当文件头丢掉，
+            # 丢了会导致该行从 diff 里消失、后续行号错位、diff 视图整体串行。
             continue
         if raw[:1] == " ":
             cur["lines"].append({"type": " ", "text": raw[1:], "old_no": old_no, "new_no": new_no})
@@ -849,18 +860,37 @@ def git_commit_meta(repo, commit):
             "date": parts[2], "subject": parts[3]}
 
 
+class _GitBlobMissing(Exception):
+    """取 blob 失败（文件不在该提交 / 对象读不出）。用于让缓存不记住失败结果。"""
+
+
 @functools.lru_cache(maxsize=128)
 def _git_show_cached(repo, commit, rel_path):
-    """git show <commit>:<path> 的进程内 LRU 缓存（git 版本内容不可变，跨线程只读复用安全）。"""
-    out = git_run(repo, "show", "%s:%s" % (commit, rel_path))
+    """取某提交版本的文件内容的进程内 LRU 缓存（git 版本内容不可变，跨线程只读复用安全）。
+
+    用 `git cat-file blob <rev>:<path>` 而不是 `git show <rev>:<path>`：
+    后者在 Windows 上会把整个参数当 pathspec 去 stat，「仓库根路径 + 40 位哈希 +
+    长相对路径」拼起来超过 MAX_PATH(260) → git 报 "Filename too long" 直接失败。
+    症状是：长路径深、仓库嵌套的代码文件（如 xls-platform/jar/back-product-web-jar
+    下的 Java），在 commit diff 视图里文件接口 404，前端拿不到文件内容 →
+    未改动区域全补成空行 → 一大片「莫名空行」。cat-file 直接按对象名取 blob，不 stat 路径。
+
+    失败时抛异常而不是返回 None：lru_cache 只缓存成功返回值，异常不缓存 ——
+    仓库同步/拉取完成后重试就能拿到内容，不会把一次偶发失败永久钉住。"""
+    out = git_run(repo, "cat-file", "blob", "%s:%s" % (commit, rel_path))
     if out is None:
-        return None
-    return out.rstrip("\n")
+        raise _GitBlobMissing()
+    # 只去掉结尾**一个**换行：文件末尾的空行是真实内容，rstrip("\n") 会把它连同换行
+    # 一起吃掉 → 取到的内容比文件实际少一行 → diff 视图尾部错位（多补一行、行号对不上）
+    return out[:-1] if out.endswith("\n") else out
 
 
 def git_show_file(repo, commit, rel_path):
-    """取某提交版本的文件内容（git show <commit>:<path>）；文件在该提交不存在返回 None。"""
-    return _git_show_cached(repo, commit, rel_path)
+    """取某提交版本的文件内容；文件在该提交不存在返回 None。"""
+    try:
+        return _git_show_cached(repo, commit, rel_path)
+    except _GitBlobMissing:
+        return None
 
 
 def _join_web_path(vtop, cand):
