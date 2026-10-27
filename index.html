@@ -4089,6 +4089,127 @@ async function renderMermaid() {
   perfLog("renderMermaid: IO 已注册, 等待滚动触发插入");
 }
 
+/* ================= mermaid 浅色节点 → 深色 =================
+   md 里的 mermaid 常带 GitHub 风格的浅色 classDef（fill:#e8f0ff / #ffecec / #eee …），
+   mermaid 会原样渲染，且这些声明都带 !important —— 直接压过暗色主题的节点底色，
+   于是暗色阅读器里出现一块块刺眼的浅色节点。
+   这里把「作者显式指定的浅色底色」压暗：
+     · 只认「同时带 fill 和 stroke 的 !important 声明块」= classDef 定义的形状底色；
+       主题色（#ccc 文字、#1f2020 节点底）不带 !important，不会被误伤
+     · 只处理十六进制 / rgb()，命名色（lightgrey 之类装饰锚点）跳过
+     · 保持色相只压明度：蓝的还是蓝、红的还是红，作者的语义不丢
+     · classDef 若显式给了深色文字（color:#212121），底色压暗后一起提亮，
+       否则深字压深底看不清；文字色在 tspan 规则里以 fill 出现，靠同一个色值映射一起改
+     · SVG 是以 <img src="data:image/svg+xml…"> 插入的（隔离渲染，页面 CSS 进不去），
+       只能改 SVG 文本本身 —— 改完再转 data URL，全屏查看也复用这份文本
+*/
+
+/* 颜色解析：#rgb / #rrggbb / rgb(r,g,b) → [r,g,b]；命名色等不支持的返回 null */
+function _mmdRgb(c) {
+  c = String(c || "").trim();
+  let m = /^#([0-9a-f]{3})$/i.exec(c);
+  if (m) {
+    const h = m[1];
+    return [parseInt(h[0] + h[0], 16), parseInt(h[1] + h[1], 16), parseInt(h[2] + h[2], 16)];
+  }
+  m = /^#([0-9a-f]{6})$/i.exec(c);
+  if (m) {
+    const h = m[1];
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(c);
+  if (m) return [+m[1], +m[2], +m[3]];
+  return null;
+}
+/* 归一化成 #rrggbb（同一颜色在 SVG 里可能写成 hex 或 rgb()，要能对上） */
+function _mmdHex(rgb) {
+  return "#" + rgb.map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+}
+/* WCAG 相对亮度：判断浅/深 */
+function _mmdLum(rgb) {
+  const c = rgb.map(v => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+}
+/* rgb → hsl */
+function _mmdHsl(rgb) {
+  const r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  const l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn;
+  const s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h;
+  if (mx === r) h = (g - b) / d + (g < b ? 6 : 0);
+  else if (mx === g) h = (b - r) / d + 2;
+  else h = (r - g) / d + 4;
+  return [h * 60, s, l];
+}
+/* hsl → #rrggbb */
+function _mmdToHex(h, s, l) {
+  h = (((h % 360) + 360) % 360) / 360;
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = t => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const to = v => Math.max(0, Math.min(255, Math.round(v * 255)));
+  return _mmdHex([to(f(h + 1 / 3)), to(f(h)), to(f(h - 1 / 3))]);
+}
+
+/* 浅色 classDef 底色 → 深色（同色相）；配套深色文字/描边 → 提亮 */
+function mermaidDarkenSvg(svg) {
+  if (!svg || svg.indexOf("!important") < 0) return svg;   // 没有 classDef → 不用处理
+  const map = new Map();   // 归一化色 → 新色
+  const blockRe = /\{([^{}]*)\}/g;
+  let m;
+  while ((m = blockRe.exec(svg))) {
+    const decl = m[1];
+    const f = /fill:\s*([^;]+?)\s*!important/.exec(decl);
+    const s = /stroke:\s*([^;]+?)\s*!important/.exec(decl);
+    // 必须同时有 fill 和 stroke —— 那是 classDef 的形状声明；
+    // 只有 fill 的（tspan 文字色）不当底色处理
+    if (!f || !s) continue;
+    const frgb = _mmdRgb(f[1]);
+    if (!frgb) continue;                    // 命名色（装饰锚点）跳过
+    if (_mmdLum(frgb) > 0.35) {             // 浅色底 → 压暗（保色相）
+      const [h, sa, l] = _mmdHsl(frgb);
+      map.set(_mmdHex(frgb), _mmdToHex(h, Math.min(sa, 0.62), 0.13 + Math.min(0.08, (l - 0.5) * 0.2)));
+      // 同块里的文字色（classDef 显式指定，通常是深色）→ 提亮，否则深字压深底看不清
+      const c = /color:\s*([^;]+?)\s*!important/.exec(decl);
+      if (c) {
+        const crgb = _mmdRgb(c[1]);
+        if (crgb && _mmdLum(crgb) < 0.35) {
+          const [ch, cs] = _mmdHsl(crgb);
+          map.set(_mmdHex(crgb), _mmdToHex(ch, Math.min(cs, 0.4), 0.82));
+        }
+      }
+    }
+    // 描边深到看不见（#333/#000）：底色压暗后边框会消失 → 提亮一档
+    const srgb = _mmdRgb(s[1]);
+    if (srgb && _mmdLum(srgb) < 0.06) {
+      const [sh, ss] = _mmdHsl(srgb);
+      map.set(_mmdHex(srgb), _mmdToHex(sh, Math.min(ss, 0.5), 0.45));
+    }
+  }
+  if (!map.size) return svg;
+  // 按色值全局替换：classDef 的颜色在 SVG 里以 hex 与 rgb() 两种写法出现，按色值映射才都对上
+  return svg.replace(/([a-z-]+):\s*([^;}"']+?)\s*!important/g, (all, prop, val) => {
+    const rgb = _mmdRgb(val);
+    if (!rgb) return all;
+    const to = map.get(_mmdHex(rgb));
+    if (!to) return all;
+    return prop + ": " + to + " !important";
+  });
+}
+
 /* 把 SVG 作为 <img data-url> 插入（不是内联 <svg>）：
    SVG-as-image 是标准隔离机制——内嵌 <style> 不参与全局样式计算、SVG 节点不进 DOM
    （1 个 img 替代几百个 SVG 节点）、滚动 layout 极轻。这是 85 个图滚动卡顿的根治。
@@ -4096,6 +4217,7 @@ async function renderMermaid() {
    需解析 viewBox 得到设计宽高，设置 img 宽度 = viewBox 宽（height auto 保持比例），
    并受容器 max-width:100% 约束（小图不大，大图不溢出）。 */
 function insertSvgAsImg(div, svg) {
+  svg = mermaidDarkenSvg(svg);   // classDef 的浅色节点压暗（详见上方说明）
   const m = svg.match(/viewBox=["']([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)["']/);
   const vbW = m ? parseFloat(m[3]) : null;
   const url = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
