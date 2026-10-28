@@ -881,7 +881,8 @@ body {
 
 /* ---------- 搜索：文件内搜索条 ---------- */
 .search-widget {
-  position: fixed; top: 8px; right: 16px; z-index: 90;
+  /* z-index 必须高于 #modal-mask(100)：代码弹窗打开时，搜索条要浮在弹窗之上才看得见 */
+  position: fixed; top: 8px; right: 16px; z-index: 120;
   display: flex; align-items: center; gap: 6px;
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
   padding: 6px 8px; box-shadow: 0 6px 24px rgba(0,0,0,.45);
@@ -900,9 +901,16 @@ body {
 }
 .search-widget button:hover { color: var(--accent); border-color: var(--accent); }
 .search-widget button:disabled { opacity: .4; cursor: default; }
-/* 匹配高亮：代码行（整行） / md 渲染文本（mark） */
-#ct-scroll .cl-line.fs-line { background: rgba(210,153,34,.14); }
-#ct-scroll .cl-line.fs-line.fs-cur { background: rgba(210,153,34,.34); box-shadow: inset 2px 0 0 var(--yellow); }
+/* 匹配高亮：标在「目标文本」上（不是整行）
+   代码视图用浏览器原生的 Custom Highlight API（md 正文用 <mark>，同一个思路）；
+   老浏览器没有该 API 时退回整行标记（下面两条 .fs-line 规则）。 */
+::highlight(fs-match) { background-color: rgba(210,153,34,.42); color: #ffe9b3; }
+::highlight(fs-current) { background-color: var(--yellow); color: #1a1a1a; }
+#ct-scroll .cl-line.fs-line, #m-scroll .cl-line.fs-line { background: rgba(210,153,34,.14); }
+#ct-scroll .cl-line.fs-line.fs-cur, #m-scroll .cl-line.fs-line.fs-cur { background: rgba(210,153,34,.34); box-shadow: inset 2px 0 0 var(--yellow); }
+/* 弹窗里行号列自带不透明底色（sticky），要单独上色，否则整行高亮看着像没生效 */
+#m-scroll .cl-line.fs-line .cl-no { background: rgba(210,153,34,.16); }
+#m-scroll .cl-line.fs-line.fs-cur .cl-no { background: rgba(210,153,34,.38); }
 .md-body mark.fs-mark { background: rgba(210,153,34,.35); color: #ffe9b3; border-radius: 2px; padding: 0 1px; }
 .md-body mark.fs-mark.fs-cur { background: var(--yellow); color: #1a1a1a; }
 
@@ -4601,6 +4609,7 @@ async function openCodeModal(path, line, view) {
     $("#m-textarea").value = j.content;
     renderCodeView(j.content, line);
     $("#modal-mask").classList.add("show");
+    if (fsVisible()) fsPositionWidget();   // 搜索条已经在开着 → 挪到弹窗里的位置
     $("#m-back").style.display = "none";
     setModalDefbar(null);
     if (line) requestAnimationFrame(() => scrollCodeToLine(line));
@@ -4764,6 +4773,13 @@ function renderRows(rows, hlByLine, hlLine, container) {
   // 在 vscroll 模式下被 absolute 化且无 top → 全部叠在顶部、跑出 wrap
   scroll.innerHTML = "";
   if (scroll.__vstate) { scroll.__vstate = null; }
+  scroll.__fsRows = null;   // 行集合已换 → 搜索用的行缓存失效
+  // 内容重绘（切分支/切提交/换文件）→ 之前算出的命中位置已失效，行号与偏移都对不上了
+  if (fsState.scope && fsState.scope.container === scroll) {
+    fsState.rowSpans = null; fsState.matches = []; fsState.idx = -1; fsState.curRow = -1;
+    fsClearHighlights();
+    if (fsVisible()) $("#fs-count").textContent = "";
+  }
   const total = rows.length;
   if (total > V_THRESHOLD) {
     // 虚拟滚动：全量高亮（内存保留），DOM 只渲染可视窗口 ± buffer
@@ -4814,7 +4830,7 @@ function renderRows(rows, hlByLine, hlLine, container) {
     const no = r.no != null ? r.no : "";
     const sign = r.kind === "add" ? "+" : r.kind === "del" ? "−" : " ";
     const codeHtml = hlByLine ? (hlByLine[i] || escapeHtml(r.text)) : escapeHtml(r.text);
-    html += `<div class="${cls.join(" ")}" data-line="${no}"><span class="cl-no">${no}</span><span class="cl-code">${foldBadge}${sign} ${codeHtml}</span></div>`;
+    html += `<div class="${cls.join(" ")}" data-line="${no}" data-idx="${i}"><span class="cl-no">${no}</span><span class="cl-code">${foldBadge}${sign} ${codeHtml}</span></div>`;
   });
   scroll.innerHTML = html;
 }
@@ -4841,10 +4857,12 @@ function paintVirtualWindow(scroll, wrap) {
     const no = r.no != null ? r.no : "";
     const sign = r.kind === "add" ? "+" : r.kind === "del" ? "−" : " ";
     const codeHtml = vs.hl ? (vs.hl[i] || escapeHtml(r.text)) : escapeHtml(r.text);
-    html += `<div class="${cls.join(" ")}" data-line="${no}" style="top:${6 + i * V_LINE_H}px"><span class="cl-no">${no}</span><span class="cl-code">${sign} ${codeHtml}</span></div>`;
+    html += `<div class="${cls.join(" ")}" data-line="${no}" data-idx="${i}" style="top:${6 + i * V_LINE_H}px"><span class="cl-no">${no}</span><span class="cl-code">${sign} ${codeHtml}</span></div>`;
   }
   wrap.innerHTML = html;
   syncVWrapWidth(scroll, wrap, vs);
+  // 搜索高亮画在目标文本上（Range 指向 DOM 节点）：重绘后节点被换掉 → 必须重建
+  if (fsState.scope && fsState.scope.container === scroll && fsState.rowSpans) fsRefreshHighlights(scroll);
 }
 
 /* 虚拟滚动的横向滚动：把最宽行的像素宽度写到 v-wrap 上。
@@ -5140,6 +5158,8 @@ function fmtSize(n) {
 }
 
 function closeModal() {
+  // 搜索作用域在弹窗上时一并关掉（否则高亮留在即将销毁的行上，搜索条也飘在页面上）
+  if (fsState.scope && fsState.scope.container === $("#m-scroll")) fileSearchClose();
   $("#modal-mask").classList.remove("show");
   modalState = { path: null, line: null, content: "", git: null, branchContent: null, commit: null, commitContent: null, _branchSeq: 0, _backStack: [], _viewBranch: null, lines: 0, size: 0, _defbar: null };
   $("#m-back").style.display = "none";
@@ -5150,9 +5170,11 @@ function closeModal() {
     delete scroll._vScrollFn;
   }
   scroll.__vstate = null;
+  scroll.__fsRows = null;
   scroll.classList.remove("vscroll");
   const wrap = scroll.querySelector(".v-wrap");
   if (wrap) wrap.remove();
+  fsPositionWidget();   // 弹窗没了 → 搜索条回到页面右上角（别停在弹窗里的位置）
 }
 
 
@@ -6496,7 +6518,12 @@ $("#m-git-clear").addEventListener("click", () => {
   $("#m-gitinfo").style.display = "none";
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && $("#modal-mask").classList.contains("show") && !$("#mmd-zoom-mask").classList.contains("show")) closeModal();
+  if (e.key !== "Escape") return;
+  // 全局搜索自己处理 Esc（它的输入框会 stopPropagation，这里只是兜底别把代码弹窗一起关掉）
+  if ($("#gsearch-mask").classList.contains("show")) return;
+  // 搜索条开着时，Esc 先关搜索条，不连带关掉代码弹窗
+  if (fsVisible()) { fileSearchClose(); return; }
+  if ($("#modal-mask").classList.contains("show") && !$("#mmd-zoom-mask").classList.contains("show")) closeModal();
 });
 
 /* ================= mermaid 全屏查看（缩放/拖动） =================
@@ -6641,13 +6668,60 @@ function escapeHtml(s) {
 
 /* ================= 搜索：文件内（Ctrl+F）+ 全局（Ctrl+Shift+F） ================= */
 /* 焦点约定：Ctrl+F 拦截浏览器自带查找（preventDefault），焦点进搜索输入框；
-   Esc 关闭并清空高亮，焦点回到页面主体。 */
-const fsState = { q: "", matches: [], idx: -1, opts: { cs: false, word: false, re: false } };
+   Esc 关闭并清空高亮，焦点回到页面主体。
+   作用域：代码弹窗打开时 → 搜弹窗里的代码（#m-scroll）；否则 → 当前标签页（#ct-scroll / md 正文）。
+   命中的行按「行下标」记录而不是行号：diff 视图里删除行用旧行号，可能与新增行撞号。
+   高亮标在「目标文本」上（不是整行）：代码视图用浏览器原生 Custom Highlight API。 */
+const fsState = { q: "", matches: [], idx: -1, opts: { cs: false, word: false, re: false },
+                   scope: null, rowSpans: null, curRow: -1 };
+
+/* 代码视图的命中高亮：用浏览器原生的 Custom Highlight API 画在「目标文本」上，
+   和 md 正文里的 <mark> 一个思路（标目标，不标整行）。
+   虚拟滚动重绘会换掉 DOM 节点 → 旧 range 失效，重绘后必须重建。 */
+const fsHl = { ok: !!(window.Highlight && window.CSS && CSS.highlights), ranges: [], cur: null };
 
 function fsVisible() { return $("#file-search").style.display !== "none"; }
 
+/* 搜索作用域：代码弹窗优先（弹窗盖在页面上，用户此刻看的就是弹窗里的代码） */
+function fsResolveScope() {
+  const mask = $("#modal-mask");
+  if (mask && mask.classList.contains("show") && modalState && modalState.path) {
+    const sc = $("#m-scroll");
+    if (sc) return { kind: "code", container: sc, where: "弹窗" };
+  }
+  const tab = curActiveTab();
+  if (!tab) return null;
+  if (tab.kind === "code" || (tab.kind === "html" && tab.htmlMode === "source")) {
+    const sc = $("#ct-scroll");
+    if (sc) return { kind: "code", container: sc, where: "标签页" };
+    return null;
+  }
+  if (tab.kind === "md") return { kind: "md", where: "标签页" };
+  return { kind: "none", where: "" };
+}
+
+/* 搜索条定位：代码弹窗打开时贴到弹窗代码区右上角（否则被弹窗盖住看不见） */
+function fsPositionWidget() {
+  const w = $("#file-search");
+  if (!w) return;
+  const mask = $("#modal-mask");
+  if (!mask || !mask.classList.contains("show")) {
+    w.classList.remove("in-modal");
+    w.style.top = ""; w.style.right = "";
+    return;
+  }
+  const body = $("#modal-body");
+  if (!body) return;
+  const r = body.getBoundingClientRect();
+  w.classList.add("in-modal");
+  w.style.top = Math.round(r.top + 8) + "px";
+  w.style.right = Math.round(window.innerWidth - r.right + 14) + "px";
+}
+window.addEventListener("resize", () => { if (fsVisible()) fsPositionWidget(); });
+
 function fileSearchOpen() {
   $("#file-search").style.display = "flex";
+  fsPositionWidget();
   const inp = $("#fs-input");
   inp.focus();
   inp.select();
@@ -6658,11 +6732,12 @@ function fileSearchClose() {
   fileSearchClear();
   $("#file-search").style.display = "none";
   fsState.q = ""; fsState.matches = []; fsState.idx = -1;
+  fsState.scope = null; fsState.rowSpans = null; fsState.curRow = -1;
 }
 
-/* 清空文件内搜索的所有高亮（代码行 fs-line / md 文本 fs-mark） */
+/* 清空文件内搜索的所有高亮（代码目标文本 fs-match / md 文本 fs-mark） */
 function fileSearchClear() {
-  document.querySelectorAll("#ct-scroll .cl-line.fs-line").forEach(n => n.classList.remove("fs-line", "fs-cur"));
+  fsClearHighlights();
   document.querySelectorAll(".md-body mark.fs-mark").forEach(m => {
     const t = document.createTextNode(m.textContent);
     m.replaceWith(t);
@@ -6673,46 +6748,229 @@ function fileSearchClear() {
   if (body) body.normalize();
   const c = $("#fs-count");
   if (c) c.textContent = "";
+  fsState.rowSpans = null; fsState.curRow = -1;
 }
 
-/* 在当前打开文件内搜索；code/html源码按行匹配（整行高亮），md 高亮渲染文本。 */
+/* 清掉代码视图的命中高亮 */
+function fsClearHighlights() {
+  if (fsHl.ok) {
+    try { CSS.highlights.delete("fs-match"); CSS.highlights.delete("fs-current"); } catch (e) { /* 忽略 */ }
+  }
+  fsHl.ranges = []; fsHl.cur = null;
+  // 老浏览器兜底：整行标记也要清
+  document.querySelectorAll("#ct-scroll .cl-line.fs-line, #m-scroll .cl-line.fs-line")
+    .forEach(n => n.classList.remove("fs-line", "fs-cur"));
+}
+
+/* 把一行里的一段文本区间换算成 Range。
+   行首有「折叠徽标 + 符号位(+/−/空格) + 一个空格」，要找的目标从它后面开始；
+   目标可能跨多个 hljs span（每个 span 一个文本节点）→ Range 的起止可以落在不同节点上。 */
+function fsRangeInRow(rowEl, start, end) {
+  const codeEl = rowEl.querySelector(".cl-code");
+  if (!codeEl) return null;
+  const badge = codeEl.querySelector(".fold-badge");
+  const prefix = (badge ? badge.textContent.length : 0) + 2;
+  const walker = document.createTreeWalker(codeEl, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let pos = 0, n;
+  while ((n = walker.nextNode())) { nodes.push({ node: n, start: pos, len: n.nodeValue.length }); pos += n.nodeValue.length; }
+  const gs = prefix + start, ge = prefix + end;
+  let sNode = null, sOff = 0, eNode = null, eOff = 0;
+  for (const nd of nodes) {
+    if (!sNode && gs >= nd.start && gs <= nd.start + nd.len) { sNode = nd.node; sOff = gs - nd.start; }
+    if (!eNode && ge >= nd.start && ge <= nd.start + nd.len) { eNode = nd.node; eOff = ge - nd.start; break; }
+  }
+  if (!sNode || !eNode) return null;
+  try {
+    const r = document.createRange();
+    r.setStart(sNode, Math.max(0, Math.min(sOff, sNode.nodeValue.length)));
+    r.setEnd(eNode, Math.max(0, Math.min(eOff, eNode.nodeValue.length)));
+    return r;
+  } catch (e) { return null; }
+}
+
+/* 重建并上色：把当前 DOM 里存在的那几行的命中区间画出来（目标文本，不是整行） */
+function fsRefreshHighlights(container) {
+  if (!fsHl.ok) { fsMarkRowsFallback(container); return; }
+  const ranges = [];
+  let cur = null;
+  if (fsState.rowSpans && container) {
+    container.querySelectorAll(".cl-line").forEach(row => {
+      const ridx = row.dataset.idx != null ? parseInt(row.dataset.idx, 10) : -1;
+      const segs = fsState.rowSpans.get(ridx);
+      if (!segs || !segs.length) return;
+      for (const seg of segs) {
+        const r = fsRangeInRow(row, seg[0], seg[1]);
+        if (!r) continue;
+        ranges.push(r);
+        if (ridx === fsState.curRow && !cur) cur = r;   // 当前命中 = 当前行的第一处
+      }
+    });
+  }
+  fsHl.ranges = ranges; fsHl.cur = cur;
+  try {
+    CSS.highlights.delete("fs-match");
+    CSS.highlights.delete("fs-current");
+    if (ranges.length) {
+      const h = new Highlight();
+      ranges.forEach(r => h.add(r));
+      CSS.highlights.set("fs-match", h);
+    }
+    if (cur) CSS.highlights.set("fs-current", new Highlight(cur));
+  } catch (e) { /* 忽略 */ }
+}
+
+/* 老浏览器兜底：没有 Highlight API 时退回「整行标记」 */
+function fsMarkRowsFallback(container) {
+  if (!container) return;
+  container.querySelectorAll(".cl-line").forEach((el, i) => {
+    const idx = el.dataset.idx != null ? parseInt(el.dataset.idx, 10) : i;
+    if (fsState.rowSpans && fsState.rowSpans.has(idx)) el.classList.add("fs-line");
+    if (fsState.curRow === idx) el.classList.add("fs-cur");
+  });
+}
+
+/* 选中「当前视口内最靠上的那个命中」：视口里没有命中才退回第一个 */
+function fsPickVisibleMatch(container, matches) {
+  if (!matches.length) return { idx: 0, inView: false };
+  const firstOf = new Map();
+  matches.forEach((m, i) => { if (!firstOf.has(m.idx)) firstOf.set(m.idx, i); });
+  const box = container.getBoundingClientRect();
+  const rows = container.querySelectorAll(".cl-line");
+  for (const row of rows) {
+    const ridx = row.dataset.idx != null ? parseInt(row.dataset.idx, 10) : -1;
+    const mi = firstOf.get(ridx);
+    if (mi === undefined) continue;
+    const r = row.getBoundingClientRect();
+    if (r.bottom <= box.top || r.top >= box.bottom) continue;   // 不在视口里
+    return { idx: mi, inView: true };
+  }
+  return { idx: 0, inView: false };
+}
+
+/* 同上，但用于 md 正文的一组命中元素 */
+function fsPickVisibleMark(els, container) {
+  if (!els.length) return { idx: 0, inView: false };
+  const box = container ? container.getBoundingClientRect() : null;
+  if (box) {
+    for (let i = 0; i < els.length; i++) {
+      const r = els[i].getBoundingClientRect();
+      if (r.bottom <= box.top || r.top >= box.bottom) continue;
+      return { idx: i, inView: true };
+    }
+  }
+  return { idx: 0, inView: false };
+}
+
+/* 跳到第 idx 个命中（doScroll=false 时不动视口） */
+function fsGoto(idx, doScroll) {
+  const m = fsState.matches[idx];
+  if (!m) return;
+  fsState.idx = idx;
+  fsState.curRow = m.idx;
+  const sc = fsState.scope;
+  if (sc && sc.container) {
+    if (doScroll) fsScrollToRow(sc.container, m.idx);
+    fsRefreshHighlights(sc.container);
+  }
+}
+
+/* 在当前打开文件内搜索；code/html源码按行匹配（高亮标在目标文本上），md 高亮渲染文本。
+   代码视图搜的是「显示出来的那些行」——代码弹窗（#m-scroll）与代码标签页（#ct-scroll）共用一套逻辑。 */
 function fileSearchRun(q) {
-  const tab = curActiveTab();
   fileSearchClear();
   fsState.matches = []; fsState.idx = -1;
   fsState.q = q || "";
   if (!fsState.q) return;
-  if (!tab) { toast("没有打开的文件", "err"); return; }
-  if (tab.kind === "code" || (tab.kind === "html" && tab.htmlMode === "source")) {
-    const text = tab.branchContent != null ? tab.branchContent : (tab.content || "");
-    fsRunCode(text, fsState.q);
-  } else if (tab.kind === "md") {
-    fsRunMd(fsState.q);
+  const scope = fsResolveScope();
+  if (!scope) { toast("没有打开的文件", "err"); return; }
+  if (scope.kind === "md") { fsRunMd(fsState.q); return; }
+  if (scope.kind === "code") { fsRunCode(scope.container, fsState.q); return; }
+  $("#fs-count").textContent = "该视图不可搜索";
+}
+
+/* 代码视图搜索：命中按「行下标 + 行内区间」记录；虚拟滚动时 DOM 里只有可视窗口，
+   全量行从 __vstate 取，普通模式从 DOM 取。 */
+function fsRunCode(container, q) {
+  const re = fsBuildRe(q);
+  if (!re) { toast("正则表达式错误", "err"); return; }
+  const rows = codeRowsOf(container);
+  const spans = new Map();
+  const matches = [];
+  rows.forEach((r, i) => {
+    if (!r.text) return;
+    const segs = fsMatchesIn(r.text, re);
+    if (!segs.length) return;
+    spans.set(i, segs);
+    for (const seg of segs) matches.push({ idx: i, line: r.no, col: seg[0] + 1, start: seg[0], end: seg[1] });
+  });
+  fsState.scope = { kind: "code", container };
+  fsState.rowSpans = spans;
+  fsState.matches = matches;
+  if (matches.length) {
+    // 初始选中：优先当前视口内最靠上的那个命中（本来就在视口里就别再滚动）
+    const pick = fsPickVisibleMatch(container, matches);
+    fsGoto(pick.idx, !pick.inView);
+    $("#fs-count").textContent = (pick.idx + 1) + " / " + matches.length;
   } else {
-    $("#fs-count").textContent = "该视图不可搜索";
+    $("#fs-count").textContent = "0 处";
+    toast("无匹配", "err");
   }
 }
 
-function fsRunCode(text, q) {
-  const re = fsBuildRe(q);
-  if (!re) { toast("正则表达式错误", "err"); return; }
-  const lines = text.split("\n");
-  const matches = [];
-  for (let i = 0; i < lines.length; i++) {
-    for (const [s] of fsMatchesIn(lines[i], re)) matches.push({ line: i + 1, col: s + 1 });
-  }
-  fsState.matches = matches;
-  const ct = $("#ct-scroll");
-  if (ct) {
-    const set = new Set(matches.map(m => m.line));
-    ct.querySelectorAll(".cl-line").forEach(row => {
-      const no = row.dataset.line;
-      if (no && set.has(parseInt(no, 10))) row.classList.add("fs-line");
+/* 取代码容器的逻辑行：[{no, text}]（text = 显示出来的纯文本，不含行首符号位） */
+function codeRowsOf(container) {
+  if (!container) return [];
+  if (container.__fsRows) return container.__fsRows;
+  const out = [];
+  const vs = container.__vstate;
+  if (vs && vs.rows) {
+    for (let i = 0; i < vs.rows.length; i++) {
+      const r = vs.rows[i];
+      let text = r.text;
+      if (!text && vs.hl && vs.hl[i]) text = stripHtmlText(vs.hl[i]);
+      out.push({ no: r.no, text: text || "" });
+    }
+  } else {
+    container.querySelectorAll(".cl-line").forEach(el => {
+      out.push({ no: parseInt(el.dataset.line, 10), text: clCodeText(el.querySelector(".cl-code")) });
     });
   }
-  $("#fs-count").textContent = matches.length + " 处";
-  if (matches.length) fsNav(1, false);
-  else toast("无匹配", "err");
+  container.__fsRows = out;
+  return out;
+}
+
+/* HTML 片段 → 纯文本（hljs 高亮 HTML：剥标签 + 解实体，&amp; 最后解） */
+function stripHtmlText(html) {
+  return String(html)
+    .replace(/<[^>]*>/g, "")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'").replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&");
+}
+
+/* .cl-code 的纯文本：去掉折叠徽标与行首符号位（+/−/空格 + 一个空格） */
+function clCodeText(codeEl) {
+  if (!codeEl) return "";
+  let t = codeEl.textContent || "";
+  const badge = codeEl.querySelector(".fold-badge");
+  if (badge) t = t.slice(badge.textContent.length);
+  return t.slice(2);
+}
+
+/* 滚到第 idx 行（虚拟滚动按行高定位；普通模式按元素 offsetTop） */
+function fsScrollToRow(scroll, idx) {
+  const vs = scroll.__vstate;
+  if (vs && vs.rows) {
+    scroll.scrollTop = Math.max(0, idx * V_LINE_H - scroll.clientHeight / 2 + V_LINE_H / 2);
+    const wrap = scroll.querySelector(".v-wrap");
+    if (wrap) paintVirtualWindow(scroll, wrap);
+    return;
+  }
+  const els = scroll.querySelectorAll(".cl-line");
+  const el = els[idx];
+  if (!el) return;
+  scroll.scrollTop = Math.max(0, el.offsetTop - scroll.clientHeight / 2 + el.offsetHeight / 2);
 }
 
 function fsRunMd(q) {
@@ -6753,10 +7011,15 @@ function fsRunMd(q) {
     if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)));
     parent.replaceChild(frag, node);
   }
+  fsState.scope = { kind: "md" };
   fsState.matches = marks.map(m => ({ el: m }));
   $("#fs-count").textContent = marks.length + " 处";
-  if (marks.length) fsNav(1, false);
-  else toast("无匹配", "err");
+  if (marks.length) {
+    // 初始选中：优先当前视口内最靠上的那个命中（本来就在视口里就别再滚动）
+    const pick = fsPickVisibleMark(marks, box);
+    fsState.idx = pick.idx - 1;
+    fsNav(1, false, !pick.inView);
+  } else toast("无匹配", "err");
 }
 
 /* 文件内搜索匹配构造：支持 大小写(cs) / 全字(word) / 正则(re) 三个开关；正则编译失败返回 null */
@@ -6800,8 +7063,9 @@ function fsDeferMd(q, tries) {
   }, 100);
 }
 
-/* 上/下一个匹配：d=1 下一个，d=-1 上一个；wrap=false 时到底不绕回 */
-function fsNav(d, wrap = true) {
+/* 上/下一个匹配：d=1 下一个，d=-1 上一个；wrap=false 时到底不绕回；
+   doScroll=false 时不动视口（命中的本来就在视口里）。 */
+function fsNav(d, wrap = true, doScroll = true) {
   const n = fsState.matches.length;
   if (!n) { toast("无匹配", "err"); return; }
   let next = fsState.idx + d;
@@ -6809,18 +7073,14 @@ function fsNav(d, wrap = true) {
     if (!wrap) { toast("没有更多匹配", "err"); return; }
     next = (next + n) % n;
   }
-  fsState.idx = next;
   const m = fsState.matches[next];
-  document.querySelectorAll("#ct-scroll .cl-line.fs-cur, .md-body mark.fs-mark.fs-cur")
-    .forEach(el => el.classList.remove("fs-cur"));
-  if (m.el) {
+  if (m.el) {                       // md：命中的是渲染出来的文本节点
+    fsState.idx = next;
+    document.querySelectorAll(".md-body mark.fs-mark.fs-cur").forEach(el => el.classList.remove("fs-cur"));
     m.el.classList.add("fs-cur");
-    m.el.scrollIntoView({ block: "center", behavior: "smooth" });
-  } else if (m.line) {
-    const ct = $("#ct-scroll");
-    const row = ct ? ct.querySelector(`.cl-line[data-line="${m.line}"]`) : null;
-    if (row) row.classList.add("fs-cur");
-    if (ct) scrollCodeToLine(m.line, ct);
+    if (doScroll) m.el.scrollIntoView({ block: "center", behavior: "smooth" });
+  } else {                           // 代码：按行下标定位（弹窗 #m-scroll / 标签页 #ct-scroll）
+    fsGoto(next, doScroll);
   }
   $("#fs-count").textContent = (next + 1) + " / " + n;
 }
@@ -8010,7 +8270,7 @@ $("#fs-input").addEventListener("keydown", (e) => {
       fsNav(e.shiftKey ? -1 : 1);                      // 同一查询 → 上/下一个
     }
   }
-  else if (e.key === "Escape") { e.preventDefault(); fileSearchClose(); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); fileSearchClose(); }
 });
 $("#fs-next").addEventListener("click", () => fsNav(1));
 $("#fs-prev").addEventListener("click", () => fsNav(-1));
@@ -8028,7 +8288,7 @@ $("#fs-close").addEventListener("click", fileSearchClose);
 
 $("#gs-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); globalSearchRun(); }
-  else if (e.key === "Escape") { e.preventDefault(); globalSearchClose(); }
+  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); globalSearchClose(); }
 });
 $("#gs-run").addEventListener("click", globalSearchRun);
 $("#gs-close").addEventListener("click", globalSearchClose);
