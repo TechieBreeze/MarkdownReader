@@ -922,6 +922,20 @@ body {
 .search-widget .fs-opt:hover { border-color: var(--accent); color: var(--accent); }
 .search-widget .fs-opt.on { background: var(--accent); color: #1a1a1a; border-color: var(--accent); }
 
+/* ---------- 路径右键菜单（一键复制） ---------- */
+#ctx-menu {
+  position: fixed; z-index: 500; min-width: 172px; display: none;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.55); padding: 4px 0; overflow: hidden;
+}
+#ctx-menu.show { display: block; }
+#ctx-menu .ctx-item {
+  display: block; width: 100%; text-align: left; background: transparent;
+  border: 0; border-radius: 0; color: var(--fg); font-size: 12.5px;
+  padding: 6px 14px; cursor: pointer; line-height: 1.5; white-space: nowrap;
+}
+#ctx-menu .ctx-item:hover { background: var(--accent-bg); color: var(--accent-hover); }
+
 /* ---------- 搜索：全局搜索弹窗 ---------- */
 #gsearch-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 150;
@@ -1876,6 +1890,9 @@ body {
 .hljs-meta, .hljs-meta .hljs-keyword, .hljs-comment .hljs-doctag { color: var(--hl-meta) !important; }
 .hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--hl-type) !important; }
 .hljs-params { color: var(--hl-variable) !important; }
+/* 全大写常量 / 枚举值：Java 约定即常量（枚举值 POINT_REDEMPTION 这类），
+   要能高亮、能 Ctrl+点击跳到定义 */
+.hljs-constant { color: var(--hl-number) !important; }
 /* 参数列表里的 token（类型/参数名/关键字）带上了 hljs-params 这个类，
    整段的 !important 默认色会把它们一起盖掉 → 用复合选择器（优先级更高）
    把它们还原成各自的类型色，否则「类型识别到了」在视觉上看不出来。 */
@@ -5088,8 +5105,14 @@ function hljsPostProcJavaKtTokens(txt) {
   let m;
   while ((m = re.exec(txt)) !== null) {
     const word = m[0];
-    if (KW[word] || /^[A-Z]/.test(word)) continue;   // 关键字/字面量、PascalCase 类型/常量 → 不动
-    const cls = txt.charAt(m.index + word.length) === "(" ? "hljs-title function_" : "hljs-variable";
+    if (KW[word]) continue;                           // 关键字/字面量 → 不动
+    let cls;
+    if (/^[A-Z]/.test(word)) {
+      if (/[a-z]/.test(word)) continue;                // PascalCase → 类型归类型增强管
+      cls = "hljs-constant";                          // 全大写 → 常量/枚举值（枚举值要能点）
+    } else {
+      cls = txt.charAt(m.index + word.length) === "(" ? "hljs-title function_" : "hljs-variable";
+    }
     if (m.index > last) out.push({ cls: "", txt: txt.slice(last, m.index) });
     out.push({ cls, txt: word });
     last = m.index + word.length;
@@ -5331,6 +5354,9 @@ function ctrlTokenInfo(e) {
   let kind = null;
   if (cls.includes("function_")) kind = "method";
   else if (cls.includes("hljs-type") || cls.includes("class_")) kind = "type";
+  // 全大写常量 / 枚举值：Java 走服务端按「枚举常量声明行」解析；
+  // 其它语言当变量处理（与既有 JS/TS 行为一致）
+  else if (cls.includes("hljs-constant")) kind = isJavaPath(srcPathFor(e)) ? "constant" : "variable";
   else if (cls.includes("hljs-variable")) kind = "variable";
   // JS/TS/Vue 没有 Java 专属的 hljs _post_proc：hljs 自身的 hljs-keyword/title/
   // attr/property 等 token 同样可作为跳转目标（变量/函数/类型），放宽为 variable 交给
@@ -5587,6 +5613,33 @@ function findTypeDeclLine(text, typeName) {
   const re = new RegExp("\\b(class|interface|enum|record)\\s+" + _escRe(typeName) + "\\b");
   const idx = text.split("\n").findIndex(l => re.test(l));
   return idx >= 0 ? idx + 1 : null;
+}
+
+/* 枚举值 / 常量声明行：枚举常量（POINT_REDEMPTION(...) / POINT_REDEMPTION,）
+   或 static final 字段（static final int MAX_COUNT = 10;） */
+function findConstDeclLine(text, name) {
+  if (!text || !name) return null;
+  const lines = stripCodeNoise(text).split("\n");
+  const enumRe = new RegExp("^\\s*" + _escRe(name) + "\\s*(?:\\(|,|;|=)");
+  const fieldRe = new RegExp("\\bstatic\\s+final\\b[^;]*\\b" + _escRe(name) + "\\s*=");
+  for (let i = 0; i < lines.length; i++) {
+    if (enumRe.test(lines[i]) || fieldRe.test(lines[i])) return i + 1;
+  }
+  return null;
+}
+
+/* 取 X.CONST 的接收者类型名（X，或全限定的 com.pvh.X） */
+function constReceiverName(text, line, name) {
+  if (!text || !line || !name) return null;
+  const lines = text.split("\n");
+  const ln = lines[line - 1];
+  if (!ln) return null;
+  const idx = ln.indexOf(name);
+  if (idx < 0) return null;
+  const prefix = ln.slice(0, idx).replace(/\s+$/, "");
+  if (!prefix.endsWith(".")) return null;
+  const m = prefix.slice(0, -1).match(/([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$/);
+  return m ? m[1] : null;
 }
 function isInterfaceFile(text, typeName) {
   return new RegExp("\\binterface\\s+" + _escRe(typeName) + "\\b").test(text);
@@ -5910,6 +5963,27 @@ async function ctrlJump(src, info) {
 async function ctrlJumpFallback(src, info) {
   const { kind, name, lineText, lineNo } = info;
   try {
+    if (kind === "constant") {
+      // 枚举值 / 常量：在当前文件里找它的声明行（X.CONST → 先在同文件找，找不到再试接收者类型）
+      const decl = findConstDeclLine(src.text, name);
+      if (decl) {
+        pushNav(src.path, lineNo);
+        return localJump(src, decl);
+      }
+      const recv = constReceiverName(src.text, lineNo, name);
+      if (recv) {
+        const resolved = await resolveTypeFile(recv, src.path, src.text);
+        if (resolved) {
+          const files = await fetchJumpFiles(resolved, src.view);
+          if (files) {
+            const text = files.viewText || files.content;
+            const l2 = findConstDeclLine(text, name);
+            if (l2) return openTarget(src, resolved, files, l2, { kind: "constant", name, view: src.view });
+          }
+        }
+      }
+      return toastJump("未找到定义");
+    }
     if (kind === "variable") {
       const line = findVarDeclLine(src.text, name, false);
       if (line) {
@@ -6489,6 +6563,84 @@ $("#j-copy").addEventListener("click", () => {
 });
 $("#json-input").addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); jsonRun("format"); }
+});
+
+/* ================= 路径右键菜单（一键复制） ================= */
+/* 右键点路径（代码弹窗头 / 代码标签页头 / md 工具条 / 全局搜索结果）→ 菜单里复制路径 */
+let _ctxMenu = null;
+
+function ctxMenuClose() {
+  if (_ctxMenu) { _ctxMenu.remove(); _ctxMenu = null; }
+  document.removeEventListener("click", ctxMenuOnDocClick, true);
+  document.removeEventListener("keydown", ctxMenuOnKey, true);
+}
+function ctxMenuOnDocClick(e) {
+  if (_ctxMenu && _ctxMenu.contains(e.target)) return;   // 点菜单项 → 由项自己处理
+  ctxMenuClose();
+}
+function ctxMenuOnKey(e) {
+  if (e.key === "Escape") { e.preventDefault(); ctxMenuClose(); }
+}
+function ctxMenuOpen(x, y, items) {
+  ctxMenuClose();
+  const m = document.createElement("div");
+  m.id = "ctx-menu";
+  m.className = "show";
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ctx-item";
+    b.textContent = it.label;
+    b.title = it.title || it.label;
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); ctxMenuClose(); it.action(); });
+    m.appendChild(b);
+  }
+  document.body.appendChild(m);
+  const r = m.getBoundingClientRect();
+  // 贴边时收回来，保证菜单完整可见
+  m.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 8)) + "px";
+  m.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 8)) + "px";
+  _ctxMenu = m;
+  setTimeout(() => {
+    document.addEventListener("click", ctxMenuOnDocClick, true);
+    document.addEventListener("keydown", ctxMenuOnKey, true);
+  }, 0);
+}
+
+/* 复制到剪贴板：非安全上下文/权限不足时退回 execCommand，再不行就提示手动复制 */
+function copyToClipboard(text, okMsg) {
+  if (!text) { toast("没有可复制的内容", "err"); return; }
+  const done = () => toast(okMsg || "已复制到剪贴板", "ok");
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, () => copyFallback(text, okMsg));
+  } else copyFallback(text, okMsg);
+}
+function copyFallback(text, okMsg) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+  ta.remove();
+  if (ok) toast(okMsg || "已复制到剪贴板", "ok");
+  else toast("复制失败：路径已选中，请按 Ctrl+C", "err");
+}
+
+/* 路径元素（弹窗头 / 代码标签页头 / md 工具条 / 搜索结果）→ 右键复制 */
+document.addEventListener("contextmenu", (e) => {
+  const el = e.target.closest && e.target.closest("#m-path, .ct-path, .mt-path, .gs-path");
+  if (!el) return;
+  const path = (el.dataset && el.dataset.full) || el.getAttribute("title") || (el.textContent || "").trim();
+  if (!path) return;
+  e.preventDefault();
+  const fileName = path.split(/[\\/]/).pop();
+  ctxMenuOpen(e.clientX, e.clientY, [
+    { label: "复制路径", title: path, action: () => copyToClipboard(path, "已复制路径") },
+    { label: "复制文件名", title: fileName, action: () => copyToClipboard(fileName, "已复制文件名") },
+  ]);
 });
 
 /* ================= 事件绑定 ================= */

@@ -995,6 +995,47 @@ def _find_type_decl(tree, name):
     return None
 
 
+def _find_enum_const_line(tree, name):
+    """枚举常量声明行。javalang 的 EnumConstantDeclaration 不带 position（恒为 None），
+    只能按 AST 顺序拿不到行号 → 由调用方用文本匹配定位，这里仅判断「本文件里有没有这个常量」。"""
+    for _path, node in tree:
+        if isinstance(node, _jt.EnumConstantDeclaration) and node.name == name:
+            return True
+    return None
+
+
+def _find_const_decl_line_text(content, name):
+    """按文本找枚举常量 / static final 常量的声明行（枚举常量在 AST 里没有位置信息）。"""
+    if not content or not name:
+        return None
+    enum_re = re.compile(r"^\s*" + re.escape(name) + r"\s*(?:\(|,|;|=)")
+    field_re = re.compile(r"\bstatic\s+final\b[^;]*\b" + re.escape(name) + r"\s*=")
+    for i, ln in enumerate(content.split("\n"), 1):
+        if enum_re.match(ln) or field_re.search(ln):
+            return i
+    return None
+
+
+def _const_receiver(src_text, line, col1, name):
+    """X.CONST / com.pvh.X.CONST → 接收者类型名（X 或全限定的 com.pvh.X）。"""
+    if not src_text:
+        return None
+    lines = src_text.split("\n")
+    if line < 1 or line > len(lines):
+        return None
+    ln = lines[line - 1]
+    idx = col1 - 1
+    if idx < 0 or ln[idx:idx + len(name)] != name:
+        idx = ln.find(name)
+        if idx < 0:
+            return None
+    prefix = ln[:idx].rstrip()
+    if not prefix.endswith("."):
+        return None
+    m = re.search(r"([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)$", prefix[:-1].rstrip())
+    return m.group(1) if m else None
+
+
 def _var_decls(tree, name):
     """变量声明候选 [(行号, 类型名), ...]：字段 / 局部变量 / 方法参数（按 AST 遍历顺序）。"""
     out = []
@@ -2400,6 +2441,26 @@ class Handler(BaseHTTPRequestHandler):
         """核心解析：定位点击 token 的定义。返回 {file,line,impl,kind,defName} 或 {error}。
         src_text 用于链式调用末尾成员（qualifier=None）沿行文本回溯链头。"""
         pkg = tree.package.name if tree.package else None
+
+        if kind == "constant":
+            # 枚举值 / 常量：先看当前文件里有没有它的声明
+            ln = _find_const_decl_line_text(src_text, name)
+            if ln:
+                return {"file": src_path, "line": ln, "impl": None, "kind": "constant", "defName": name}
+            ln = _find_field_line(tree, name, with_lombok=False)
+            if ln:
+                return {"file": src_path, "line": ln, "impl": None, "kind": "constant", "defName": name}
+            # 跨文件：X.CONST → 解析接收者类型（枚举类）→ 找常量声明行
+            recv = _const_receiver(src_text, line, col1, name)
+            if recv:
+                target = self._resolve_type_file(tree, recv, src_path, view_commit)
+                if target:
+                    content = self._load_file_content(target, view_commit)
+                    if content is not None:
+                        ln = _find_const_decl_line_text(content, name)
+                        if ln:
+                            return {"file": target, "line": ln, "impl": None, "kind": "constant", "defName": name}
+            return {"error": "未找到定义"}
 
         if kind == "variable":
             # hljs 把方法引用 ::method 的 token 标成 variable → 按 method 解析（走下方 method 分支）
