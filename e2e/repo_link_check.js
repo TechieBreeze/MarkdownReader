@@ -66,7 +66,12 @@ function get(p) {
     try { await openTab(p); return true; } catch (e) { return false; }
   }, DOC);
   if (!docOk) { console.log('[SKIP] 样本文档打不开：' + DOC); await browser.close(); process.exit(2); }
-  await new Promise(r => setTimeout(r, 4000));
+  // 仓库链接是异步解析的（/api/git/resolve 批量请求）→ 轮询等解析完成，
+  // 别用固定等待：机器负载高时解析会超过固定秒数，导致整批断言假失败
+  await page.waitForFunction(() => {
+    const links = [...document.querySelectorAll('#content .md-body a.gitlab-jump')];
+    return links.length > 0 && links.every(a => a.classList.contains('repo-local'));
+  }, { timeout: 60000, polling: 500 }).catch(() => {});
 
   const out = await page.evaluate(async () => {
     const links = [...document.querySelectorAll('#content .md-body a.gitlab-jump')];

@@ -1876,6 +1876,12 @@ body {
 .hljs-meta, .hljs-meta .hljs-keyword, .hljs-comment .hljs-doctag { color: var(--hl-meta) !important; }
 .hljs-name, .hljs-selector-id, .hljs-selector-class { color: var(--hl-type) !important; }
 .hljs-params { color: var(--hl-variable) !important; }
+/* 参数列表里的 token（类型/参数名/关键字）带上了 hljs-params 这个类，
+   整段的 !important 默认色会把它们一起盖掉 → 用复合选择器（优先级更高）
+   把它们还原成各自的类型色，否则「类型识别到了」在视觉上看不出来。 */
+.hljs-params.hljs-type { color: var(--hl-type) !important; }
+.hljs-params.hljs-variable { color: var(--hl-attr) !important; }
+.hljs-params.hljs-keyword { color: var(--hl-keyword) !important; }
 .hljs-subst { color: var(--hl-variable) !important; }
 .hljs-link { color: var(--accent) !important; text-decoration: underline; }
 .hljs-strong { font-weight: 700; }
@@ -5051,6 +5057,21 @@ function enhanceJavaKtTypes(html) {
     });
 }
 
+/* Java/Kotlin 关键字（含基本类型）—— 标识符补色与参数列表识别共用 */
+const JAVA_KW = (function () {
+  const s = {};
+  ("abstract assert boolean break byte case catch char class const continue default do double " +
+   "else enum extends final finally float for goto if implements import instanceof int interface " +
+   "long native new package private protected public return short static strictfp super switch " +
+   "synchronized this throw throws transient try void volatile while true false null var record " +
+   "sealed permits yield module requires exports opens uses provides to transitive " +
+   "as break by catch class companion const constructor crossinline data dynamic enum expect " +
+   "external final infix init inline inner internal lateinit noinline open operator out override " +
+   "private protected public reified sealed suspend tailrec vararg actual abstract annotation " +
+   "fun val typeof typealias when where in is object").split(" ").forEach(function (k) { s[k] = 1; });
+  return s;
+})();
+
 /* Java/Kotlin 标识符补色：hljs 不标方法调用名与变量/字段引用。
    只处理「未被任何 span 包裹」的纯文本标识符（绝无双重包裹）：
    · xxx.yyy( 的 yyy / 独立的 yyy( → hljs-title function_（函数名色）
@@ -5060,16 +5081,7 @@ function enhanceJavaKtTypes(html) {
    返回 token 数组而不是拼好的 HTML：调用方负责转义与拼接，
    避免把已转义的 HTML 实体当正文再处理一遍（实体名会被误判成标识符）。 */
 function hljsPostProcJavaKtTokens(txt) {
-  var KW = {};
-  ("abstract assert boolean break byte case catch char class const continue default do double " +
-   "else enum extends final finally float for goto if implements import instanceof int interface " +
-   "long native new package private protected public return short static strictfp super switch " +
-   "synchronized this throw throws transient try void volatile while true false null var record " +
-   "sealed permits yield module requires exports opens uses provides to transitive " +
-   "as break by catch class companion const constructor crossinline data dynamic enum expect " +
-   "external final infix init inline inner internal lateinit noinline open operator out override " +
-   "private protected public reified sealed suspend tailrec vararg actual abstract annotation " +
-   "fun val typeof typealias when where in is object").split(" ").forEach(function (k) { KW[k] = 1; });
+  const KW = JAVA_KW;
   const out = [];
   let last = 0;
   const re = /\b[A-Za-z_$][\w$]*\b/g;
@@ -5078,6 +5090,39 @@ function hljsPostProcJavaKtTokens(txt) {
     const word = m[0];
     if (KW[word] || /^[A-Z]/.test(word)) continue;   // 关键字/字面量、PascalCase 类型/常量 → 不动
     const cls = txt.charAt(m.index + word.length) === "(" ? "hljs-title function_" : "hljs-variable";
+    if (m.index > last) out.push({ cls: "", txt: txt.slice(last, m.index) });
+    out.push({ cls, txt: word });
+    last = m.index + word.length;
+  }
+  if (last < txt.length) out.push({ cls: "", txt: txt.slice(last) });
+  return out;
+}
+
+/* Java/Kotlin 参数列表里的标识符。
+   背景：hljs 把整个参数列表塞进一个 <span class="hljs-params">(…)</span>，
+   而类型增强（enhanceJavaKtTypes）是「整段 span 跳过」→ 参数里的类型既没上色、
+   也不是独立 token → Ctrl+点击点不动（普通变量/字段声明不受影响，因为它们在
+   span 之外）。这里在 DOM 层单独识别：
+     · PascalCase（首字母大写且含小写）→ 类型（hljs-type）
+     · 全大写 → 常量/枚举 → 不动
+     · 关键字/基本类型 → 关键字色（hljs-keyword）
+     · 其余小写标识符 → 参数名（hljs-variable），与普通变量同色同行为 */
+function hljsParamTokens(txt) {
+  const out = [];
+  let last = 0;
+  const re = /\b[A-Za-z_$][\w$]*\b/g;
+  let m;
+  while ((m = re.exec(txt)) !== null) {
+    const word = m[0];
+    let cls = "";
+    if (/^[A-Z]/.test(word)) {
+      if (/[a-z]/.test(word)) cls = "hljs-type";       // PascalCase → 类型
+    } else if (JAVA_KW[word]) {
+      cls = "hljs-keyword";                             // 关键字 / 基本类型
+    } else {
+      cls = "hljs-variable";                            // 参数名
+    }
+    if (!cls) continue;
     if (m.index > last) out.push({ cls: "", txt: txt.slice(last, m.index) });
     out.push({ cls, txt: word });
     last = m.index + word.length;
@@ -5104,7 +5149,8 @@ function highlightCodeHtml(content, lang) {
    · 文本节点是【解码后】的内容（HTML 实体已还原成 < > 等字符），
      重新拼回 HTML 时必须再转义一次，否则 < 会被浏览器当成标签开头，
      代码内容丢失（如 a<b 会被当成 <b 标签）。
-   · Java/Kotlin：未被 span 包裹的纯文本 → 补方法调用名与变量/字段引用。 */
+   · Java/Kotlin：未被 span 包裹的纯文本 → 补方法调用名与变量/字段引用；
+     参数列表（hljs-params 里的纯文本）→ 补类型与参数名。 */
 function highlightToLines(html, isJavaKt) {
   const tmpl = document.createElement("template");
   tmpl.innerHTML = html;
@@ -5114,12 +5160,16 @@ function highlightToLines(html, isJavaKt) {
   function walk(node, classes) {
     if (node.nodeType === 3) {  // text node
       const parts = node.textContent.split("\n");
+      // Java/Kotlin：参数列表整体被 hljs 塞进一个 <span class="hljs-params">，
+      // 里面的类型/参数名都是纯文本（字符串层的类型增强会整段跳过这个 span）→ 这里单独识别
+      const inParams = isJavaKt && classes.length && classes[classes.length - 1] === "hljs-params";
       for (let i = 0; i < parts.length; i++) {
         if (i > 0) { current = []; lines.push(current); }
         if (parts[i] !== "") {
           // Java/Kotlin：未被任何 span 包裹的纯文本 → 补方法调用名与变量/字段引用
-          const toks = (!classes.length && isJavaKt)
-            ? hljsPostProcJavaKtTokens(parts[i])
+          const toks = isJavaKt
+            ? (inParams ? hljsParamTokens(parts[i])
+              : (!classes.length ? hljsPostProcJavaKtTokens(parts[i]) : [{ cls: "", txt: parts[i] }]))
             : [{ cls: "", txt: parts[i] }];
           for (const t of toks) {
             current.push({ cls: classes.concat(t.cls ? t.cls.split(" ") : []), txt: escapeHtml(t.txt) });
