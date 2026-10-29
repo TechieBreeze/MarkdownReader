@@ -90,10 +90,16 @@ async function tokenBox(page, loc) {
 async function ctrlClick(page, loc) {
   const box = await tokenBox(page, loc);
   if (!box) return { path: null, line: null };
+  const before = await page.evaluate(() => modalState.path);
   await page.keyboard.down('Control');
   await page.mouse.click(box.x, box.y);
   await page.keyboard.up('Control');
-  await new Promise(r => setTimeout(r, 4000));
+  // 等跳转落地：服务端可能要跑 git grep（机器负载高时慢），别用固定等待
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 300));
+    const st = await page.evaluate(() => ({ path: modalState.path, line: modalState.line }));
+    if (st.path && st.path !== before) return st;
+  }
   return page.evaluate(() => ({ path: modalState.path, line: modalState.line }));
 }
 

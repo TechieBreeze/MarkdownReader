@@ -2556,13 +2556,15 @@ async function api(url) {
 
 /* ================= 全局跳转历史（Alt+← 后退 / Alt+→ 前进；弹窗与标签页共用） ================= */
 const navHist = { stack: [], idx: -1, limit: 200 };
-/* 记录一次"位置改变"。去重相邻同位置；前进分支被截断。 */
-function pushNav(path, line) {
+/* 记录一次"位置改变"。去重相邻同位置；前进分支被截断。
+   view = 当时的 git 视图（分支/提交）：只记路径+行号的话，
+   返回时打开的是「工作区版本」，原来那个提交视图（diff）就没了。 */
+function pushNav(path, line, view) {
   if (!path) return;
   const cur = navHist.stack[navHist.idx];
   if (cur && cur.path === path && (cur.line || null) === (line || null)) return;
   navHist.stack = navHist.stack.slice(0, navHist.idx + 1);
-  navHist.stack.push({ path, line: line || null });
+  navHist.stack.push({ path, line: line || null, view: view || null });
   if (navHist.stack.length > navHist.limit) navHist.stack.shift();
   navHist.idx = navHist.stack.length - 1;
   updateNavButtons();
@@ -2572,7 +2574,16 @@ function navFwd() { if (navHist.idx < navHist.stack.length - 1) { navHist.idx++;
 function applyNav() {
   const t = navHist.stack[navHist.idx];
   if (!t) return;
-  openTab(t.path, { focus: true, line: t.line });
+  // 标签页还在 → 用它自己的状态（用户可能后来改过分支/提交，别用历史覆盖）；
+  // 标签页已关闭 → 按历史里的视图重新打开（分支/提交视图要还原，否则 diff 没了）。
+  const task = curTask();
+  const exists = !!(task && task.tabs.some(x => x.path === t.path));
+  const opts = { focus: true, line: t.line };
+  if (!exists && t.view) {
+    if (t.view.isBranch) opts.branch = t.view.commit;
+    else opts.commit = t.view.commit;
+  }
+  openTab(t.path, opts);
   updateNavButtons();
 }
 function updateNavButtons() {
@@ -3443,23 +3454,38 @@ function renderCodeTabContent(tab) {
 async function applyTabGitView(tab, branch, commit) {
   if (!tab || tab.kind !== "code" || (!branch && !commit)) return;
   try {
-    if (branch) {
+    if (commit) {
+      // 提交视图优先于分支视图：跳转带入的是某个提交时，必须按提交显示
+      // （否则会被「记忆分支」覆盖 → 跳过去只剩分支版本，diff 没了）。
+      // 提交视图：diff 与该提交版本的文件一起拉 —— 少了 hunks 就只剩纯文本，
+      // 「原本显示 diff，跳到别的文件后 diff 没了」。
+      const [fj, dj] = await Promise.all([
+        api("/api/git/file?path=" + encodeURIComponent(tab.path) + "&commit=" + encodeURIComponent(commit)).catch(() => null),
+        api("/api/git/diff?path=" + encodeURIComponent(tab.path) + "&commit=" + encodeURIComponent(commit)).catch(() => null),
+      ]);
+      if (fj) {
+        tab._viewBranch = null;
+        tab.branchContent = null;
+        tab.commit = commit;
+        const hunks = dj && dj.hunks && dj.hunks.length ? dj.hunks : [];
+        tab.diffData = { fileLines: fj.content.split("\n"), hunks, meta: (dj && dj.meta) || fj.meta || null };
+        if (hunks.length) {
+          let added = 0, removed = 0;
+          hunks.forEach(h => h.lines.forEach(l => { if (l.type === "+") added++; else if (l.type === "-") removed++; }));
+          tab.gitinfoHtml = gitInfoHtml((dj && dj.meta) || fj.meta, added, removed);
+          tab.diffOn = true;    // 默认 diff 视图
+        } else {
+          tab.gitinfoHtml = gitInfoHtml((dj && dj.meta) || fj.meta, 0, 0, "⚠ 此提交未修改该文件");
+          tab.diffOn = false;   // 该提交没改这个文件 → 只有文件视图
+        }
+      }
+    } else if (branch) {
       const fj = await api("/api/git/file?path=" + encodeURIComponent(tab.path) + "&commit=" + encodeURIComponent(branch)).catch(() => null);
       if (fj) {
         tab._viewBranch = branch;
         tab.branchContent = fj.content;
         if (tab.git) tab.git.current = branch;
         tab.commit = null; tab.diffData = null; tab.gitinfoHtml = null; tab.diffOn = true;
-      }
-    } else if (commit) {
-      const fj = await api("/api/git/file?path=" + encodeURIComponent(tab.path) + "&commit=" + encodeURIComponent(commit)).catch(() => null);
-      if (fj) {
-        tab._viewBranch = null;
-        tab.branchContent = null;
-        tab.commit = commit;
-        tab.diffData = { fileLines: fj.content.split("\n"), hunks: [], meta: fj.meta || null };
-        tab.gitinfoHtml = null;
-        tab.diffOn = false;
       }
     }
     if (curActiveId() === tab.id) renderCodeTabContent(tab);
@@ -4618,12 +4644,15 @@ function flashMdLine(el) {
 }
 
 /* ================= 代码弹窗 ================= */
-let modalState = { path: null, line: null, content: "", git: null, commit: null, branchContent: null, _branchSeq: 0 };
+/* modalState.diffHunks / diffMeta：当前「提交视图」的改动块。
+   只记 commit + commitContent 是不够的 —— diff 的红删绿增来自 hunks，
+   丢了它跳转/返回就只能渲染纯文本（用户看到的「diff 没了」）。 */
+let modalState = { path: null, line: null, content: "", git: null, commit: null, branchContent: null, diffHunks: null, diffMeta: null, gitinfoHtml: null, _branchSeq: 0 };
 
 async function openCodeModal(path, line, view) {
   try {
     const j = await api("/api/code?path=" + encodeURIComponent(path));
-    modalState = { path, line, content: j.content, git: null, branchContent: null, commit: null, commitContent: null, _branchSeq: 0, _backStack: [], _viewBranch: null, lines: j.lines, size: j.size, _defbar: null };
+    modalState = { path, line, content: j.content, git: null, branchContent: null, commit: null, commitContent: null, diffHunks: null, diffMeta: null, gitinfoHtml: null, _branchSeq: 0, _backStack: [], _viewBranch: null, lines: j.lines, size: j.size, _defbar: null };
     $("#m-path").textContent = j.path;
     $("#m-path").dataset.full = j.path;   // 面包屑点击定位树用
     $("#m-path").title = j.path;   // hover 显示完整路径
@@ -4709,6 +4738,9 @@ async function onBranchChange() {
     fillCommitSelect(j.commits || [], branch, j.repo);
     modalState.commit = null;
     modalState.commitContent = null;
+    modalState.diffHunks = null;   // 分支视图没有 diff 标记
+    modalState.diffMeta = null;
+    modalState.gitinfoHtml = null;
     // 拉该分支 HEAD 的真实文件内容（git show 支持分支名），缓存并切到该分支版本
     const fj = await api("/api/git/file?path=" + encodeURIComponent(modalState.path) + "&commit=" + encodeURIComponent(branch)).catch(() => null);
     if (modalState._branchSeq !== seq) return;
@@ -4742,8 +4774,11 @@ async function onCommitChange() {
   if (!val || val === branch) {  // 「分支最新」= 该分支 HEAD 文件（优先用切分支时缓存的内容）
     modalState.commit = null;
     modalState.commitContent = null;
+    modalState.diffHunks = null;
+    modalState.diffMeta = null;
+    modalState.gitinfoHtml = null;
     renderCodeView(modalState.branchContent || modalState.content, modalState.line);
-    $("#m-gitinfo").style.display = "none";
+    setModalGitInfo(null);
     return;
   }
   try {
@@ -4757,22 +4792,21 @@ async function onCommitChange() {
     modalState.commitContent = null;
     if (!j.hunks || !j.hunks.length) {
       // 该提交未改此文件：保持当前视图，只提示
-      $("#m-gitinfo").innerHTML =
-        `<span class="gi-hash">${m.short}</span><span class="gi-author">${escapeHtml(m.author)}</span>` +
-        `<span class="gi-date">${m.date}</span><span class="gi-subject">${escapeHtml(m.subject)}</span>` +
-        `<span class="gi-stat" style="color:var(--fg-dim)">⚠ 此提交未修改该文件</span>`;
-      $("#m-gitinfo").style.display = "flex";
+      modalState.diffHunks = null;
+      modalState.diffMeta = null;
+      modalState.gitinfoHtml = gitInfoHtml(m, 0, 0, "⚠ 此提交未修改该文件");
+      setModalGitInfo(modalState.gitinfoHtml);
       renderCodeView(modalState.branchContent || modalState.content, modalState.line);
       return;
     }
     let added = 0, removed = 0;
     j.hunks.forEach(h => h.lines.forEach(l => { if (l.type === "+") added++; else if (l.type === "-") removed++; }));
     modalState.commitContent = fj ? fj.content : null;
-    $("#m-gitinfo").innerHTML =
-      `<span class="gi-hash">${m.short}</span><span class="gi-author">${escapeHtml(m.author)}</span>` +
-      `<span class="gi-date">${m.date}</span><span class="gi-subject">${escapeHtml(m.subject)}</span>` +
-      `<span class="gi-stat">+${added} −${removed} 行</span>`;
-    $("#m-gitinfo").style.display = "flex";
+    // 改动块记进状态：跳转/返回时才能重画 diff 视图
+    modalState.diffHunks = j.hunks;
+    modalState.diffMeta = j.meta;
+    modalState.gitinfoHtml = gitInfoHtml(m, added, removed);
+    setModalGitInfo(modalState.gitinfoHtml);
     // 完整文件 + 改动标记视图
     // fileLines 为 null = 取不到该提交的文件内容 → 只渲染改动块（见 renderFileWithDiff）
     const fileLines = fj ? fj.content.split("\n") : null;
@@ -5777,6 +5811,8 @@ function snapshotOfModal() {
   return {
     path: s.path, line: s.line, content: s.content, git: s.git,
     branchContent: s.branchContent, commit: s.commit, commitContent: s.commitContent,
+    // diff 的改动块与提示行：返回时要还原 diff 视图（只还原 commit 不够）
+    diffHunks: s.diffHunks, diffMeta: s.diffMeta, gitinfoHtml: s.gitinfoHtml,
     _viewBranch: s._viewBranch, lines: s.lines, size: s.size, _defbar: s._defbar || null,
     // 两个字段分工，别再混用：
     //   s.line       → 返回后 hl-line 高亮在哪一行（打开这条链接时的目标行）
@@ -5784,6 +5820,25 @@ function snapshotOfModal() {
     // 曾把 viewportLine 塞进 modalState.line，高亮就跟着视口中心跑，看起来是「高亮行变了」。
     viewportLine: modalViewportLine(),
   };
+}
+
+/* git 提示条内容（分支/提交信息）—— 选中提交与跳转带入提交时共用 */
+function gitInfoHtml(m, added, removed, note) {
+  if (!m) return "";
+  return `<span class="gi-hash">${escapeHtml(m.short || "")}</span>` +
+    `<span class="gi-author">${escapeHtml(m.author || "")}</span>` +
+    `<span class="gi-date">${escapeHtml(m.date || "")}</span>` +
+    `<span class="gi-subject">${escapeHtml(m.subject || "")}</span>` +
+    (note ? `<span class="gi-stat" style="color:var(--fg-dim)">${escapeHtml(note)}</span>`
+          : `<span class="gi-stat">+${added || 0} −${removed || 0} 行</span>`);
+}
+
+function setModalGitInfo(html) {
+  const bar = $("#m-gitinfo");
+  if (!bar) return;
+  if (!html) { bar.style.display = "none"; bar.innerHTML = ""; return; }
+  bar.innerHTML = html;
+  bar.style.display = "flex";
 }
 
 /* opts.restore：从导航历史返回。
@@ -5800,7 +5855,15 @@ function renderModalView(opts) {
   $("#m-line-badge").textContent = st.line ? "跳转行 " + st.line : "";
   const text = modalViewText();
   $("#m-textarea").value = text;
-  renderCodeView(text, st.line);
+  if (st.diffHunks && st.diffHunks.length && st.commitContent != null) {
+    // 提交视图：整份文件 + 该提交的改动标记（红删绿增）。
+    // hunks 存在状态里才画得出来 —— 跳转/返回后没带 hunks 就只剩纯文本，
+    // 表现为「原本显示 diff，跳一下（或返回）diff 就没了」。
+    renderFileWithDiff(st.commitContent.split("\n"), st.diffHunks, st.diffMeta);
+  } else {
+    renderCodeView(text, st.line);
+  }
+  setModalGitInfo(st.gitinfoHtml || null);
   // 恢复模式：滚动到离开前的视口位置（viewportLine），而不是再次把 st.line 拉到中央 ——
   // 后者会让「返回」看起来像又跳了一次。高亮位置仍由 st.line 决定。
   if (restore && st.viewportLine != null) {
@@ -5838,7 +5901,7 @@ function setModalDefbar(info) {
 }
 
 async function modalOpenPath(path, line, view, info, prefetched) {
-  pushNav(path, line);   // 弹窗内跨文件跳转统一入全局历史（Alt+← 可回）
+  pushNav(path, line, view);   // 弹窗内跨文件跳转统一入全局历史（Alt+← 可回）；带上 git 视图，返回时能还原分支/提交
   const files = prefetched || await fetchJumpFiles(path, view);
   if (!files) { toastJump("未找到定义"); return; }
   modalState._backStack.push(snapshotOfModal());
@@ -5846,6 +5909,7 @@ async function modalOpenPath(path, line, view, info, prefetched) {
     path, line,
     content: files.content, git: null,
     branchContent: null, commit: null, commitContent: null,
+    diffHunks: null, diffMeta: null, gitinfoHtml: null,
     _branchSeq: (modalState._branchSeq || 0) + 1,
     _backStack: modalState._backStack,
     _viewBranch: null,
@@ -5854,7 +5918,21 @@ async function modalOpenPath(path, line, view, info, prefetched) {
   };
   if (view && files.viewText != null) {
     if (view.isBranch) { st.branchContent = files.viewText; st._viewBranch = view.commit; }
-    else { st.commit = view.commit; st.commitContent = files.viewText; }
+    else {
+      st.commit = view.commit; st.commitContent = files.viewText;
+      // 提交视图：把「该提交对目标文件的改动」也带过来，
+      // 否则跳过去只剩纯文本（原来那个文件的 diff 标记没了）。
+      const dj = await api("/api/git/diff?path=" + encodeURIComponent(path) + "&commit=" + encodeURIComponent(view.commit)).catch(() => null);
+      if (dj && dj.hunks && dj.hunks.length) {
+        st.diffHunks = dj.hunks;
+        st.diffMeta = dj.meta;
+        let added = 0, removed = 0;
+        dj.hunks.forEach(h => h.lines.forEach(l => { if (l.type === "+") added++; else if (l.type === "-") removed++; }));
+        st.gitinfoHtml = gitInfoHtml(dj.meta, added, removed);
+      } else if (dj && dj.meta) {
+        st.gitinfoHtml = gitInfoHtml(dj.meta, 0, 0, "⚠ 此提交未修改该文件");
+      }
+    }
   }
   modalState = st;
   $("#m-gitinfo").style.display = "none";
@@ -5876,6 +5954,8 @@ function modalGoBack() {
     // 现在：line 回到 st.line（高亮复原），viewportLine 单独用于 scrollTo（滚动复原）。
     path: st.path, line: st.line, content: st.content, git: st.git,
     branchContent: st.branchContent, commit: st.commit, commitContent: st.commitContent,
+    // diff 的改动块一起还原 → 返回后仍是 diff 视图（否则只剩纯文本）
+    diffHunks: st.diffHunks, diffMeta: st.diffMeta, gitinfoHtml: st.gitinfoHtml,
     _branchSeq: (modalState._branchSeq || 0) + 1,
     _backStack: modalState._backStack,
     _viewBranch: st._viewBranch, lines: st.lines, size: st.size, _defbar: st._defbar,
@@ -5908,7 +5988,7 @@ function tabDefbarHtml(info) {
 }
 
 function openTargetTab(src, path, line, info) {
-  pushNav(path, line);   // 标签页侧跳实现入全局历史
+  pushNav(path, line, src.view);   // 标签页侧跳实现入全局历史（带上 git 视图）
   const view = src.view;
   const tab = openTab(path, {
     focus: true, line,
@@ -5973,7 +6053,7 @@ async function ctrlJump(src, info) {
     }
     if (res.error) return toastJump(res.error);
     // 跳转来源入栈（返回按钮/Alt+← 可回）：先记点击处，目标由 openTargetTab/modalOpenPath 入栈
-    pushNav(src.path, lineNo);
+    pushNav(src.path, lineNo, src.view);
     if (res.file === src.path) return localJump(src, res.line);
     const files = await fetchJumpFiles(res.file, src.view);
     if (!files) return toastJump("未找到定义");
@@ -5999,7 +6079,7 @@ async function ctrlJumpFallback(src, info) {
       // 枚举值 / 常量：在当前文件里找它的声明行（X.CONST → 先在同文件找，找不到再试接收者类型）
       const decl = findConstDeclLine(src.text, name);
       if (decl) {
-        pushNav(src.path, lineNo);
+        pushNav(src.path, lineNo, src.view);
         return localJump(src, decl);
       }
       const recv = constReceiverName(src.text, lineNo, name);
@@ -6019,7 +6099,7 @@ async function ctrlJumpFallback(src, info) {
     if (kind === "variable") {
       const line = findVarDeclLine(src.text, name, false);
       if (line) {
-        pushNav(src.path, lineNo);
+        pushNav(src.path, lineNo, src.view);
         return localJump(src, line);
       }
       return toastJump("未找到定义");
@@ -6034,13 +6114,13 @@ async function ctrlJumpFallback(src, info) {
       const isIface = isInterfaceFile(text, name);
       let impl = null;
       if (isIface && declLine != null) impl = await resolveImplEntry(src, name, name, false);
-      pushNav(src.path, lineNo);
+      pushNav(src.path, lineNo, src.view);
       return openTarget(src, resolved, files, declLine || 1, { kind: "type", name, isIface, impl, view: src.view });
     }
     // method
     const localLine = findMethodDef(src.text, name);
     if (localLine) {
-      pushNav(src.path, lineNo);
+      pushNav(src.path, lineNo, src.view);
       return localJump(src, localLine);
     }
     const recv = extractReceiver(lineText, name);
@@ -6063,7 +6143,7 @@ async function ctrlJumpFallback(src, info) {
       if (isFrameworkParent(text) || isExternalFqn(src.text, typeName)) return toastJump("外部/框架方法，无本地定义");
       return toastJump("未找到定义");
     }
-    pushNav(src.path, lineNo);
+    pushNav(src.path, lineNo, src.view);
     return openTarget(src, resolved, files, defLine, { kind: "method", name, isIface, impl, view: src.view });
   } catch (err) {
     console.error("jumpToDef error:", err);
