@@ -2502,6 +2502,15 @@ html, body { max-width: 100%; overflow-x: hidden; }
   cursor: pointer;
   filter: brightness(1.2);   /* 轻微变亮，提示可跳转 */
 }
+/* diff 视图的「删除行」（.g-del）整行不支持 Ctrl+点击跳转：
+   它的 data-line 是旧文件的行号，与当前渲染的新版本文本错位，跳了必错。
+   → 连「可跳转」的 hover 提示（下划线 / pointer）也不给，避免误导。 */
+#m-scroll.jump-hover .cl-line.g-del span:hover,
+.ct-scroll.jump-hover .cl-line.g-del span:hover {
+  text-decoration: none;
+  cursor: default;
+  filter: none;
+}
 </style>
 <script>
 "use strict";
@@ -5393,7 +5402,6 @@ function plainTextTokenInfo(e) {
     lineNo,
     lineText: lineDiv.textContent || "",
     col: col + 1,   // 1-based（服务端 col1 = col + 1）
-    rowDel: false,
     inModal: !!e.target.closest("#m-scroll"),
   };
 }
@@ -5408,6 +5416,11 @@ function srcPathFor(e) {
 }
 
 function ctrlTokenInfo(e) {
+  // diff 视图的「删除行」（.g-del）整行不支持跳转（Ctrl+点击 / Alt+预览 / 查找引用）：
+  //   删除行属于旧版本，它的 data-line 是旧文件的行号，而代码区渲染的是新版本全文
+  //   —— 行号与文本错位，跳过去必然落到错误位置或解析失败。
+  // 因此这里直接返回 null：事件委托层拿不到 info，就不会发起任何跳转请求。
+  if (e && e.target && e.target.closest && e.target.closest(".cl-line.g-del")) return null;
   const span = e.target.closest("#m-scroll span, #ct-scroll span");
   // Vue/HTML 模板里的自定义组件标签（<FooBar/>、<foo-bar>）没有 hljs span 包裹，
   // 直接在文本节点上命中：这类标签同样支持 Ctrl+点击跳到组件定义。
@@ -5454,7 +5467,6 @@ function ctrlTokenInfo(e) {
     lineNo: lineDiv ? parseInt(lineDiv.dataset.line || "0", 10) : 0,
     lineText: lineDiv ? lineDiv.textContent : "",
     col: tokenColInLine(span),
-    rowDel: !!span.closest(".cl-line.g-del"),   // diff 视图删除行（旧行号，与文本错位）
     inModal: !!span.closest("#m-scroll"),
   };
 }
@@ -5514,7 +5526,6 @@ function webTagInfo(e) {
     lineNo,
     lineText,
     col: tokenColInLine(anchor),
-    rowDel: false,
     inModal,
   };
 }
@@ -6012,12 +6023,10 @@ async function openTarget(src, path, files, line, info) {
 
 /* ---------- 主流程（server 端 javalang AST 解析） ---------- */
 async function ctrlJump(src, info) {
-  const { kind, name, lineNo, col, rowDel } = info;
+  const { kind, name, lineNo, col } = info;
   // JS/TS/Vue 走前端专用解析器（web_defs）；Java/Kotlin 走 javalang
   const endpoint = isWebPath(src.path) ? "/api/web/def" : "/api/java/def";
   try {
-    // diff 视图删除行：data-line 是旧文件行号，与传入文本错位 → 走旧正则兜底
-    if (rowDel) return ctrlJumpFallback(src, info);
     let res = null;
     try {
       // 5s 超时：git show 冷缓存可能较慢；仅网络错误/超时才降级兜底，
@@ -6071,7 +6080,7 @@ async function ctrlJump(src, info) {
   }
 }
 
-/* ---------- 主流程（旧：前端正则启发式，接口失败 / diff 删除行时兜底） ---------- */
+/* ---------- 主流程（旧：前端正则启发式，接口失败 / 超时时兜底） ---------- */
 async function ctrlJumpFallback(src, info) {
   const { kind, name, lineText, lineNo } = info;
   try {
