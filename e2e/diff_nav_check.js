@@ -65,23 +65,47 @@ function countDiff(scope) {
   return { add, del };
 }
 
-/* 在当前视图里找一个「可点且在可视区内」的类型 token */
-function findTypeToken(scope) {
+/* 在当前视图里找一个「可点且在可视区内」的类型 token
+   opts.onlyDel=true → 只找 diff 删除行里的 token（删除行整行不支持跳转，用来验证「点了没反应」）
+   默认跳过删除行：删除行现在整行不支持 Ctrl+点击跳转（行号是旧文件的，与新版本文本错位）。 */
+function findTypeToken(scope, opts) {
+  const onlyDel = !!(opts && opts.onlyDel);
   const sc = scope === 'modal' ? document.getElementById('m-scroll') : document.getElementById('ct-scroll');
   if (!sc) return null;
   const sr = sc.getBoundingClientRect();
   const mid = sr.top + sr.height / 2;
   let best = null, bestD = 1e9;
   for (const row of document.querySelectorAll((scope === 'modal' ? '#m-scroll' : '#ct-scroll') + ' .cl-line')) {
-    const span = [...row.querySelectorAll('span.hljs-type')][0];
+    const isDel = row.classList.contains('g-del');
+    if (isDel !== onlyDel) continue;
+    const span = row.querySelector('span.hljs-type, span.hljs-title, span.hljs-variable') || row.querySelector('.cl-code');
     if (!span) continue;
     const r = span.getBoundingClientRect();
     if (!r.width) continue;
     if (r.top < sr.top + 4 || r.bottom > sr.bottom - 4) continue;   // 必须真在可视区
     const d = Math.abs((r.top + r.bottom) / 2 - mid);
-    if (d < bestD) { bestD = d; best = { x: r.left + r.width / 2, y: r.top + r.height / 2, txt: span.textContent }; }
+    if (d < bestD) { bestD = d; best = { x: r.left + Math.min(r.width / 2, 40), y: r.top + r.height / 2, txt: (span.textContent || '').slice(0, 40), isDel }; }
   }
   return best;
+}
+
+/* 把视图滚到第一个「删除行」上（虚拟滚动时 DOM 里只有可视窗口的行，得先定位再滚） */
+function scrollToFirstDel(scope) {
+  const sc = scope === 'modal' ? document.getElementById('m-scroll') : document.getElementById('ct-scroll');
+  if (!sc) return -1;
+  const vs = sc.__vstate;
+  if (vs && vs.rows) {
+    let idx = -1;
+    for (let i = 0; i < vs.rows.length; i++) if (vs.rows[i].kind === 'del') { idx = i; break; }
+    if (idx < 0) return -1;
+    sc.scrollTop = Math.max(0, idx * 20 - 60);
+    sc.dispatchEvent(new Event('scroll'));
+    return idx;
+  }
+  const row = sc.querySelector('.cl-line.g-del');
+  if (!row) return -1;
+  row.scrollIntoView({ block: 'center' });
+  return 1;
 }
 
 (async () => {
@@ -114,13 +138,19 @@ function findTypeToken(scope) {
     return sel ? Array.from(sel.options).map(o => ({ v: o.value, t: o.textContent })) : [];
   });
   console.log('  提交下拉项数:', commits.length, commits.slice(0, 3).map(c => c.v.slice(0, 8)).join(','));
-  let pick = null;
+  let pick = null, pickAny = null;
   for (const c of commits) {
     if (!c.v || /最新/.test(c.t)) continue;
     const r = await get('/api/git/diff?path=' + encodeURIComponent(FILE) + '&commit=' + encodeURIComponent(c.v));
     const j = r && r.j;
-    if (j && j.hunks && j.hunks.length) { pick = c; break; }
+    if (j && j.hunks && j.hunks.length) {
+      if (!pickAny) pickAny = c;
+      // 优先挑「有删除行」的提交：删除行整行不支持跳转，要拿它做断言
+      const hasDel = j.hunks.some(h => (h.lines || []).some(l => l.type === '-'));
+      if (hasDel) { pick = c; break; }
+    }
   }
+  if (!pick) pick = pickAny;
   if (!pick) {
     console.log('[SKIP] 样本文件没有「改过它的提交」，无法验证 diff 视图');
     try { await browser.close(); } catch (e) { /* 忽略 */ }
@@ -146,6 +176,67 @@ function findTypeToken(scope) {
   await selectCommit('m-commit');
   const d0 = await page.evaluate(countDiff, 'modal');
   const m0 = await modalState();
+
+  // 场景 0：diff 删除行整行不支持 Ctrl+点击跳转
+  //   删除行的 data-line 是旧文件的行号，与渲染的新版本全文错位 → 跳了必错。
+  //   期望：Ctrl+点删除行里的 token，什么都不发生（不跳转、不报错、不弹提示）。
+  await page.evaluate(scrollToFirstDel, 'modal');
+  await sleep(800);
+  const delTok = await page.evaluate(findTypeToken, 'modal', { onlyDel: true });
+  let del = { found: false };
+  if (delTok) {
+    const snap = () => page.evaluate(() => {
+      const t = document.getElementById('toast');
+      return {
+        path: modalState.path, commit: modalState.commit, line: modalState.line,
+        toast: (t && t.textContent) || '', toastShown: !!(t && t.style.display === 'block'),
+      };
+    });
+    const before = await snap();
+    await page.keyboard.down('Control');
+    await page.mouse.click(delTok.x, delTok.y);
+    await page.keyboard.up('Control');
+    await sleep(2500);
+    const after = await snap();
+    const dAfter = await page.evaluate(countDiff, 'modal');
+    del = { found: true, before, after, diffKept: (dAfter.add + dAfter.del) > 0 };
+
+    // hover 提示：删除行不该再显示「可跳转」（cursor 不是 pointer），普通行仍要显示
+    const hov = await page.evaluate(() => {
+      const sc = document.getElementById('m-scroll');
+      const sr = sc.getBoundingClientRect();
+      const pick1 = (sel) => {
+        for (const row of document.querySelectorAll('#m-scroll .cl-line' + sel)) {
+          const span = row.querySelector('span.hljs-type, span.hljs-title') || row.querySelector('.cl-code');
+          if (!span) continue;
+          const r = span.getBoundingClientRect();
+          if (!r.width || r.top < sr.top + 4 || r.bottom > sr.bottom - 4) continue;
+          return { x: r.left + Math.min(r.width / 2, 30), y: r.top + r.height / 2, txt: span.textContent };
+        }
+        return null;
+      };
+      return { del: pick1('.g-del'), normal: pick1(':not(.g-del)') };
+    });
+    del.hover = { del: null, normal: null };
+    for (const k of ['del', 'normal']) {
+      const t = hov[k];
+      if (!t) continue;
+      await page.mouse.move(t.x, t.y);
+      await sleep(250);
+      del.hover[k] = await page.evaluate((x, y) => {
+        const el = document.elementFromPoint(x, y);
+        if (!el) return null;
+        const cs = getComputedStyle(el);
+        return { cursor: cs.cursor, deco: cs.textDecorationLine };
+      }, t.x, t.y);
+    }
+  }
+  // 滚回顶部，后面的场景照旧在文件靠前处找 token
+  await page.evaluate(() => {
+    const sc = document.getElementById('m-scroll');
+    if (sc) { sc.scrollTop = 0; sc.dispatchEvent(new Event('scroll')); }
+  });
+  await sleep(500);
 
   // 场景 1：弹窗内跳到别的文件（跨文件）
   const tok1 = await page.evaluate(findTypeToken, 'modal');
@@ -197,6 +288,18 @@ function findTypeToken(scope) {
   const checks = [
     ['弹窗：选中提交后 diff 渲染出来', d0.add > 0 || d0.del > 0],
     ['弹窗：状态里记下了改动块（hunks）', m0.hunks > 0],
+    // diff 删除行：整行不支持 Ctrl+点击跳转（null = 该样本没有删除行，跳过）
+    ['diff 删除行：Ctrl+点击不跳转（路径/提交/行号都不变）',
+      del.found ? (del.after.path === del.before.path && del.after.commit === del.before.commit
+        && del.after.line === del.before.line) : null],
+    ['diff 删除行：Ctrl+点击不弹错误提示',
+      del.found ? !/未找到定义|跳转失败|外部\/框架/.test(del.after.toast) : null],
+    ['diff 删除行：Ctrl+点击后 diff 视图仍在',
+      del.found ? del.diffKept : null],
+    ['diff 删除行：hover 不再显示「可跳转」提示（cursor≠pointer）',
+      del.found && del.hover.del ? del.hover.del.cursor !== 'pointer' : null],
+    ['diff 普通行：hover 仍显示「可跳转」提示（cursor=pointer）',
+      del.found && del.hover.normal ? del.hover.normal.cursor === 'pointer' : null],
     ['弹窗：跨文件跳转后仍是同一个提交视图', m1.commit === pick.v],
     ['弹窗：跨文件跳转后目标文件按该提交渲染（无改动则给出提示）',
       (d1.add + d1.del) > 0 || /未修改/.test(m1.info)],
@@ -211,8 +314,9 @@ function findTypeToken(scope) {
   ];
 
   console.log('=== diff 视图下的跳转/返回 ===');
-  let fail = 0;
+  let fail = 0, skip = 0;
   for (const [name, ok] of checks) {
+    if (ok === null) { skip++; console.log(`  [SKIP] ${name}（样本无删除行）`); continue; }
     if (!ok) fail++;
     console.log(`  [${ok ? 'PASS' : 'FAIL'}] ${name}`);
   }
@@ -220,9 +324,11 @@ function findTypeToken(scope) {
   console.log(`  弹窗：选中提交 +${d0.add} -${d0.del} → 跳转 +${d1.add} -${d1.del} → 返回 +${d2.add} -${d2.del}`);
   console.log(`  tab ：选中提交 +${t0.add} -${t0.del} → 返回 +${t2.add} -${t2.del}`);
   console.log(`  跳转到的文件：${(t1.path || '').split('/').pop()}（hunks=${t1.hunks}）`);
+  if (del.found) console.log(`  删除行点击：${del.before.path.split('/').pop()} → ${del.after.path.split('/').pop()}（toast="${del.after.toast}"）`);
+  else console.log('  删除行点击：样本没有可见的删除行，跳过该断言');
   if (pageErrors.length) console.log('  JS 异常：' + pageErrors.join(' | '));
   if (fail) console.log(`\n共 ${fail} 项失败`);
-  else console.log('\n全部通过');
+  else console.log(`\n全部通过${skip ? `（${skip} 项跳过）` : ''}`);
   await browser.close();
   process.exit(fail ? 1 : 0);
 })();
