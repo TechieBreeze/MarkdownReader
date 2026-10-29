@@ -32,6 +32,7 @@ server.py 只在「通用 Java 解析没命中」时调用本模块的两个钩�
 """
 
 import re
+import time
 
 # 适配器注册表（按顺序尝试，第一个给出结果的生效）
 ADAPTERS = []
@@ -98,6 +99,11 @@ class OdySoaAdapter(SoaAdapter):
     _RE_CLASS_DECL = re.compile(r"\bclass\s+\w+[^{;]*\bimplements\b[^{;]*")
     # 一次点击最多扫多少个仓库（每个仓库一次 git grep ~0.1s，别让点击卡住）
     MAX_REPOS = 12
+    # 接口 → 实现类的查找结果缓存（TTL 秒）。
+    # 为什么要缓存：一次查找要跑好几次 git grep（每个候选仓库一次），
+    # 机器负载高时可能好几秒 —— 而同一个接口会被反复点，缓存后基本是瞬时返回。
+    CACHE_TTL = 300.0
+    _CACHE = {}          # (接口 FQN) -> (时间戳, 实现类相对路径)
 
     # ---------------- 类型（SDK 的 request/response DTO） ----------------
     def resolve_type(self, ctx):
@@ -135,6 +141,10 @@ class OdySoaAdapter(SoaAdapter):
             return None
         pkg = self._package_of(text)
         fqn = (pkg + "." + simple) if pkg else simple
+        # 缓存命中就直接返回（同一个接口反复点时省掉一串 git grep）
+        hit = self._CACHE.get(fqn)
+        if hit and (time.time() - hit[0]) < self.CACHE_TTL:
+            return hit[1]
         hints = self._repo_hints(text, pkg)
         rx = re.compile(r"implements[^{;]*\b" + re.escape(simple) + r"\b"
                         r"|interfaceClass\s*=\s*" + re.escape(simple) + r"\.class")
@@ -157,6 +167,7 @@ class OdySoaAdapter(SoaAdapter):
                 return 1
             return 2
         hits.sort(key=_rank)
+        self._CACHE[fqn] = (time.time(), hits[0])
         return hits[0]
 
     def _is_client_sdk_interface(self, text):
