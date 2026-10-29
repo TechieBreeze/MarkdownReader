@@ -47,6 +47,22 @@ JAVA_EXT_PKG_PREFIXES = (
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import web_defs  # noqa: E402  （JS/TS/Vue 定义跳转解析，与本模块同目录）
+
+# SOA（远程调用框架）适配层：可拆卸 —— 删掉 soa_defs.py 或清空它的 ADAPTERS，
+# 通用 Java 解析照常工作（只是不再有「SDK 接口 → 服务端实现」这类框架特有跳转）。
+try:
+    import soa_defs  # noqa: E402  （与本模块同目录）
+except Exception:  # 适配层缺失或导入失败 → 退化成纯通用行为
+    class _NoSoaDefs(object):
+        @staticmethod
+        def resolve_type(ctx):
+            return None
+
+        @staticmethod
+        def resolve_impl(ctx):
+            return None
+
+    soa_defs = _NoSoaDefs()
 # 工作区根目录 = 本文件上两级（tools/markdown-reader -> 工作区根）
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 # 多根支持（"项目"层）：ROOTS 可含多个工作区根，浏览器端用 vtop（根目录名）作
@@ -103,7 +119,8 @@ def _invalidate_gits_cache():
     _SCAN_COUNT_CACHE.clear()
     global _GITS_REPOS
     _GITS_REPOS = None
-    for fn in (_git_tree_files,):
+    _TYPE_EXISTS_CACHE.clear()
+    for fn in (_git_tree_files, _repo_java_roots):
         fn.cache_clear()
 
 
@@ -918,7 +935,9 @@ _PARSE_CACHE_MAX = 256
 
 def _java_parse(src):
     """javalang 解析源码（按内容 sha1 进程内缓存，避免同一内容反复全量解析）；
-    失败返回 (None, 错误消息)。线程安全（锁保护）。"""
+    失败返回 (None, 错误消息)。线程安全（锁保护）。
+    javalang 解析不了少数语法（如数组构造方法引用 X[]::new）时，
+    先做等价改写再解析一次 —— 改写保持行数与列宽不变，AST 位置仍然对得上。"""
     if not src or not src.strip():
         return None, "解析失败"
     key = hashlib.sha1(src.encode("utf-8", errors="replace")).hexdigest()
@@ -929,12 +948,36 @@ def _java_parse(src):
     try:
         result = (_java_parse_fn(src), None)
     except Exception:
-        result = (None, "解析失败")
+        fixed = _sanitize_java(src)
+        if fixed != src:
+            try:
+                result = (_java_parse_fn(fixed), None)
+            except Exception:
+                result = (None, "解析失败")
+        else:
+            result = (None, "解析失败")
     with _PARSE_CACHE_LOCK:
         if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
             _PARSE_CACHE.clear()
         _PARSE_CACHE[key] = result
     return result
+
+
+# javalang 不支持的语法 → 等价改写（只给 AST 用，不参与编译）。
+# 数组构造方法引用 X[]::new → X::new + 补空格：长度不变 → 列号不变。
+_RE_ARRAY_CTOR_REF = re.compile(r"\b([A-Za-z_$][\w$]*(?:\s*<[^;{}()]*>)?)\s*\[\s*\]\s*::\s*new\b")
+
+
+def _sanitize_java(src):
+    """把 javalang 解析不了的少数语法改写成等价写法（保持行数、列宽不变）。"""
+    def _repl(m):
+        orig = m.group(0)
+        name = re.sub(r"\s+", " ", m.group(1)).strip()
+        repl = name + "::new"
+        if len(repl) < len(orig):
+            repl += " " * (len(orig) - len(repl))   # 补空格保持列号
+        return repl
+    return _RE_ARRAY_CTOR_REF.sub(_repl, src)
 
 
 def _getter_field_name(name):
@@ -1016,6 +1059,55 @@ def _find_const_decl_line_text(content, name):
     return None
 
 
+# 文本兜底找方法/类型声明时，要排除的关键字（它们出现在方法名之前说明是调用不是声明）
+_JAVA_CALL_KEYWORDS = frozenset({
+    "return", "new", "throw", "throws", "case", "else", "yield", "await",
+    "assert", "instanceof", "void", "this", "super",
+})
+
+
+def _find_method_decl_text(content, name):
+    """按文本找方法定义行 —— javalang 解析不了的文件用（AST 路径全废时的兜底）。
+
+    判据：方法名之前是「返回类型 + 空白」（不是 .method( / new X( / return 这类调用），
+    方法名之后是「参数表 + { 或 ;（或 throws …{）」。
+    """
+    if not content or not name:
+        return None
+    name_re = re.compile(r"(?<![\w$.])" + re.escape(name) + r"\s*\(")
+    type_head_re = re.compile(r"[\w$<>\[\],]\s+$")
+    tail_re = re.compile(r"[^)]*\)\s*(?:throws[\w\s,.]*)?[{;]")
+    for i, ln in enumerate(content.split("\n"), 1):
+        s = ln.strip()
+        if not s or s.startswith("//") or s.startswith("*") or s.startswith("/*"):
+            continue
+        m = name_re.search(ln)
+        if not m:
+            continue
+        head = ln[:m.start()]
+        if not type_head_re.search(head):
+            continue                      # 方法名前面没有类型 → 是裸调用
+        toks = re.findall(r"[\w$<>\[\],.]+", head)
+        if toks and toks[-1] in _JAVA_CALL_KEYWORDS:
+            continue                      # return foo( / new Foo( 之类
+        if not tail_re.match(ln, m.end()):
+            continue                      # 后面不是参数表+{ / ; → 不是声明
+        return i
+    return None
+
+
+def _find_type_decl_text(content, name):
+    """按文本找类/接口/枚举的声明行 —— javalang 解析不了的文件用。"""
+    if not content or not name:
+        return None
+    rx = re.compile(r"^\s*(?:(?:public|protected|private|static|final|abstract|sealed|non-sealed)\s+)*"
+                    r"(?:class|interface|enum|record|@interface)\s+" + re.escape(name) + r"\b")
+    for i, ln in enumerate(content.split("\n"), 1):
+        if rx.match(ln):
+            return i
+    return None
+
+
 def _const_receiver(src_text, line, col1, name):
     """X.CONST / com.pvh.X.CONST → 接收者类型名（X 或全限定的 com.pvh.X）。"""
     if not src_text:
@@ -1089,23 +1181,44 @@ _JAVA_LANG_TYPES = frozenset({
 })
 
 def _type_src_exists(fqn, prefer_root=None):
-    """仓库内是否存在 <fqn>.java（任意 gits 仓库 src/main|test/java 下），
-    用于区分通配符导入类型是项目内还是 JDK/框架。多项目时优先查来源文件所属根。"""
-    rel = fqn.replace(".", "/") + ".java"
-    for repo_dir in _all_git_repos(prefer_root):
-        for sub in ("main", "test"):
-            if os.path.isfile(os.path.join(repo_dir, "src", sub, "java", rel)):
-                return True
-    return False
+    """仓库内是否存在 <fqn>.java（任意 gits 仓库的模块 src/main|test/java 下），
+    用于区分通配符导入类型是项目内还是 JDK/框架。多项目时优先查来源文件所属根。
+    模块化布局（仓库里再分 product-api 等模块）要一起看，否则多模块工程里的
+    自有类型会被误判成「外部框架类型」→ 通配符导入的类型点不动。
 
-def _type_fqn_in_tree(tree, type_name, pkg):
+    一次查找要扫几十个仓库 × 若干模块根（几百次 stat），而每个文件里的通配符
+    import 都要查一遍 → 加个短 TTL 缓存，重复点击不再重复扫盘（60 秒后自动重算，
+    新加的文件不会长时间不被认出来）。"""
+    key = (fqn, prefer_root or "")
+    now = _time.time()
+    hit = _TYPE_EXISTS_CACHE.get(key)
+    if hit and now - hit[0] < _TYPE_EXISTS_TTL:
+        return hit[1]
+    rel = fqn.replace(".", "/") + ".java"
+    found = False
+    for repo_dir in _all_git_repos(prefer_root):
+        for jroot in _repo_java_roots(repo_dir):
+            if os.path.isfile(os.path.join(jroot, *rel.split("/"))):
+                found = True
+                break
+        if found:
+            break
+    _TYPE_EXISTS_CACHE[key] = (now, found)
+    return found
+
+_TYPE_EXISTS_TTL = 60.0     # 「这个 FQN 在项目里吗」的缓存有效期（秒）
+_TYPE_EXISTS_CACHE = {}     # (fqn, root) -> (时间戳, 命中)
+
+
+def _type_fqn_in_tree(tree, type_name, pkg, prefer_root=None):
     """类型名 → 全限定名：
     1. 显式 import 优先；
     2. 通配符 import：仓库内该包下确有 <type>.java → 项目内类型；
     3. java.lang 隐式类型白名单；
     4. 通配符 import 兜底（无本地文件 → 按 JDK/框架/项目包顺序取首个）；
     5. 同包兜底最后。
-    imp.path 带/不带 .* 都处理（javalang wildcard 的 path 通常不带）。"""
+    imp.path 带/不带 .* 都处理（javalang wildcard 的 path 通常不带）。
+    prefer_root 限定「项目内」判定的范围（不跨项目）。"""
     # 1. 显式 import（含 static 单导入，路径以 .<type_name> 结尾）
     for imp in tree.imports:
         if not imp.wildcard and imp.path.endswith("." + type_name):
@@ -1119,7 +1232,7 @@ def _type_fqn_in_tree(tree, type_name, pkg):
         if not base:
             continue
         fqn = base + "." + type_name
-        if _type_src_exists(fqn):
+        if _type_src_exists(fqn, prefer_root):
             return fqn  # 仓库内确有该类型 → 项目内，权威
         if base.startswith(("java.", "javax.")):
             if jdk_hit is None:
@@ -1148,7 +1261,7 @@ def _is_external_fqn(fqn):
     return bool(fqn) and any(fqn.startswith(p) for p in JAVA_EXT_PKG_PREFIXES)
 
 
-def _type_framework_parent(tree, tdecl):
+def _type_framework_parent(tree, tdecl, prefer_root=None):
     """类/接口的 extends/implements 父类型里是否有外部框架类型（IService/ServiceImpl 等）。"""
     parents = []
     ext = getattr(tdecl, "extends", None)
@@ -1164,7 +1277,7 @@ def _type_framework_parent(tree, tdecl):
         pname = getattr(p, "name", None)
         if not pname:
             continue
-        fqn = _type_fqn_in_tree(tree, pname, pkg)
+        fqn = _type_fqn_in_tree(tree, pname, pkg, prefer_root)
         if fqn and _is_external_fqn(fqn):
             return True
     return False
@@ -1260,17 +1373,20 @@ _GITS_REPOS = None
 
 def _all_git_repos(prefer_root=None):
     """所有根 gits/ 下的 git 仓库根（惰性扫描一次，之后进程内复用）。
+    仓库可以嵌在多层目录里（gits/<组>/<方案>/<jar|war>/<模块>/.git），
+    只认 gits/* 一层会漏掉整片仓库 —— 跨模块的类型/实现就找不到。
     prefer_root 指定时只返回该根下的仓库（不跨项目），其排在最前。"""
     global _GITS_REPOS
     if _GITS_REPOS is None:
         repos = []
+        seen = set()
         for root in ROOTS:
-            gits_dir = os.path.join(root, "gits")
-            if os.path.isdir(gits_dir):
-                for name in sorted(os.listdir(gits_dir)):
-                    cand = os.path.join(gits_dir, name)
-                    if os.path.isdir(os.path.join(cand, ".git")):
-                        repos.append(cand)
+            for cand in _discover_git_repos(root):
+                rp = _root_real(cand)
+                if rp in seen:
+                    continue
+                seen.add(rp)
+                repos.append(cand)
         _GITS_REPOS = tuple(repos)
     if prefer_root and os.path.isdir(prefer_root):
         # 只在本项目内找（不跨项目），本项目仓库排最前。
@@ -1280,6 +1396,159 @@ def _all_git_repos(prefer_root=None):
         if inside:
             return tuple(inside)
     return _GITS_REPOS
+
+
+# 找仓库时跳过的目录：源码树/构建产物里不会有仓库，进去只是白跑 IO
+_REPO_SCAN_SKIP = (".git", ".idea", ".mvn", "node_modules", "__pycache__",
+                   "target", "build", "dist", "src", "out")
+_REPO_SCAN_MAX_DEPTH = 6
+
+
+def _discover_git_repos(root):
+    """扫描 <root>/gits 下的 git 仓库目录（含多层嵌套）。
+    只按目录名找 .git（含 .git 是文件的情况：submodule/worktree），
+    跳过 src/target 等大目录 —— 仓库不会挂在源码树里。"""
+    gits_dir = os.path.join(root, "gits")
+    if not os.path.isdir(gits_dir):
+        return []
+    repos = []
+    stack = [(gits_dir, 0)]
+    while stack:
+        d, depth = stack.pop()
+        try:
+            entries = list(os.scandir(d))
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.name == ".git":
+                    repos.append(os.path.dirname(e.path))
+                    continue
+                if not e.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if e.name in _REPO_SCAN_SKIP:
+                continue
+            if depth < _REPO_SCAN_MAX_DEPTH:
+                stack.append((e.path, depth + 1))
+    repos.sort()
+    return repos
+
+
+@functools.lru_cache(maxsize=512)
+def _repo_java_roots(repo_dir):
+    """仓库内的 java 源码根目录：
+      <repo>/src/{main,test}/java          —— 仓库本身就是一个模块
+      <repo>/*/src/{main,test}/java       —— 仓库里再分模块（product-api / product-business …）
+      <repo>/*/*/src/{main,test}/java    —— 再嵌一层（group/module 布局）
+    多模块布局下同名类很常见，按「模块 src 根 + 包路径」定位才不会跳错。
+    只收「真的有 src 目录」的模块 —— 收太多会让每次类型查找多几百次 stat。"""
+    roots = []
+    for sub in ("main", "test"):
+        roots.append(os.path.join(repo_dir, "src", sub, "java"))
+    try:
+        names = sorted(os.listdir(repo_dir))
+    except OSError:
+        names = []
+    for name in names:
+        if name in (".git", "target", "node_modules", "docs", "doc"):
+            continue
+        p = os.path.join(repo_dir, name)
+        if not os.path.isdir(p) or not os.path.isdir(os.path.join(p, "src")):
+            continue
+        for sub in ("main", "test"):
+            roots.append(os.path.join(p, "src", sub, "java"))
+        try:
+            sub_names = sorted(os.listdir(p))
+        except OSError:
+            continue
+        for name2 in sub_names:
+            if name2 in (".git", "target", "node_modules", "docs", "doc"):
+                continue
+            p2 = os.path.join(p, name2)
+            if not os.path.isdir(p2) or not os.path.isdir(os.path.join(p2, "src")):
+                continue
+            for sub in ("main", "test"):
+                roots.append(os.path.join(p2, "src", sub, "java"))
+    return tuple(roots)
+
+
+class _SoaCtx:
+    """传给 soa_defs 适配层的上下文。
+
+    这里只提供「原语」（读文件、列仓库、按包路径找类、按正则 grep、方法行），
+    不含任何框架规则 —— 规则全在 soa_defs.py 里。
+    所以适配层可以整体删除（回到纯通用行为），也可以整体换成别的远程调用框架。
+    """
+
+    def __init__(self, handler, src_rel, view_commit=None, tree=None,
+                 type_name=None, simple_name=None, method_name=None):
+        self.h = handler
+        self.src_rel = src_rel
+        self.view_commit = view_commit
+        self.tree = tree
+        self.type_name = type_name
+        self.simple_name = simple_name
+        self.method_name = method_name
+        self._text = None
+
+    # ---------- 基本信息 ----------
+    @property
+    def root(self):
+        """来源文件所属项目根（绝对路径）。"""
+        return _root_for(self.src_rel)
+
+    @property
+    def src_text(self):
+        if self._text is None:
+            self._text = self.h._load_file_content(self.src_rel, self.view_commit) or ""
+        return self._text
+
+    def load(self, rel):
+        """读项目内相对路径文件的内容（分支/提交视图下取对应版本）。"""
+        return self.h._load_file_content(rel, self.view_commit)
+
+    def package_of(self, rel):
+        """文件里的 package（没有则 None）。"""
+        text = self.load(rel)
+        if not text:
+            return None
+        m = re.match(r"\s*package\s+([\w.]+)\s*;", text)
+        return m.group(1) if m else None
+
+    # ---------- 原语 ----------
+    def repos(self, hints=()):
+        """项目内的 git 仓库（绝对路径）。hints 非空时先按目录名关键词收窄。"""
+        repos = list(_all_git_repos(self.root))
+        if hints:
+            picked = [r for r in repos if any(h and h.lower() in r.lower() for h in hints)]
+            if picked:
+                return picked
+        return repos
+
+    def find_by_package(self, pkg_path, file_name):
+        """按包路径在项目任一模块里找类文件 → 相对路径或 None。"""
+        return self.h._find_by_package_path(pkg_path.rstrip("/") + "/" + file_name, self.root)
+
+    def grep_java(self, repos, pattern):
+        """在给定仓库里按正则检索 .java 文件 → 项目内相对路径列表。"""
+        out = []
+        for repo in repos:
+            for rel in self.h._grep_java_in_repo(repo, pattern):
+                out.append(rel_of(os.path.join(repo, *rel.split("/"))))
+        return out
+
+    def method_line(self, rel, name):
+        """文件里方法定义所在的行号（找不到 None）。"""
+        content = self.load(rel)
+        if content is None:
+            return None
+        itree, _err = _java_parse(content)
+        if itree is None:
+            return None
+        mnode = _find_method_decl(itree, name)
+        return mnode.position.line if (mnode and mnode.position) else None
 
 
 @functools.lru_cache(maxsize=64)
@@ -1935,7 +2204,19 @@ class Handler(BaseHTTPRequestHandler):
             if hit:
                 return rel_of(hit)
 
-        # ---- 2) 本项目下其它 gits 仓库 ----
+        # ---- 2) 本项目下其它 git 仓库 ----
+        # 按「仓库」逐个扫，深度相对仓库算：仓库可能嵌在多层目录里
+        # （gits/<组>/<方案>/<jar|war>/<模块>），从 gits/ 那一层算深度会漏掉深层文件。
+        for repo_dir in _all_git_repos(search_root):
+            if prefer_repo and _root_real(repo_dir) == _root_real(prefer_repo):
+                continue  # 第 1 步已扫过
+            if not _within(repo_dir, search_root):
+                continue   # 跨项目仓库不查
+            hit = _find_under(repo_dir, 12)
+            if hit:
+                return rel_of(hit)
+
+        # ---- 2b) gits/ 下的非仓库目录（浅层兜底） ----
         gits_dir = os.path.join(search_root, "gits")
         if os.path.isdir(gits_dir):
             try:
@@ -1948,7 +2229,7 @@ class Handler(BaseHTTPRequestHandler):
                     continue
                 if prefer_repo and _root_real(cand) == _root_real(prefer_repo):
                     continue  # 第 1 步已扫过
-                hit = _find_under(cand, 12)
+                hit = _find_under(cand, 4)
                 if hit:
                     return rel_of(hit)
 
@@ -1969,6 +2250,61 @@ class Handler(BaseHTTPRequestHandler):
                 if hit:
                     return rel_of(os.path.join(repo_dir, hit))
         return None
+
+    def _find_by_package_path(self, rel_java, root, prefer_repo=None):
+        """按「包路径」在项目的各模块里找类文件 → 项目内相对路径（或 None）。
+
+        多模块工程（jar/<仓库>/<模块>、jar/<模块>）里同名类很常见，
+        只按文件名找会跳错模块；FQN → 包路径是唯一可靠的定位方式。
+        prefer_repo：来源文件所在仓库优先（同一个 FQN 在本项目里有多份时先看它）。"""
+        repos = list(_all_git_repos(root))
+        if prefer_repo:
+            repos.sort(key=lambda r: 0 if _root_real(r) == _root_real(prefer_repo) else 1)
+        parts = rel_java.replace("\\", "/").split("/")
+        for repo_dir in repos:
+            for jroot in _repo_java_roots(repo_dir):
+                ap = os.path.join(jroot, *parts)
+                if os.path.isfile(ap):
+                    return rel_of(ap)
+        return None
+
+    def _grep_java_in_repo(self, repo_dir, pattern, limit=20):
+        """在仓库里按正则检索 .java 文件 → 仓库内相对路径列表。
+        git grep 优先（走索引，快）；仓库不是 git 或 git 不可用时回退文件系统扫描。"""
+        pat = getattr(pattern, "pattern", pattern)
+        try:
+            out = subprocess.run(["git", "-C", repo_dir, "grep", "-l", "-E", pat, "--", "*.java"],
+                                 capture_output=True, text=True, timeout=25)
+            if out.returncode == 0:
+                hits = [ln.strip().replace("\\", "/") for ln in (out.stdout or "").splitlines() if ln.strip()]
+                if hits:
+                    return hits[:limit]
+        except Exception:
+            pass
+        # 回退：文件系统扫描（未提交的新文件 git grep 看不到）
+        rx = re.compile(pat)
+        hits = []
+        scanned = 0
+        for dirpath, dirnames, filenames in os.walk(repo_dir):
+            dirnames[:] = [d for d in dirnames if d not in (".git", "target", "node_modules", ".idea")]
+            for fn in filenames:
+                if not fn.endswith(".java"):
+                    continue
+                scanned += 1
+                if scanned > 4000:
+                    return hits
+                p = os.path.join(dirpath, fn)
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        for ln in f:
+                            if rx.search(ln):
+                                hits.append(os.path.relpath(p, repo_dir).replace("\\", "/"))
+                                break
+                except OSError:
+                    continue
+                if len(hits) >= limit:
+                    return hits
+        return hits
 
     def _api_save(self, qs):
         rel = (qs.get("path") or [""])[0]
@@ -2142,12 +2478,14 @@ class Handler(BaseHTTPRequestHandler):
             return None
 
     def _resolve_type_file(self, tree, type_name, src_path, view_commit=None):
-        """类型名 → 仓库内类文件相对路径。显式 import / 全限定 / 同包 / 通配符 import / basename 搜索；
-        外部框架类型返回 None（不搜库）。view_commit 非空时候选存在性同时查 git 侧（分支一致）。"""
+        """类型名 → 仓库内类文件相对路径。显式 import / 全限定 / 同包 / 通配符 import /
+        跨模块包路径 / basename 搜索；外部框架类型返回 None（不搜库）。
+        view_commit 非空时候选存在性同时查 git 侧（分支一致）。"""
         pkg = tree.package.name if tree.package else None
         m = re.match(r"^(.*/src/(?:main|test)/java/)", src_path)
         root = m.group(1) if m else None
-        fqn = type_name if "." in type_name else _type_fqn_in_tree(tree, type_name, pkg)
+        proj_root = _root_for(src_path)
+        fqn = type_name if "." in type_name else _type_fqn_in_tree(tree, type_name, pkg, proj_root)
         cands = []
         if fqn:
             cands.append(fqn.replace(".", "/") + ".java")
@@ -2165,14 +2503,26 @@ class Handler(BaseHTTPRequestHandler):
             ap = safe_path(c)
             if ap and (os.path.isfile(ap) or self._path_in_view(c, view_commit)):
                 return rel_of(ap)
+        # 跨模块：同一个 FQN 可能在本项目的另一个 maven 模块里（SDK jar / 公共模块）。
+        # 按「模块 src 根 + 包路径」精确定位，不靠文件名（各模块同名类很常见）。
+        if fqn and "." in fqn:
+            hit = self._find_by_package_path(fqn.replace(".", "/") + ".java", proj_root,
+                                             prefer_repo=self._repo_for_rel(src_path)[0])
+            if hit:
+                return hit
+        # SOA 适配层（可拆卸）：框架特有的类型定位（如远程调用 SDK 的请求/响应类）。
+        alt = soa_defs.resolve_type(_SoaCtx(self, src_path, view_commit, tree=tree, type_name=type_name))
+        if alt:
+            return alt
         if fqn and _is_external_fqn(fqn):
             return None
         return self._search_file(type_name + ".java", view_commit,
                                  prefer_repo=self._repo_for_rel(src_path)[0],
-                                 prefer_root=_root_for(src_path))
+                                 prefer_root=proj_root)
 
     def _resolve_impl(self, target_rel, type_name, method_name, view_commit):
-        """接口 → 实现类入口：<Type>Impl.java。候选：接口同目录 / 接口包 .impl 子包 / basename 全库搜索。
+        """接口 → 实现类入口。候选：接口同目录 / 接口包 .impl 子包 /
+        SOA 适配层（可拆卸，框架特有的实现类定位）/ basename 全库搜索。
         method_name 存在时找方法定义行，否则找实现类声明行。"""
         abs_path = safe_path(target_rel)
         if not abs_path:
@@ -2193,6 +2543,13 @@ class Handler(BaseHTTPRequestHandler):
                 impl_rel = rel_of(ap)
                 break
         if not impl_rel:
+            # SOA 适配层（可拆卸）：远程调用框架的实现类不在接口旁边（如 SDK 接口 →
+            # 另一个模块里的服务端实现类），由适配器按框架约定定位。
+            alt = soa_defs.resolve_impl(_SoaCtx(self, target_rel, view_commit,
+                                                simple_name=type_name, method_name=method_name))
+            if alt:
+                impl_rel = alt
+        if not impl_rel:
             found = self._search_file(type_name + "Impl.java", view_commit,
                                       prefer_repo=self._repo_for_rel(target_rel)[0],
                                       prefer_root=_root_for(target_rel))
@@ -2204,16 +2561,30 @@ class Handler(BaseHTTPRequestHandler):
             return None
         itree, _err = _java_parse(content)
         if itree is None:
-            return None
+            # javalang 解析不了这个文件（如 X[]::new 这类数组构造方法引用）：
+            # 退到文本匹配找声明行，别让「跳到实现」整条链断在这里。
+            if method_name:
+                line = _find_method_decl_text(content, method_name)
+            else:
+                line = _find_type_decl_text(content, type_name + "Impl")
+            if not line:
+                return None
+            return {"file": impl_rel, "line": line}
         if method_name:
             mnode = _find_method_decl(itree, method_name)
             if not mnode:
-                return None
+                line = _find_method_decl_text(content, method_name)
+                if not line:
+                    return None
+                return {"file": impl_rel, "line": line}
             line = mnode.position.line
         else:
             tnode = _find_type_decl(itree, type_name + "Impl")
             if not tnode or not tnode.position:
-                return None
+                line = _find_type_decl_text(content, type_name + "Impl")
+                if not line:
+                    return None
+                return {"file": impl_rel, "line": line}
             line = tnode.position.line
         return {"file": impl_rel, "line": line}
 
@@ -2386,7 +2757,7 @@ class Handler(BaseHTTPRequestHandler):
         target = self._resolve_type_file(tree, recv_type, src_path, view_commit)
         if not target:
             pkg = tree.package.name if tree.package else None
-            fqn = _type_fqn_in_tree(tree, recv_type, pkg)
+            fqn = _type_fqn_in_tree(tree, recv_type, pkg, _root_for(src_path))
             return {"error": "外部/框架方法，无本地定义"} if _is_external_fqn(fqn) else None
         content = self._load_file_content(target, view_commit)
         if content is None:
@@ -2399,7 +2770,7 @@ class Handler(BaseHTTPRequestHandler):
             return None
         mnode = _find_method_decl(ttree, name)
         if not mnode:
-            if _type_framework_parent(ttree, tnode):
+            if _type_framework_parent(ttree, tnode, _root_for(target)):
                 return {"error": "外部/框架方法，无本地定义"}
             return None
         impl = None
@@ -2502,17 +2873,24 @@ class Handler(BaseHTTPRequestHandler):
                 return {"file": src_path, "line": tnode.position.line, "impl": None, "kind": "type", "defName": name}
             target = self._resolve_type_file(tree, name, src_path, view_commit)
             if not target:
-                fqn = _type_fqn_in_tree(tree, name, pkg)
+                fqn = _type_fqn_in_tree(tree, name, pkg, _root_for(src_path))
                 return {"error": "外部/框架方法，无本地定义" if _is_external_fqn(fqn) else "未找到定义"}
             content = self._load_file_content(target, view_commit)
             if content is None:
                 return {"error": "未找到定义"}
             ttree, _err = _java_parse(content)
             if ttree is None:
-                return {"error": "未找到定义"}
+                # javalang 解析不了这个文件 → 文本兜底找类型声明行
+                line = _find_type_decl_text(content, name)
+                if not line:
+                    return {"error": "未找到定义"}
+                return {"file": target, "line": line, "impl": None, "kind": "type", "defName": name}
             tnode = _find_type_decl(ttree, name)
             if not tnode or not tnode.position:
-                return {"error": "未找到定义"}
+                line = _find_type_decl_text(content, name)
+                if not line:
+                    return {"error": "未找到定义"}
+                return {"file": target, "line": line, "impl": None, "kind": "type", "defName": name}
             impl = None
             if isinstance(tnode, _jt.InterfaceDeclaration):
                 impl = self._resolve_impl(target, name, None, view_commit)
@@ -2567,7 +2945,7 @@ class Handler(BaseHTTPRequestHandler):
                 if isinstance(node, (_jt.ClassDeclaration, _jt.InterfaceDeclaration)) and node.position:
                     cls = node
                     break
-            if cls and _type_framework_parent(tree, cls):
+            if cls and _type_framework_parent(tree, cls, _root_for(src_path)):
                 return {"error": "外部/框架方法，无本地定义"}
             if cls:
                 r = self._resolve_recv_chain(tree, src_path, cls.name, name, pkg, view_commit, 0, set())
@@ -2604,14 +2982,18 @@ class Handler(BaseHTTPRequestHandler):
         visited.add(recv_type)
         target = self._resolve_type_file(tree, recv_type, src_path, view_commit)
         if not target:
-            fqn = _type_fqn_in_tree(tree, recv_type, pkg)
+            fqn = _type_fqn_in_tree(tree, recv_type, pkg, _root_for(src_path))
             return {"error": "外部/框架方法，无本地定义" if _is_external_fqn(fqn) else "未找到定义"}
         content = self._load_file_content(target, view_commit)
         if content is None:
             return {"error": "未找到定义"}
         ttree, _err = _java_parse(content)
         if ttree is None:
-            return {"error": "未找到定义"}
+            # javalang 解析不了这个文件 → 文本兜底找方法声明行
+            line = _find_method_decl_text(content, name)
+            if not line:
+                return {"error": "未找到定义"}
+            return {"file": target, "line": line, "impl": None, "kind": "method", "defName": name}
         tnode = _find_type_decl(ttree, recv_type)
         if not tnode:
             return {"error": "未找到定义"}
@@ -2624,7 +3006,7 @@ class Handler(BaseHTTPRequestHandler):
         fld = self._lombok_field_line(ttree, name, target, view_commit)
         if fld:
             return {"file": target, "line": fld, "impl": None, "kind": "method", "defName": name}
-        if _type_framework_parent(ttree, tnode):
+        if _type_framework_parent(ttree, tnode, _root_for(target)):
             return {"error": "外部/框架方法，无本地定义"}
         # 沿继承链：类 extends 父类 / implements 接口；接口 extends 父接口
         parents = []
