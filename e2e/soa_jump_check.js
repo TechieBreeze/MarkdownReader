@@ -7,7 +7,7 @@
    验证（真实无头 Chrome + 真实 Ctrl+点击）：
      1. 业务模块里用到的 SDK 请求类（通配符 import）→ Ctrl+点击跳到 SDK 里的类定义
      2. SDK 接口里的方法 → Ctrl+点击跳到服务端实现类的同名方法
-     3. 点 SDK 接口类型本身 → 也能给出实现类入口
+     3. 点 SDK 接口里的请求类型 → 跳到 DTO 类定义
      4. 负向：JDK 类型仍然报「外部/框架方法」，不乱跳
 
    运行方式（需先启动服务 python server.py）：
@@ -51,27 +51,45 @@ function get(p) {
   });
 }
 
-/* 在弹窗里打开文件并定位到某一行，返回该行里某个词的 token 坐标 */
-async function locateToken(page, path, line, word, wantCls) {
+/* 在弹窗里打开文件并定位到某一行 */
+async function locateToken(page, path, line, word, wantCls, label) {
   await page.evaluate(async (p, ln) => { await openCodeModal(p, ln); }, path, line);
-  await new Promise(r => setTimeout(r, 3500));
-  return page.evaluate((ln, w, cls) => {
-    const row = document.querySelector(`#m-scroll .cl-line[data-line="${ln}"]`);
-    if (!row) return { row: false };
-    const spans = [...row.querySelectorAll('span')].filter(s => s.textContent === w);
-    const hit = spans.find(s => !cls || (s.className || '').includes(cls)) || spans[0];
-    if (!hit) return { row: true, token: false, spans: spans.map(s => s.className) };
-    const r = hit.getBoundingClientRect();
-    return {
-      row: true, token: true,
-      cls: hit.className || '',
-      x: r.left + r.width / 2, y: r.top + r.height / 2,
-      spans: spans.map(s => s.className || ''),
-    };
-  }, line, word, wantCls || '');
+  // 等目标行渲染出来（虚拟滚动的文件要等滚动到位；别用固定等待）
+  try {
+    await page.waitForFunction(
+      (ln) => !!document.querySelector(`#m-scroll .cl-line[data-line="${ln}"]`),
+      { timeout: 20000, polling: 300 }, line);
+  } catch (e) {
+    const st = await page.evaluate(() => {
+      const scroll = document.getElementById('m-scroll');
+      return {
+        path: modalState.path, line: modalState.line,
+        rows: document.querySelectorAll('#m-scroll .cl-line').length,
+        scrollTop: scroll ? scroll.scrollTop : null,
+      };
+    });
+    console.log(`  [${label}] 等待第 ${line} 行超时：modal=${st.path} 行=${st.line} 已渲染=${st.rows} scrollTop=${st.scrollTop}`);
+  }
+  await new Promise(r => setTimeout(r, 600));
+  return { line, word, wantCls: wantCls || '' };
 }
 
-async function ctrlClick(page, box) {
+/* 量 token 的坐标；点击前要重新量 —— 弹窗会在 git 分支内容加载完后重排 */
+async function tokenBox(page, loc) {
+  return page.evaluate((ln, w, cls) => {
+    const row = document.querySelector(`#m-scroll .cl-line[data-line="${ln}"]`);
+    if (!row) return null;
+    const spans = [...row.querySelectorAll('span')].filter(s => s.textContent === w);
+    const hit = spans.find(s => !cls || (s.className || '').includes(cls)) || spans[0];
+    if (!hit) return null;
+    const r = hit.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, cls: hit.className || '' };
+  }, loc.line, loc.word, loc.wantCls);
+}
+
+async function ctrlClick(page, loc) {
+  const box = await tokenBox(page, loc);
+  if (!box) return { path: null, line: null };
   await page.keyboard.down('Control');
   await page.mouse.click(box.x, box.y);
   await page.keyboard.up('Control');
@@ -115,33 +133,41 @@ async function ctrlClick(page, box) {
   const results = {};
 
   // ---- 场景 1：业务模块里的 SDK 请求类 → 跳到 SDK 类定义 ----
-  const tokA = await locateToken(page, IMPL, implLine, REQ_TYPE, 'hljs-type');
-  results.tokenA = tokA;
-  results.jumpA = tokA.token ? await ctrlClick(page, tokA) : { path: null, line: null };
+  const locA = await locateToken(page, IMPL, implLine, REQ_TYPE, 'hljs-type', '场景1');
+  const boxA = await tokenBox(page, locA);
+  results.tokenA = { token: !!boxA, cls: boxA ? boxA.cls : '' };
+  results.jumpA = boxA ? await ctrlClick(page, locA) : { path: null, line: null };
 
   // ---- 场景 2：SDK 接口里的方法 → 跳到服务端实现类的同名方法 ----
-  const tokB = await locateToken(page, SDK, sdkLine, REQ_METHOD, '');
-  results.tokenB = tokB;
-  results.jumpB = tokB.token ? await ctrlClick(page, tokB) : { path: null, line: null };
+  const locB = await locateToken(page, SDK, sdkLine, REQ_METHOD, '', '场景2');
+  const boxB = await tokenBox(page, locB);
+  results.tokenB = { token: !!boxB, cls: boxB ? boxB.cls : '' };
+  results.jumpB = boxB ? await ctrlClick(page, locB) : { path: null, line: null };
 
   // ---- 场景 3：SDK 接口里的请求类型 → 跳到 DTO 类定义 ----
-  const tokC = await locateToken(page, SDK, dtoLineInSdk, REQ_TYPE, '');
-  results.tokenC = tokC;
-  results.jumpC = tokC.token ? await ctrlClick(page, tokC) : { path: null, line: null };
+  const locC = await locateToken(page, SDK, dtoLineInSdk, REQ_TYPE, '', '场景3');
+  const boxC = await tokenBox(page, locC);
+  results.tokenC = { token: !!boxC, cls: boxC ? boxC.cls : '' };
+  results.jumpC = boxC ? await ctrlClick(page, locC) : { path: null, line: null };
 
   // ---- 场景 4（负向）：JDK 类型不乱跳，报「外部/框架方法」 ----
-  const tokD = await locateToken(page, IMPL, jdkLine, 'ArrayList', '');
+  const locD = await locateToken(page, IMPL, jdkLine, 'ArrayList', '', '场景4');
+  const boxD = await tokenBox(page, locD);
   const before = await page.evaluate(() => modalState.path);
   let toast = '';
-  if (tokD.token) {
+  if (boxD) {
     await page.keyboard.down('Control');
-    await page.mouse.click(tokD.x, tokD.y);
+    await page.mouse.click(boxD.x, boxD.y);
     await page.keyboard.up('Control');
-    await new Promise(r => setTimeout(r, 2500));
-    toast = await page.evaluate(() => {
-      const t = document.getElementById('toast');
-      return t ? (t.textContent || '').trim() : '';
-    });
+    // 等提示出现（服务端响应可能几百毫秒；toast 2.6 秒后隐藏但文本保留）
+    for (let i = 0; i < 25; i++) {
+      await new Promise(r => setTimeout(r, 200));
+      toast = await page.evaluate(() => {
+        const t = document.getElementById('toast');
+        return t ? (t.textContent || '').trim() : '';
+      });
+      if (toast) break;
+    }
   }
   const after = await page.evaluate(() => modalState.path);
   results.toast = toast;
@@ -162,7 +188,6 @@ async function ctrlClick(page, box) {
     ['场景3：SDK 接口里的请求类型能跳', !!results.jumpC.path && results.jumpC.path.endsWith('CanUpdateStoreWarehouseStockRequest.java')],
     ['场景3：跳到类声明行', !!results.jumpC.line && results.jumpC.line > 0],
     // 场景 4
-    ['场景4：JDK 类型被识别成 token', results.tokenD === undefined ? true : true],
     ['场景4：JDK 类型不跳走（仍在原文件）', results.negativeStayed === true],
     ['场景4：给出「外部/框架」提示', /外部|框架/.test(results.toast || '')],
     ['页面无 JS 异常', pageErrors.length === 0],
