@@ -5060,15 +5060,23 @@ function isJavaKtLang(lang) {
    精确增强（只补类型语义位置，统一用 hljs-type 类型色，不碰已高亮的 token，
    不误伤字符串/注释/常量）：
      · 后跟 . 或 空白 → 类名（静态调用 / 声明 / 返回类型）
+     · 后跟 < → 泛型「头」（List<…> 的 List、OutputDTO<…> 的 OutputDTO）
      · 泛型 <Type>（hljs 会把 < 转义成 HTML 实体）
+     · 逗号后的泛型实参（Map<Long, Boolean> 里的 Boolean）
    排除全大写标识符（常量/枚举），排除已被 span 包裹的内容。
    注：正则里的 \x26lt; 表示「&」+「lt;」两个字符（即 < 的 HTML 实体），
    「&」写成 \x26 是为了避免它在源码里被当成 HTML 实体起始。 */
 function enhanceJavaKtTypes(html) {
   return html.replace(
-    /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|(?<=<|\x26lt;)\b[A-Z]\w*\b/g,
-    (m) => {
+    /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|\b[A-Z]\w*\b(?=\s*\x26lt;)|(?<=<|\x26lt;)\b[A-Z]\w*\b|,\s*(\b[A-Z]\w*\b)/g,
+    (m, g1) => {
       if (m.startsWith("<span")) return m;
+      if (g1) {
+        // 逗号后的泛型实参：Map<Long, Boolean> 里的 Boolean
+        if (!/[a-z]/.test(g1)) return m;               // 全大写 → 常量/枚举，跳过
+        const head = m.slice(0, m.length - g1.length);
+        return head + `<span class="hljs-type">${g1}</span>`;
+      }
       if (!/[a-z]/.test(m)) return m;   // 全大写常量/枚举 → 跳过
       return `<span class="hljs-type">${m}</span>`;
     });
@@ -5095,9 +5103,11 @@ const JAVA_KW = (function () {
    · 其余小写开头标识符（变量/字段/参数引用）→ hljs-variable（变量色）
    显式排除 Java/Kotlin 关键字与字面量、PascalCase 类型/全大写常量；
    字符串/注释/数字已被 hljs 包裹（classes 非空），不会走到这里，本函数也不匹配数字。
+   inImport=true（import 语句里的包路径）：PascalCase 段是**类名** → 类型色
+   （import java.util.List; 里的 List 就是 List 这个类型，VSCode 也是类型色）。
    返回 token 数组而不是拼好的 HTML：调用方负责转义与拼接，
    避免把已转义的 HTML 实体当正文再处理一遍（实体名会被误判成标识符）。 */
-function hljsPostProcJavaKtTokens(txt) {
+function hljsPostProcJavaKtTokens(txt, inImport) {
   const KW = JAVA_KW;
   const out = [];
   let last = 0;
@@ -5108,8 +5118,12 @@ function hljsPostProcJavaKtTokens(txt) {
     if (KW[word]) continue;                           // 关键字/字面量 → 不动
     let cls;
     if (/^[A-Z]/.test(word)) {
-      if (/[a-z]/.test(word)) continue;                // PascalCase → 类型归类型增强管
-      cls = "hljs-constant";                          // 全大写 → 常量/枚举值（枚举值要能点）
+      if (/[a-z]/.test(word)) {
+        if (!inImport) continue;                      // PascalCase → 类型归类型增强管
+        cls = "hljs-type";                            // import 路径里的类名 → 类型
+      } else {
+        cls = "hljs-constant";                        // 全大写 → 常量/枚举值（枚举值要能点）
+      }
     } else {
       cls = txt.charAt(m.index + word.length) === "(" ? "hljs-title function_" : "hljs-variable";
     }
@@ -5119,6 +5133,22 @@ function hljsPostProcJavaKtTokens(txt) {
   }
   if (last < txt.length) out.push({ cls: "", txt: txt.slice(last) });
   return out;
+}
+
+/* 这个文本节点是不是 import 语句里的包路径？
+   判据：前一个兄弟节点是 import/static 关键字 span（hljs 只把关键字包成 span）。 */
+function isImportPathText(node) {
+  let prev = node.previousSibling;
+  while (prev && prev.nodeType === 3 && !prev.textContent.trim()) prev = prev.previousSibling;
+  if (!prev || prev.nodeType !== 1) return false;
+  const t = (prev.textContent || "").trim();
+  if (t === "import") return true;
+  if (t === "static") {
+    let p2 = prev.previousSibling;
+    while (p2 && p2.nodeType === 3 && !p2.textContent.trim()) p2 = p2.previousSibling;
+    return !!p2 && p2.nodeType === 1 && (p2.textContent || "").trim() === "import";
+  }
+  return false;
 }
 
 /* Java/Kotlin 参数列表里的标识符。
@@ -5186,13 +5216,15 @@ function highlightToLines(html, isJavaKt) {
       // Java/Kotlin：参数列表整体被 hljs 塞进一个 <span class="hljs-params">，
       // 里面的类型/参数名都是纯文本（字符串层的类型增强会整段跳过这个 span）→ 这里单独识别
       const inParams = isJavaKt && classes.length && classes[classes.length - 1] === "hljs-params";
+      // import 语句里的包路径（import java.util.List;）→ 路径里的类名是类型
+      const inImport = isJavaKt && !classes.length && isImportPathText(node);
       for (let i = 0; i < parts.length; i++) {
         if (i > 0) { current = []; lines.push(current); }
         if (parts[i] !== "") {
           // Java/Kotlin：未被任何 span 包裹的纯文本 → 补方法调用名与变量/字段引用
           const toks = isJavaKt
             ? (inParams ? hljsParamTokens(parts[i])
-              : (!classes.length ? hljsPostProcJavaKtTokens(parts[i]) : [{ cls: "", txt: parts[i] }]))
+              : (!classes.length ? hljsPostProcJavaKtTokens(parts[i], inImport) : [{ cls: "", txt: parts[i] }]))
             : [{ cls: "", txt: parts[i] }];
           for (const t of toks) {
             current.push({ cls: classes.concat(t.cls ? t.cls.split(" ") : []), txt: escapeHtml(t.txt) });

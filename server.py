@@ -120,6 +120,7 @@ def _invalidate_gits_cache():
     global _GITS_REPOS
     _GITS_REPOS = None
     _TYPE_EXISTS_CACHE.clear()
+    _CLASS_INDEX.clear()
     for fn in (_git_tree_files, _repo_java_roots):
         fn.cache_clear()
 
@@ -1182,32 +1183,75 @@ _JAVA_LANG_TYPES = frozenset({
 
 def _type_src_exists(fqn, prefer_root=None):
     """仓库内是否存在 <fqn>.java（任意 gits 仓库的模块 src/main|test/java 下），
-    用于区分通配符导入类型是项目内还是 JDK/框架。多项目时优先查来源文件所属根。
+    用于区分通配符导入类型是项目内还是 JDK/框架。
     模块化布局（仓库里再分 product-api 等模块）要一起看，否则多模块工程里的
     自有类型会被误判成「外部框架类型」→ 通配符导入的类型点不动。
-
-    一次查找要扫几十个仓库 × 若干模块根（几百次 stat），而每个文件里的通配符
-    import 都要查一遍 → 加个短 TTL 缓存，重复点击不再重复扫盘（60 秒后自动重算，
-    新加的文件不会长时间不被认出来）。"""
-    key = (fqn, prefer_root or "")
-    now = _time.time()
-    hit = _TYPE_EXISTS_CACHE.get(key)
-    if hit and now - hit[0] < _TYPE_EXISTS_TTL:
-        return hit[1]
-    rel = fqn.replace(".", "/") + ".java"
-    found = False
-    for repo_dir in _all_git_repos(prefer_root):
-        for jroot in _repo_java_roots(repo_dir):
-            if os.path.isfile(os.path.join(jroot, *rel.split("/"))):
-                found = True
-                break
-        if found:
-            break
-    _TYPE_EXISTS_CACHE[key] = (now, found)
-    return found
+    判定走类索引（见 _class_index），O(1)；未限定项目时只看当前项目（不跨项目跳）。"""
+    root = prefer_root or (_VTOP.get(_CURRENT or "") or (ROOTS[0] if ROOTS else None))
+    if not root:
+        return False
+    return fqn in _class_index(root)
 
 _TYPE_EXISTS_TTL = 60.0     # 「这个 FQN 在项目里吗」的缓存有效期（秒）
 _TYPE_EXISTS_CACHE = {}     # (fqn, root) -> (时间戳, 命中)
+
+
+_CLASS_INDEX_TTL = 300.0    # 类索引有效期（秒）：新增文件最多 5 分钟内被认出来
+_CLASS_INDEX = {}           # 项目根(abs) -> (时间戳, {FQN: [相对路径, ...]})
+_CLASS_INDEX_LOCK = threading.Lock()
+
+
+def _class_index(root):
+    """项目内的类索引：FQN → 类文件（项目内相对路径）列表。懒构建 + TTL 缓存。
+
+    为什么要有这个索引：多模块工程里「这个 FQN 在项目里吗」「按包路径找类」
+    要对每个仓库 × 每个模块根做几百次 stat（实测几百毫秒），而一个文件里的
+    每个通配符 import 都要查一遍 → 一次 Ctrl+点击要等两三秒。
+    索引建一次（扫一遍源码树）之后全是 O(1) 命中。
+
+    注意：这里不能用 rel_of() 逐文件换算 —— 它内部对每个文件做 realpath，
+    两万多个文件就是一百多秒（实测）。项目内相对路径按 root 直接算前缀即可。"""
+    now = _time.time()
+    hit = _CLASS_INDEX.get(root)
+    if hit and now - hit[0] < _CLASS_INDEX_TTL:
+        return hit[1]
+    with _CLASS_INDEX_LOCK:
+        hit = _CLASS_INDEX.get(root)      # 另一个线程可能刚建好
+        if hit and now - hit[0] < _CLASS_INDEX_TTL:
+            return hit[1]
+        idx = {}
+        prefix = (_vtop_of(root) + "/") if len(ROOTS) > 1 else ""
+        for repo_dir in _all_git_repos(root):
+            for jroot in _repo_java_roots(repo_dir):
+                if not os.path.isdir(jroot):
+                    continue
+                root_rel = os.path.relpath(jroot, root).replace("\\", "/")
+                for dirpath, dirnames, filenames in os.walk(jroot):
+                    dirnames[:] = [d for d in dirnames if d not in ("target", "node_modules")]
+                    if not filenames:
+                        continue
+                    # 按「目录」算相对路径（目录数远少于文件数）
+                    dir_rel = os.path.relpath(dirpath, jroot).replace("\\", "/")
+                    dir_rel = "" if dir_rel == "." else dir_rel + "/"
+                    for fn in filenames:
+                        if not fn.endswith(".java"):
+                            continue
+                        pkg_rel = dir_rel + fn
+                        fqn = pkg_rel[:-5].replace("/", ".")
+                        idx.setdefault(fqn, []).append(prefix + root_rel + "/" + pkg_rel)
+        _CLASS_INDEX[root] = (now, idx)
+        return idx
+
+
+def _warm_class_index():
+    """后台预热当前项目的类索引 —— 免得用户第一次 Ctrl+点击就等索引构建。"""
+    root = _VTOP.get(_CURRENT or "") or (ROOTS[0] if ROOTS else None)
+    if not root:
+        return
+    try:
+        _class_index(root)
+    except Exception:
+        pass
 
 
 def _type_fqn_in_tree(tree, type_name, pkg, prefer_root=None):
@@ -2256,17 +2300,21 @@ class Handler(BaseHTTPRequestHandler):
 
         多模块工程（jar/<仓库>/<模块>、jar/<模块>）里同名类很常见，
         只按文件名找会跳错模块；FQN → 包路径是唯一可靠的定位方式。
+        走类索引（见 _class_index）：FQN → 候选文件，优先取来源文件所在仓库那份。
         prefer_repo：来源文件所在仓库优先（同一个 FQN 在本项目里有多份时先看它）。"""
-        repos = list(_all_git_repos(root))
+        fqn = rel_java.replace("\\", "/")
+        if fqn.endswith(".java"):
+            fqn = fqn[:-5]
+        fqn = fqn.replace("/", ".")
+        cands = _class_index(root).get(fqn)
+        if not cands:
+            return None
         if prefer_repo:
-            repos.sort(key=lambda r: 0 if _root_real(r) == _root_real(prefer_repo) else 1)
-        parts = rel_java.replace("\\", "/").split("/")
-        for repo_dir in repos:
-            for jroot in _repo_java_roots(repo_dir):
-                ap = os.path.join(jroot, *parts)
-                if os.path.isfile(ap):
-                    return rel_of(ap)
-        return None
+            for c in cands:
+                repo = self._repo_for_rel(c)[0]
+                if repo and _root_real(repo) == _root_real(prefer_repo):
+                    return c
+        return cands[0]
 
     def _grep_java_in_repo(self, repo_dir, pattern, limit=20):
         """在仓库里按正则检索 .java 文件 → 仓库内相对路径列表。
@@ -3463,6 +3511,8 @@ def main():
     if not ROOTS:
         print("no valid root")
         sys.exit(1)
+    # 后台预热当前项目的类索引（第一次 Ctrl+点击就不用等索引构建）
+    threading.Thread(target=_warm_class_index, daemon=True).start()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print("=" * 56)
     print("  Markdown Reader")
