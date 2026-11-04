@@ -1,4 +1,6 @@
-/** Markdown rendering: marked -> DOM -> code links, bare paths, images, hljs. */
+/** Markdown rendering: marked -> DOM -> jumps (code/md/html/image/git links), hljs. */
+
+const REPO_BLOB_MARKERS = ['/-/blob/', '/blob/', '/-/raw/', '/raw/']
 
 function looksLikePath(text) {
   if (!text || text.length > 260) return false
@@ -15,6 +17,75 @@ function findLineToken(anchor) {
     return { node, line: Number(node.textContent.trim()) }
   }
   return null
+}
+
+function isRepoBlobUrl(href) {
+  if (!/^https?:\/\//i.test(href)) return false
+  return REPO_BLOB_MARKERS.some((marker) => href.includes(marker))
+}
+
+/**
+ * Tab kind for a resolved path. Ordered so `.html` is a rendered tab (not
+ * source), images preview, markdown stays markdown, everything else code.
+ */
+function linkKindFor(resolved) {
+  const ext = extOf(resolved)
+  if (ext === '.md' || ext === '.markdown') return 'md'
+  if (ext === '.html' || ext === '.htm') return 'html'
+  if (isImageFile(resolved)) return 'image'
+  if (isCodeFile(resolved)) return 'code'
+  return ''
+}
+
+function appendLineBadge(anchor, line) {
+  if (line == null) return
+  anchor.dataset.line = String(line)
+  const badge = document.createElement('span')
+  badge.className = 'mdr-badge'
+  badge.textContent = String(line)
+  anchor.appendChild(badge)
+}
+
+function parseBranchCommit(query) {
+  const result = { branch: '', commit: '' }
+  if (!query) return result
+  let params
+  try {
+    params = new URLSearchParams(query)
+  } catch {
+    return result
+  }
+  const branch = params.get('branch') || params.get('ref') || ''
+  const commit = params.get('commit') || params.get('sha') || ''
+  if (branch && /^[A-Za-z0-9._/-]+$/.test(branch)) result.branch = branch
+  if (commit && /^[A-Za-z0-9._/-]+$/.test(commit)) result.commit = commit
+  return result
+}
+
+/** Attach the data-* contract that 50-app.js routes on. */
+function applyLocalLink(anchor, resolved, line, branch, commit) {
+  const kind = linkKindFor(resolved)
+  if (!kind) return
+  anchor.dataset.path = resolved
+  anchor.dataset.kind = kind
+  if (line != null) anchor.dataset.line = String(line)
+  if (branch) anchor.dataset.branch = branch
+  if (commit) anchor.dataset.commit = commit
+  const suffix = (line != null ? ` :${line}` : '') + (branch ? `（${branch} 版本）` : '')
+  if (kind === 'code') {
+    anchor.classList.add('mdr-jump')
+    anchor.removeAttribute('href')
+    anchor.title = `${resolved}${suffix}（点击弹窗；Ctrl/Cmd+点击开为标签页）`
+    appendLineBadge(anchor, line)
+  } else {
+    anchor.classList.add('mdr-local-link')
+    anchor.removeAttribute('href')
+    anchor.title = `${resolved}${suffix}`
+    if (kind === 'md') {
+      anchor.removeAttribute('target')
+      anchor.classList.add('mdr-md-link')
+    }
+  }
 }
 
 function enhanceMarkdown(container, mdPath, multi, rootNames) {
@@ -35,52 +106,75 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     img.alt = img.alt || ''
   })
 
-  // 2) links: classify into md jump / code jump / external
+  // 2) anchors: repository links are resolved in a batch below; everything else
+  //    is classified locally into md/code/html/image jumps.
+  const repoLinks = []
   for (const anchor of [...container.querySelectorAll('a[href]')]) {
     const raw = anchor.getAttribute('href') || ''
+    if (isRepoBlobUrl(raw)) {
+      anchor.classList.add('mdr-repo-link')
+      anchor.target = '_blank'
+      anchor.rel = 'noopener noreferrer'
+      anchor.title = '仓库链接：解析到本地后可直接打开代码（Shift+点击 / 右键按仓库链接打开）'
+      repoLinks.push({ anchor, url: raw })
+      continue
+    }
     if (/^(https?:|mailto:)/i.test(raw)) {
       anchor.target = '_blank'
       anchor.rel = 'noopener noreferrer'
       continue
     }
     if (raw.startsWith('#')) continue
-    const { path: href, hash } = splitHref(raw)
-    let decoded = href
+    const { path: beforeHash, hash } = splitHref(raw)
+    const queryAt = beforeHash.indexOf('?')
+    const query = queryAt < 0 ? '' : beforeHash.slice(queryAt + 1)
+    const cleanHref = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt)
+    let decoded = cleanHref
     try {
-      decoded = decodeURIComponent(href)
+      decoded = decodeURIComponent(cleanHref)
     } catch {
-      decoded = href
+      decoded = cleanHref
     }
     const resolved = resolveRel(mdPath, decoded, multi, rootNames)
-    const titlePath = resolved
-    if (isCodeFile(resolved)) {
-      let line = null
-      const token = findLineToken(anchor)
-      if (token) {
-        line = token.line
-        token.node.classList.add('mdr-line-token')
-      }
-      if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
-      anchor.removeAttribute('href')
-      anchor.classList.add('mdr-jump')
-      anchor.dataset.path = resolved
-      anchor.title = `${titlePath}${line ? ':' + line : ''}`
-      if (line != null) {
-        anchor.dataset.line = String(line)
-        const badge = document.createElement('span')
-        badge.className = 'mdr-badge'
-        badge.textContent = String(line)
-        anchor.appendChild(badge)
-      }
-    } else if (isMdFile(resolved)) {
-      anchor.removeAttribute('href')
-      anchor.dataset.path = resolved
-      anchor.title = titlePath
-    } else {
-      anchor.removeAttribute('href')
-      anchor.classList.add('mdr-plain')
-      anchor.title = titlePath
+    const extra = parseBranchCommit(query)
+    let line = null
+    const token = findLineToken(anchor)
+    if (token) {
+      line = token.line
+      token.node.classList.add('mdr-line-token')
     }
+    if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
+    applyLocalLink(anchor, resolved, line, extra.branch, extra.commit)
+  }
+
+  // 2b) resolve remote repo-view links to local workspace files
+  if (repoLinks.length) {
+    const unique = [...new Set(repoLinks.map((item) => item.url))]
+    fetchJson('/api/git/resolve', { url: unique, path: mdPath })
+      .then((payload) => {
+        const map = (payload && payload.resolved) || {}
+        for (const item of repoLinks) {
+          const hit = map[item.url]
+          if (!hit || !hit.path) continue
+          const anchor = item.anchor
+          anchor.classList.add('mdr-jump')
+          anchor.classList.remove('mdr-repo-link')
+          anchor.dataset.path = hit.path
+          anchor.dataset.kind = linkKindFor(hit.path) || 'code'
+          if (hit.line) {
+            anchor.dataset.line = String(hit.line)
+            appendLineBadge(anchor, hit.line)
+          }
+          if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
+          // Keep href so Shift+click / right-click / copy-link still reach the
+          // repository page; plain click is routed in-app by 50-app.js.
+          anchor.title =
+            `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
+            (hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
+            '（Shift+点击 / 右键打开仓库原链接）'
+        }
+      })
+      .catch(() => {})
   }
 
   // 3) bare backtick paths become links when the file actually resolves
@@ -102,6 +196,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           const anchor = document.createElement('a')
           anchor.className = 'mdr-jump'
           anchor.dataset.path = hit.abs
+          anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
           anchor.title = hit.abs
           anchor.textContent = item.text
           item.code.textContent = ''
@@ -111,13 +206,12 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       .catch(() => {})
   }
 
-  // 4) fenced code blocks -> highlight.js (mermaid kept as a visible note)
+  // 4) fenced code blocks -> highlight.js (mermaid kept for the lazy slice)
   container.querySelectorAll('pre > code').forEach((code) => {
     const source = code.textContent || ''
     const match = /language-([\w+-]+)/.exec(code.className || '')
     const lang = match ? match[1] : ''
     if (lang === 'mermaid') {
-      // Keep the raw source on the node for the lazy mermaid slice.
       code.dataset.mermaidSource = source
       code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
       return

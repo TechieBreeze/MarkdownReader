@@ -17,6 +17,8 @@ const ORDER = [
   '27-sync.js',
   '28-gitgraph.js',
   '30-tree.js',
+  '32-workbench.js',
+  '34-html.js',
   '40-tabs.js',
   '45-json.js',
   '50-app.js',

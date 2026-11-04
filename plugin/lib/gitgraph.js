@@ -37,11 +37,11 @@ function findGitRoot(abs) {
   }
 }
 
-/** Bounded inventory of git repositories under every workspace root. */
-export function listRepos(state) {
+/** Bounded inventory of git repositories under the given roots (default: all). */
+export function listRepos(state, roots) {
   const repos = []
   const seen = new Set()
-  for (const root of state.roots()) {
+  for (const root of roots && roots.length ? roots : state.roots()) {
     const stack = [{ dir: root.path, depth: 0 }]
     while (stack.length && repos.length < 300) {
       const { dir, depth } = stack.pop()

@@ -15,6 +15,8 @@ import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
 import { findDefinitions } from './defs.js'
 import { syncStatus, syncPull } from './sync.js'
 import { gitGraph, listRepos } from './gitgraph.js'
+import { renderHtmlPreview } from './htmlpreview.js'
+import { resolveRepoUrls } from './gitlinks.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -68,13 +70,17 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/code' && req.method === 'GET') return apiCode(res, state, url)
     if (pathname === '/api/exists' && req.method === 'GET') return apiExists(res, state, url)
     if (pathname === '/api/raw' && req.method === 'GET') return apiRaw(res, state, url)
+    if (pathname === '/api/html' && req.method === 'GET') return apiHtml(res, state, url)
     if (pathname === '/api/search' && req.method === 'GET') return apiSearch(res, state, url)
     if (pathname === '/api/files' && req.method === 'GET') return apiFiles(res, state, url)
     if (pathname === '/api/def' && req.method === 'POST') return await apiDef(req, res, state)
     if (pathname === '/api/sync/status' && req.method === 'GET') return sendJson(res, 200, await syncStatus(state, url.searchParams.get('fetch') === '1'))
     if (pathname === '/api/sync/pull' && req.method === 'POST') return sendJson(res, 200, await syncPull(state))
     if (pathname === '/api/git/graph' && req.method === 'GET') return sendJson(res, 200, await gitGraph(state, url))
-    if (pathname === '/api/git/repos' && req.method === 'GET') return sendJson(res, 200, { ok: true, repos: listRepos(state) })
+    if (pathname === '/api/git/resolve' && req.method === 'GET')
+      return sendJson(res, 200, { ok: true, resolved: await resolveRepoUrls(state, url.searchParams.getAll('url'), url.searchParams.get('path') || '') })
+    if (pathname === '/api/git/repos' && req.method === 'GET')
+      return sendJson(res, 200, { ok: true, repos: listRepos(state, projectRoots(state, url.searchParams.get('project'))) })
     if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
     if (pathname === '/api/git/file' && req.method === 'GET') return await apiGitFile(res, state, url)
     if (pathname === '/api/git/diff' && req.method === 'GET') return await apiGitDiff(res, state, url)
@@ -249,12 +255,30 @@ function apiRaw(res, state, url) {
   return sendFile(res, abs)
 }
 
+function apiHtml(res, state, url) {
+  const html = renderHtmlPreview(state, url.searchParams.get('path') || '')
+  const body = Buffer.from(html, 'utf8')
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': body.length,
+    'cache-control': 'no-store',
+  })
+  res.end(body)
+}
+
 // ------------------------------------------------------------ search & index
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.mmd-cache', '__pycache__', '.idea', '.next', 'dist', 'build', 'target', '.gradle', '.venv', 'venv'])
 
+/** Roots addressed by the optional `project=<vtop>` scope (absent/__all__ = all). */
+function projectRoots(state, project) {
+  const name = String(project || '').trim()
+  if (!name || name === '__all__') return state.roots()
+  return state.roots().filter((root) => root.name === name)
+}
+
 /** Bounded depth-first walk shared by search and quick open. */
-function walkWorkspace(state, options, visit) {
+function walkWorkspace(state, roots, options, visit) {
   const maxDepth = options.maxDepth || 10
   const maxFiles = options.maxFiles || 30000
   const budgetMs = options.budgetMs || 2500
@@ -262,7 +286,7 @@ function walkWorkspace(state, options, visit) {
   let files = 0
   let truncated = false
   const stack = []
-  for (const root of state.roots()) stack.push({ dir: root.path, depth: 0 })
+  for (const root of roots && roots.length ? roots : state.roots()) stack.push({ dir: root.path, depth: 0 })
   while (stack.length) {
     const { dir, depth } = stack.pop()
     let dirents
@@ -301,7 +325,8 @@ function apiSearch(res, state, url) {
   const needle = caseSensitive ? query : query.toLowerCase()
   const results = []
   let scanned = 0
-  const walkResult = walkWorkspace(state, { maxFiles: 12000, maxDepth: 12, budgetMs: 3500 }, (abs, rel, ext) => {
+  const roots = projectRoots(state, url.searchParams.get('project'))
+  const walkResult = walkWorkspace(state, roots, { maxFiles: 12000, maxDepth: 12, budgetMs: 3500 }, (abs, rel, ext) => {
     if (results.length >= limit) return
     let text
     try {
@@ -332,20 +357,21 @@ function apiSearch(res, state, url) {
 
 let quickIndex = { at: 0, key: '', items: [] }
 
-function quickIndexItems(state) {
-  const key = state.roots().map((root) => root.path).join('|')
+function quickIndexItems(state, roots) {
+  const key = (roots && roots.length ? roots : state.roots()).map((root) => root.path).join('|')
   if (Date.now() - quickIndex.at < 60000 && quickIndex.key === key) return quickIndex.items
   const items = []
-  walkWorkspace(state, { maxFiles: 30000, maxDepth: 14, budgetMs: 4000 }, (abs, rel) => {
+  walkWorkspace(state, roots, { maxFiles: 30000, maxDepth: 14, budgetMs: 4000 }, (abs, rel) => {
     items.push({ path: rel, name: path.basename(abs), dir: path.dirname(rel).replace(/\\/g, '/') })
   })
   quickIndex = { at: Date.now(), key, items }
   return items
 }
 
-function apiFiles(res, state, url) {  const query = (url.searchParams.get('q') || '').trim()
+function apiFiles(res, state, url) {
+  const query = (url.searchParams.get('q') || '').trim()
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || '40')))
-  const items = quickIndexItems(state)
+  const items = quickIndexItems(state, projectRoots(state, url.searchParams.get('project')))
   const lower = query.toLowerCase()
   const scored = []
   for (const item of items) {
