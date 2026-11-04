@@ -43,12 +43,19 @@ function symbolAtPoint(rootEl, event) {
 /**
  * Attach the Ctrl/Cmd+click listener. `onResult(candidates, symbol, clicked)`
  * is called with a non-empty candidate list.
+ *
+ * Deleted rows of the commit-diff view (`.mdr-git-del`) are NOT jumpable: their
+ * `data-line` is the OLD file's line number and the rendered text is the new
+ * version, so a jump would land in the wrong place (the original disables the
+ * affordance and the click for these rows too).
  */
 function setupDefinitionClick(rootEl, tab, onResult) {
   if (!rootEl) return () => {}
   let busy = false
   const handler = async (event) => {
     if (!(event.ctrlKey || event.metaKey)) return
+    const target = event.target
+    if (target && target.closest && target.closest('.mdr-git-del')) return
     const hit = symbolAtPoint(rootEl, event)
     if (!hit || hit.symbol.length < 2) return
     event.preventDefault()

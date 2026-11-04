@@ -49,6 +49,29 @@ const IMAGE_TYPES = {
   '.ico': 'image/x-icon',
 }
 
+/**
+ * Static assets an HTML preview may pull in (styles/scripts/fonts). Image types
+ * are accepted too; anything else is refused so /api/raw never becomes a
+ * general file-download endpoint.
+ */
+const STATIC_ASSET_TYPES = {
+  ...IMAGE_TYPES,
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.map': 'application/json; charset=utf-8',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.eot': 'application/vnd.ms-fontobject',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+}
+
 export async function handleRequest(req, res, state) {
   try {
     const url = new URL(req.url || '/', 'http://127.0.0.1')
@@ -250,9 +273,16 @@ function apiRaw(res, state, url) {
   if (!rel) throw new Error('缺少 path')
   const abs = state.safePath(rel)
   const ext = path.extname(abs).toLowerCase()
-  const type = IMAGE_TYPES[ext]
-  if (!type) return sendError(res, 415, '只支持图片预览')
-  return sendFile(res, abs)
+  const type = STATIC_ASSET_TYPES[ext]
+  if (!type) return sendError(res, 415, '该文件类型不支持预览/引用')
+  const body = fs.readFileSync(abs)
+  res.writeHead(200, {
+    'content-type': type,
+    'content-length': body.length,
+    'cache-control': 'no-cache',
+  })
+  res.end(body)
+  return undefined
 }
 
 function apiHtml(res, state, url) {

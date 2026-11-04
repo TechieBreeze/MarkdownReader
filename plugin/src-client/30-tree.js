@@ -1,7 +1,7 @@
-/** Directory tree with on-demand loading and persisted expansion. */
+/** Directory tree with on-demand loading and persisted (per-project) expansion. */
 
 function TreeNode(props) {
-  const { node, depth, expanded, dirs, failed, activePath, onToggle, onOpen } = props
+  const { node, depth, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
   const open = node.dir && expanded.has(node.path)
   const children = node.dir && open ? dirs[node.path] : null
   // `dirs[path]` 有值 = 已加载（可能是空数组）；failed[path] = 加载失败。
@@ -10,6 +10,16 @@ function TreeNode(props) {
   const meta = node.dir ? { kind: 'folder', color: 'var(--dsw-alias-label-secondary)' } : fileIcon(node.ext)
   const Icon = Icons[meta.kind]
   const childIndent = { paddingLeft: 18 + depth * 14 }
+  const located = !!locatedPath && locatedPath === node.path
+  const rowRef = React.useRef(null)
+
+  // 「定位」：目标文件所在行滚到视野中间。展开由 App 的 locateInTree 负责。
+  React.useEffect(() => {
+    if (!located) return
+    const row = rowRef.current
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }, [located])
+
   let placeholder = null
   if (open && failedHere) {
     placeholder = h('div', { className: 'mdr-tip', style: { ...childIndent, color: 'var(--dsw-alias-state-error-primary)' } }, '加载失败，点目录树右上角刷新重试')
@@ -24,8 +34,9 @@ function TreeNode(props) {
     h(
       'div',
       {
-        className: 'mdr-tr' + (activePath === node.path ? ' on' : ''),
-        style: { paddingLeft: 6 + depth * 14 },
+        className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
+        ref: rowRef,
+        style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
         title: node.path,
         onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),
       },
@@ -43,6 +54,7 @@ function TreeNode(props) {
             dirs,
             failed,
             activePath,
+            locatedPath,
             onToggle,
             onOpen,
           }),
@@ -53,9 +65,9 @@ function TreeNode(props) {
 }
 
 function Tree(props) {
-  const { rootEntries, expanded, dirs, failed, activePath, onToggle, onOpen } = props
+  const { rootEntries, rootPath, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
   if (!rootEntries) {
-    const rootFailed = !!(failed && failed[''])
+    const rootFailed = !!(failed && failed[rootPath || ''])
     return h(
       'div',
       {
@@ -71,6 +83,8 @@ function Tree(props) {
   return h(
     'div',
     null,
-    rootEntries.map((node) => h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, onToggle, onOpen })),
+    rootEntries.map((node) =>
+      h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen }),
+    ),
   )
 }

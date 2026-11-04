@@ -36,11 +36,10 @@ export function renderHtmlPreview(state, rel) {
   const multi = !state.single()
   const rootName = multi ? String(displayRel).split('/')[0] : ''
 
-  const resolveTarget = (target) => {
+  const resolveTarget = (target, forHref) => {
     const value = String(target || '').trim()
     if (!value) return value
-    if (/^(https?:|data:|mailto:|tel:|javascript:|\/\/)/i.test(value)) return value
-    if (value.startsWith('#')) return value
+    if (/^(https?:|data:|mailto:|tel:|javascript:|\/\/|#)/i.test(value)) return value
     let work = value
     let frag = ''
     let query = ''
@@ -63,12 +62,16 @@ export function renderHtmlPreview(state, rel) {
     } else {
       resolved = joinRel(dirRel, work)
     }
+    const isHtmlTarget = /\.html?$/i.test(resolved)
+    if (forHref && isHtmlTarget) {
+      return `${ROUTE}/api/html?path=${encodeURIComponent(resolved)}${query ? `&${query}` : ''}${frag}`
+    }
     return `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}${query ? `&${query}` : ''}${frag}`
   }
 
   let html = raw.replace(/<base\b[^>]*>/gi, '')
-  html = html.replace(/(\b(?:src|href|poster|data-src)\s*=\s*)(["'])([\s\S]*?)\2/gi, (match, prefix, quote, url) => {
-    return `${prefix}${quote}${resolveTarget(url)}${quote}`
+  html = html.replace(/(\b(src|href|poster|data-src)\s*=\s*)(["'])([\s\S]*?)\3/gi, (match, prefix, attr, quote, url) => {
+    return `${prefix}${quote}${resolveTarget(url, String(attr).toLowerCase() === 'href')}${quote}`
   })
   html = html.replace(/(\bsrcset\s*=\s*)(["'])([\s\S]*?)\2/gi, (match, prefix, quote, value) => {
     const rewritten = value

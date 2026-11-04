@@ -68,3 +68,20 @@ mermaid 懒渲染、Ctrl+点击定义跳转（Java 声明启发式 + JS/TS impor
 
 同步远程：`git@github.com:TechieBreeze/MarkdownReader.git` 分支 `dsh-plugin`（本任务镜像分支，原仓库 master 未改动）。
 拉取后生效方式：Client 刷新页面；Host 代码在插件管理器里 bundle 禁用→启用。
+
+## 附录：第 4 轮迭代（对齐原版设计）
+
+用户第 2 轮反馈的 8 项：
+
+| 反馈 | 修复 |
+|---|---|
+| 原版分层：项目 → 任务 | App 重写为两层：项目（=工作区根，顶栏/Alt+P 切换·添加·移除，树/任务/展开记忆按项目隔离）；任务（工作台 chip：新建/切换/双击重命名/×/拖拽排序，每个任务独立标签集+滚动，持久化 `tasks.<project>.v1`）。搜索/快速打开/Git 图都按当前项目过滤 |
+| git 代码链接适配 | Host `/api/git/resolve`：把 GitLab/GitHub `/-/blob/<ref>/<path>#Lnn` 仓库链接按后缀匹配到本地文件，返回 path/line/ref/refExists；md 渲染时批量解析，命中后点击走本地代码（带 branch 版本），Shift+点击/右键仍打开仓库原链接 |
+| HTML 默认不应打开源码 | 新增 html 标签页：默认 iframe 渲染（`/api/html` 服务端把相对 src/href/srcset/url() 重写为 `/api/raw`，注入 charset、去 `<base>`），头部「源码视图/渲染视图」切换并持久化；图片也有独立 image 标签页（适配/100% 缩放） |
+| Ctrl+点击有时没跳到目标行 | 跳转改为「显式跳转优先于滚动记忆恢复」：新开/复开标签、内容迟到、diff 视图都保证定位；同一行重复跳转也生效 |
+| 跳转行应持续标黄 | `.mdr-cl.hit` 由 targetLine 派生，不再有 2.4s 定时清除；弹窗同样常驻 |
+| Ctrl+点击 token 缺 hover | `.mdr-code-body.jump-hover`（Java/Kotlin 门控）+ 原版下划线/亮度/指针效果，删除行不参与 |
+| 代码高亮有问题 | 移植原版整文件一次 hljs + 按行拆分（跨行注释/字符串正确开闭）+ Java/Kotlin 后处理（import 类型、方法名→function_、变量→variable、参数、常量）；真实 Service 文件未着色行 153/118/11 → 0，标识符着色覆盖 36/46/43% → 96/99/98% |
+| 跳转后的返回按钮 | 顶栏 ← / →（nav history，Alt+←/→，跳转时入栈，返回恢复标签+行+滚动）；代码标签页在被跳转打开时（tab.navFrom）头部显示「← 返回」，调用同一个 goNav(-1) |
+
+Host 新增/放宽：`/api/html`、`/api/git/resolve`、`project=` 作用域（search/files/git repos）、`/api/raw` 支持 css/js/字体等静态资源（HTML 预览的外部资源）。全部已实测（57377 热重载后）。
