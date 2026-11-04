@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Markdown Reader",
+    "description": "在 Harness 里读工作区文档：标签页、目录树、代码链接直达源码行、按分支/提交看文件历史。"
+  }
+}

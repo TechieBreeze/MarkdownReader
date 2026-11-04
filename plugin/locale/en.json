@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Markdown Reader",
+    "description": "Read workspace markdown with tabs and a file tree, jump from code links into the source file at the cited line, and browse a file's git history."
+  }
+}

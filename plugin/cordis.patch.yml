@@ -1,0 +1,6 @@
+# Markdown Reader bundle: one Host row; the Client half ships in the same package.
+- insert:
+    - id: markdown-reader
+      name: '@local/markdown-reader'
+      config:
+        roots: []

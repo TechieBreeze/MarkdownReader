@@ -1,0 +1,493 @@
+/**
+ * Host HTTP API for the Markdown Reader plugin.
+ *
+ * Everything the page needs is served from one same-origin prefix route:
+ * workspace roots, directory listing, markdown/code text, path resolution and
+ * read-only git views. No client ever runs a shell command.
+ */
+import fs from 'node:fs'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { ROUTE, VERSION } from './constants.js'
+import { sendJson, sendError, sendFile, readBody } from './http.js'
+import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
+
+const execFileAsync = promisify(execFile)
+
+const VENDOR_WHITELIST = new Set([
+  'marked.min.js',
+  'highlight.min.js',
+  'github-dark.min.css',
+  'gitgraph.min.js',
+  'gitgraph.min.css',
+  'mermaid.min.js',
+])
+
+/** Extensions searched as plain text and offered by quick open. */
+const TEXT_EXTS = new Set([
+  '.java', '.kt', '.kts', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.vue',
+  '.py', '.go', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp', '.scala',
+  '.xml', '.yml', '.yaml', '.json', '.properties', '.sql', '.sh', '.bat', '.ps1',
+  '.html', '.htm', '.css', '.scss', '.less', '.gradle', '.toml', '.md', '.markdown',
+  '.txt', '.conf', '.ini', '.env', '.gitignore', '.dockerfile',
+])
+
+const IMAGE_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.bmp': 'image/bmp',
+  '.ico': 'image/x-icon',
+}
+
+export async function handleRequest(req, res, state) {
+  try {
+    const url = new URL(req.url || '/', 'http://127.0.0.1')
+    let pathname = url.pathname
+    const at = pathname.indexOf(ROUTE)
+    if (at >= 0) pathname = pathname.slice(at + ROUTE.length)
+    if (!pathname.startsWith('/')) pathname = '/' + pathname
+
+    if (pathname.startsWith('/vendor/')) return serveVendor(res, state, pathname.slice('/vendor/'.length))
+    if (pathname === '/api/ping') {
+      return sendJson(res, 200, { ok: true, version: VERSION, route: ROUTE, packageDir: state.packageDir })
+    }
+    if (!pathname.startsWith('/api/')) return sendError(res, 404, 'not found')
+
+    if (pathname === '/api/meta' && req.method === 'GET') return sendJson(res, 200, state.meta())
+    if (pathname === '/api/roots' && req.method === 'POST') return await apiRoots(req, res, state)
+    if (pathname === '/api/list' && req.method === 'GET') return apiList(res, state, url)
+    if (pathname === '/api/markdown' && req.method === 'GET') return apiMarkdown(res, state, url)
+    if (pathname === '/api/code' && req.method === 'GET') return apiCode(res, state, url)
+    if (pathname === '/api/exists' && req.method === 'GET') return apiExists(res, state, url)
+    if (pathname === '/api/raw' && req.method === 'GET') return apiRaw(res, state, url)
+    if (pathname === '/api/search' && req.method === 'GET') return apiSearch(res, state, url)
+    if (pathname === '/api/files' && req.method === 'GET') return apiFiles(res, state, url)
+    if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
+    if (pathname === '/api/git/file' && req.method === 'GET') return await apiGitFile(res, state, url)
+    if (pathname === '/api/git/diff' && req.method === 'GET') return await apiGitDiff(res, state, url)
+
+    return sendError(res, 404, `unknown endpoint: ${pathname}`)
+  } catch (error) {
+    try {
+      sendError(res, 400, error && error.message ? error.message : String(error))
+    } catch {
+      // response already gone
+    }
+  }
+}
+
+function serveVendor(res, state, name) {
+  if (!VENDOR_WHITELIST.has(name)) return sendError(res, 404, 'not found')
+  return sendFile(res, path.join(state.packageDir, 'vendor', name))
+}
+
+async function apiRoots(req, res, state) {
+  const body = JSON.parse((await readBody(req)) || '{}')
+  const action = String(body.action || '')
+  if (action === 'add') return sendJson(res, 200, { ...state.addRoot(body.path), roots: state.roots(), single: state.single() })
+  if (action === 'remove') return sendJson(res, 200, { ...state.removeRoot(body.path), roots: state.roots(), single: state.single() })
+  throw new Error(`unknown action: ${action}`)
+}
+
+function apiList(res, state, url) {
+  const rel = url.searchParams.get('path') || ''
+  // Multi-root: the virtual top level lists one directory per workspace root.
+  if (!rel && !state.single()) {
+    const entries = state
+      .roots()
+      .map((root) => ({ name: root.name, path: root.name, dir: true, ext: '' }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
+    return sendJson(res, 200, { ok: true, path: '', entries })
+  }
+  const abs = state.safePath(rel)
+  let stat
+  try {
+    stat = fs.statSync(abs)
+  } catch {
+    throw new Error(`目录不存在: ${rel}`)
+  }
+  if (!stat.isDirectory()) throw new Error(`不是目录: ${rel}`)
+  const entries = []
+  for (const dirent of fs.readdirSync(abs, { withFileTypes: true })) {
+    if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
+    const childAbs = path.join(abs, dirent.name)
+    let isDir = dirent.isDirectory()
+    if (!isDir && !dirent.isFile()) continue
+    if (isDir && entries.length > 4000) break
+    entries.push({
+      name: dirent.name,
+      path: state.relOf(childAbs),
+      dir: isDir,
+      ext: isDir ? '' : path.extname(dirent.name).toLowerCase(),
+    })
+  }
+  entries.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, 'zh') : a.dir ? -1 : 1))
+  return sendJson(res, 200, { ok: true, path: state.relOf(abs), entries })
+}
+
+function readTextFile(abs) {
+  const stat = fs.statSync(abs)
+  if (!stat.isFile()) throw new Error('不是文件')
+  if (stat.size > 32 * 1024 * 1024) throw new Error('文件过大（>32MB）')
+  const buffer = fs.readFileSync(abs)
+  if (buffer.includes(0)) throw new Error('二进制文件不支持文本查看')
+  return buffer.toString('utf8')
+}
+
+function apiMarkdown(res, state, url) {
+  const rel = url.searchParams.get('path') || ''
+  if (!rel) throw new Error('缺少 path')
+  const abs = state.safePath(rel)
+  const content = readTextFile(abs)
+  return sendJson(res, 200, { ok: true, path: state.relOf(abs), content })
+}
+
+function apiCode(res, state, url) {
+  const rel = url.searchParams.get('path') || ''
+  if (!rel) throw new Error('缺少 path')
+  const abs = state.safePath(rel)
+  const content = readTextFile(abs)
+  const ext = path.extname(abs).toLowerCase()
+  return sendJson(res, 200, {
+    ok: true,
+    path: state.relOf(abs),
+    content,
+    lang: ext.replace(/^\./, ''),
+    lineCount: content.split('\n').length,
+  })
+}
+
+function apiExists(res, state, url) {
+  const inputs = url.searchParams.getAll('path')
+  const results = {}
+  for (const input of inputs) {
+    const text = String(input || '')
+    if (!text) {
+      results[input] = { abs: null, exists: false }
+      continue
+    }
+    let abs = null
+    try {
+      abs = state.safePath(text)
+    } catch {
+      abs = null
+    }
+    if (!abs || !fs.existsSync(abs)) {
+      const hit = searchByBasename(state, text)
+      if (hit) {
+        results[input] = { abs: state.relOf(hit), exists: true }
+        continue
+      }
+      results[input] = { abs: null, exists: false }
+      continue
+    }
+    results[input] = { abs: state.relOf(abs), exists: true }
+  }
+  return sendJson(res, 200, { ok: true, results })
+}
+
+function searchByBasename(state, rel) {
+  const base = path.basename(String(rel).replace(/\\/g, '/'))
+  if (!base) return null
+  for (const root of state.roots()) {
+    const hit = bfsFind(root.path, base, root.path === state.roots()[0].path ? 12 : 8)
+    if (hit) return hit
+  }
+  return null
+}
+
+function bfsFind(rootPath, basename, maxDepth) {
+  let level = [rootPath]
+  let visited = 0
+  for (let depth = 0; depth <= maxDepth && level.length; depth += 1) {
+    const next = []
+    for (const dir of level) {
+      let dirents
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const dirent of dirents) {
+        if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
+        const child = path.join(dir, dirent.name)
+        if (dirent.isDirectory()) {
+          // The reader's docs live in deep trees; skip node_modules-like sinks only.
+          next.push(child)
+        } else if (dirent.isFile() && dirent.name === basename) {
+          return child
+        }
+        visited += 1
+        if (visited > 60000) return null
+      }
+    }
+    level = next
+  }
+  return null
+}
+
+function apiRaw(res, state, url) {
+  const rel = url.searchParams.get('path') || ''
+  if (!rel) throw new Error('缺少 path')
+  const abs = state.safePath(rel)
+  const ext = path.extname(abs).toLowerCase()
+  const type = IMAGE_TYPES[ext]
+  if (!type) return sendError(res, 415, '只支持图片预览')
+  return sendFile(res, abs)
+}
+
+// ------------------------------------------------------------ search & index
+
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.mmd-cache', '__pycache__', '.idea', '.next', 'dist', 'build', 'target', '.gradle', '.venv', 'venv'])
+
+/** Bounded depth-first walk shared by search and quick open. */
+function walkWorkspace(state, options, visit) {
+  const maxDepth = options.maxDepth || 10
+  const maxFiles = options.maxFiles || 30000
+  const budgetMs = options.budgetMs || 2500
+  const started = Date.now()
+  let files = 0
+  let truncated = false
+  const stack = []
+  for (const root of state.roots()) stack.push({ dir: root.path, depth: 0 })
+  while (stack.length) {
+    const { dir, depth } = stack.pop()
+    let dirents
+    try {
+      dirents = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const dirent of dirents) {
+      if (files >= maxFiles || Date.now() - started > budgetMs) {
+        truncated = true
+        return { files, truncated }
+      }
+      if (dirent.name.startsWith('.') && dirent.name !== '.gitignore') continue
+      if (SKIP_DIRS.has(dirent.name) || HIDDEN_DIR_NAMES.has(dirent.name)) continue
+      const abs = path.join(dir, dirent.name)
+      if (dirent.isDirectory()) {
+        if (depth < maxDepth) stack.push({ dir: abs, depth: depth + 1 })
+        continue
+      }
+      if (!dirent.isFile()) continue
+      const ext = path.extname(dirent.name).toLowerCase()
+      if (!TEXT_EXTS.has(ext) && ext !== '') continue
+      files += 1
+      visit(abs, state.relOf(abs), ext)
+    }
+  }
+  return { files, truncated }
+}
+
+function apiSearch(res, state, url) {
+  const query = (url.searchParams.get('q') || '').trim()
+  if (query.length < 2) throw new Error('搜索词至少 2 个字符')
+  const limit = Math.min(300, Math.max(1, Number(url.searchParams.get('limit') || '120')))
+  const caseSensitive = url.searchParams.get('case') === '1'
+  const needle = caseSensitive ? query : query.toLowerCase()
+  const results = []
+  let scanned = 0
+  const walkResult = walkWorkspace(state, { maxFiles: 12000, maxDepth: 12, budgetMs: 3500 }, (abs, rel, ext) => {
+    if (results.length >= limit) return
+    let text
+    try {
+      const stat = fs.statSync(abs)
+      if (stat.size > 2 * 1024 * 1024) return
+      text = fs.readFileSync(abs, 'utf8')
+    } catch {
+      return
+    }
+    scanned += 1
+    if (text.includes('\u0000')) return
+    const haystack = caseSensitive ? text : text.toLowerCase()
+    let from = 0
+    while (results.length < limit) {
+      const at = haystack.indexOf(needle, from)
+      if (at < 0) break
+      const lineStart = text.lastIndexOf('\n', at) + 1
+      const lineEnd = text.indexOf('\n', at)
+      const lineNo = text.slice(0, at).split('\n').length
+      const lineText = text.slice(lineStart, lineEnd < 0 ? text.length : lineEnd).trim()
+      const column = at - lineStart + 1
+      results.push({ path: rel, line: lineNo, column, text: lineText.slice(0, 400) })
+      from = at + Math.max(1, needle.length)
+    }
+  })
+  return sendJson(res, 200, { ok: true, query, results, scanned, truncated: walkResult.truncated })
+}
+
+let quickIndex = { at: 0, key: '', items: [] }
+
+function quickIndexItems(state) {
+  const key = state.roots().map((root) => root.path).join('|')
+  if (Date.now() - quickIndex.at < 60000 && quickIndex.key === key) return quickIndex.items
+  const items = []
+  walkWorkspace(state, { maxFiles: 30000, maxDepth: 14, budgetMs: 4000 }, (abs, rel) => {
+    items.push({ path: rel, name: path.basename(abs), dir: path.dirname(rel).replace(/\\/g, '/') })
+  })
+  quickIndex = { at: Date.now(), key, items }
+  return items
+}
+
+function apiFiles(res, state, url) {
+  const query = (url.searchParams.get('q') || '').trim()
+  const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || '40')))
+  const items = quickIndexItems(state)
+  const lower = query.toLowerCase()
+  const scored = []
+  for (const item of items) {
+    const name = item.name.toLowerCase()
+    const rel = item.path.toLowerCase()
+    let score = -1
+    if (!lower) score = 0
+    else if (name === lower) score = 0
+    else if (name.startsWith(lower)) score = 1
+    else if (name.includes(lower)) score = 2
+    else if (rel.includes(lower)) score = 3
+    if (score >= 0) scored.push({ score, item })
+  }
+  scored.sort((a, b) => (a.score - b.score) || a.item.path.localeCompare(b.item.path, 'zh'))
+  return sendJson(res, 200, {
+    ok: true,
+    total: scored.length,
+    items: scored.slice(0, limit).map((entry) => entry.item),
+  })
+}
+
+// ---------------------------------------------------------------- git (read-only)
+
+async function git(repo, args) {
+  const { stdout } = await execFileAsync('git', ['-C', repo, ...args], {
+    timeout: 30000,
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  })
+  return stdout
+}
+
+function findGitRoot(abs) {
+  let dir = abs
+  try {
+    if (!fs.statSync(dir).isDirectory()) dir = path.dirname(dir)
+  } catch {
+    dir = path.dirname(dir)
+  }
+  for (;;) {
+    if (fs.existsSync(path.join(dir, '.git'))) return dir
+    const parent = path.dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+  }
+}
+
+function gitTarget(state, url) {
+  const rel = url.searchParams.get('path') || ''
+  if (!rel) throw new Error('缺少 path')
+  const abs = state.safePath(rel)
+  const repo = findGitRoot(abs)
+  if (!repo) throw new Error('该文件不在 git 仓库内')
+  const relInRepo = path.relative(repo, abs).replace(/\\/g, '/')
+  return { abs, repo, relInRepo }
+}
+
+async function apiGitMeta(res, state, url) {
+  const { abs, repo, relInRepo } = gitTarget(state, url)
+  const branchParam = url.searchParams.get('branch') || ''
+  const currentBranch = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
+  const branchText = await git(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])
+  const branches = branchText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+  if (currentBranch && !branches.includes(currentBranch)) branches.unshift(currentBranch)
+  const branch = branchParam && (branches.includes(branchParam) || branchParam === currentBranch) ? branchParam : currentBranch
+  const logText = await git(repo, [
+    'log',
+    '--pretty=format:%H|%an|%ad|%s',
+    '--date=format:%Y-%m-%d %H:%M',
+    '-20',
+    branch,
+    '--',
+    relInRepo,
+  ])
+  const commits = logText
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const [hash, author, date, ...subject] = line.split('|')
+      return { hash, short: hash.slice(0, 7), author, date, subject: subject.join('|') }
+    })
+  return sendJson(res, 200, {
+    ok: true,
+    path: state.relOf(abs),
+    repo: state.relOf(repo),
+    branch,
+    currentBranch,
+    branches,
+    commits,
+  })
+}
+
+async function apiGitFile(res, state, url) {
+  const { abs, repo, relInRepo } = gitTarget(state, url)
+  const commit = url.searchParams.get('commit') || ''
+  if (!commit) throw new Error('缺少 commit')
+  try {
+    const content = await git(repo, ['show', `${commit}:${relInRepo}`])
+    return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, content })
+  } catch {
+    return sendJson(res, 404, { ok: false, error: '该提交中不存在此文件', path: state.relOf(abs), commit })
+  }
+}
+
+async function apiGitDiff(res, state, url) {
+  const { abs, repo, relInRepo } = gitTarget(state, url)
+  const commit = url.searchParams.get('commit') || ''
+  if (!commit) throw new Error('缺少 commit')
+  let patch = ''
+  try {
+    patch = await git(repo, ['show', '--format=', '--patch', '--unified=3', commit, '--', relInRepo])
+  } catch (error) {
+    return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: [], error: String(error.message || error) })
+  }
+  return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: parseDiff(patch) })
+}
+
+export function parseDiff(patch) {
+  const hunks = []
+  let current = null
+  let oldNo = 0
+  let newNo = 0
+  for (const rawLine of String(patch).split('\n')) {
+    const line = rawLine.replace(/\r$/, '')
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    if (header) {
+      oldNo = Number(header[1])
+      newNo = Number(header[3])
+      current = { old_start: oldNo, new_start: newNo, old_count: header[2] === undefined ? 1 : Number(header[2]), new_count: header[4] === undefined ? 1 : Number(header[4]), lines: [] }
+      hunks.push(current)
+      continue
+    }
+    if (!current) continue
+    if (line.startsWith('\\')) continue
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ')) continue
+    const kind = line[0]
+    if (kind === '+') {
+      current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
+      newNo += 1
+    } else if (kind === '-') {
+      current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
+      oldNo += 1
+    } else if (kind === ' ' || line === '') {
+      current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
+      oldNo += 1
+      newNo += 1
+    }
+  }
+  return hunks
+}
+
+export { CODE_EXTS, MARKDOWN_EXTS }
