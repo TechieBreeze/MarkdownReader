@@ -11,6 +11,7 @@ const ORDER = [
   '12-mermaid.js',
   '15-git.js',
   '20-code.js',
+  '22-defs.js',
   '25-search.js',
   '30-tree.js',
   '40-tabs.js',
