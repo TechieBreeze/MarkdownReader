@@ -1,0 +1,34 @@
+{
+  "name": "@local/markdown-reader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Markdown Reader as a DeepSeek Harness plugin: browse workspace docs and jump into source code.",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "build.mjs",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "lib/**/*.js",
+    "src-client/**/*.js",
+    "vendor/**/*"
+  ],
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}
