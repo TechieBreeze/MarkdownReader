@@ -100,3 +100,18 @@ Host 新增/放宽：`/api/html`、`/api/git/resolve`、`project=` 作用域（s
 |---|---|
 | 打开 SVG 后切会话再回插件弹「目录不存在: X/X/docs/…」 | 双项目前缀 bug：`locateInTree` 对已带 vtop 前缀的路径又拼了一次当前项目，并把 `X/X/…` 持久化到展开集合，重挂载时去 list 报错。修复：已带真实项目名时原样使用；新增 `collapseDoubledVtopPrefix` 自愈（多根且首段是真实项目、循环处理三重），持久化集合重挂载/切换项目时清洗并回写；`loadDir` 防御性清洗。Host `/api/list` 也容忍「重复前缀但重复形式不存在」的旧状态。 |
 | SVG 显示很小、放到最大也勉强窗口 | SVG 无固有像素宽（`width="100%"` + viewBox）。ImageView 改为 fetch `/api/raw` 读 SVG 文本，解析 `viewBox`（优先）/数字 width/height 作为 intrinsic；flow-order.svg 解析为 1265.67×1587.52，默认 fit 撑满面板（约 478×600），100% = 1266×1588 可滚动，缩放上限 8× fit；解析失败回退实测盒，png/jpg 仍走 naturalWidth；不改/清 src。 |
+
+## 验收结论（2026-11-04）
+
+用户共提出 3 批反馈（17 项），全部回归通过，用户确认「没有其它问题了」：
+
+- 第 1 批：弹窗/按钮/目录树加载/滚动保存等 → 修复并确认；
+- 第 2 批：项目→任务分层、git 仓库链接适配、HTML/图片标签页、代码高亮/hover/常驻标黄/跳转可靠/返回按钮 → 修复并确认；
+- 第 3 批：md 代码块高亮与代码视图同源、图片缩放拖拽、SVG 固有尺寸、双项目前缀导致的目录报错 → 修复并确认。
+
+最终状态：
+- 插件 bundle `@local/markdown-reader` 安装于本机 profile `desktop`（linked dir），Client 刷新页面即生效；Host 代码经「禁用→启用 bundle」热重载。
+- 插件分支已推送 `git@github.com:TechieBreeze/MarkdownReader.git` 的 `dsh-plugin`，本地与远端一致；原工具仓库 `master` 未改动。
+- 回归工具：`work/harnesses/*.mjs`（fake React/DOM 断言）、`work/host-test.mjs`（Host API 独立服务）、`work/compare-link-resolve.mjs`（与原版 /api/git/resolve 对照）。
+
+未移植（后续可选）：SOA（ody）适配层、性能日志上报、原版部分快捷操作（行折叠/书签/大纲等），以及工作台任务 chip 之外的原版细节。
