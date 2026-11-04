@@ -4,7 +4,7 @@
       name: '@local/markdown-reader'
       config:
         roots: []
-        # 同步/检查更新（可选）：插件包所在仓库的远程地址与分支。
+        # 同步/检查更新：插件包所在仓库的远程地址与分支（本任务已推送 dsh-plugin 分支）。
         # 留空时回退到该仓库自己的 origin；都没有则「同步」面板会提示如何配置。
-        syncRepo: ''
-        syncBranch: ''
+        syncRepo: 'git@github.com:TechieBreeze/MarkdownReader.git'
+        syncBranch: 'dsh-plugin'
