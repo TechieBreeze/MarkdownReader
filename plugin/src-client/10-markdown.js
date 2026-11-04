@@ -175,18 +175,16 @@ function MarkdownView(props) {
   const [error, setError] = React.useState('')
   const scrollKey = `md:${tab.path}`
 
-  // Persist this tab's scroll position while it is visible, and save once more
-  // when it unmounts (tab switch, panel switch, page leave).
+  // Persist while visible. No save on cleanup: by then the tab may already be
+  // replaced/switched (scrollTop clamped to 0) and would overwrite the good
+  // value. App saves explicitly before switching and on beforeunload.
   React.useEffect(() => {
     const box = boxRef.current
     const scroller = box ? box.closest('.mdr-content') : null
     if (!scroller) return undefined
     const save = () => scrollStorage.set(scrollKey, scroller.scrollTop)
     scroller.addEventListener('scroll', save, { passive: true })
-    return () => {
-      save()
-      scroller.removeEventListener('scroll', save)
-    }
+    return () => scroller.removeEventListener('scroll', save)
   }, [scrollKey])
 
   React.useEffect(() => {
@@ -206,7 +204,9 @@ function MarkdownView(props) {
           enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
           const scroller = boxRef.current.closest('.mdr-content')
-          disposeRestore = restoreMarkdownScroll(scroller, scrollStorage.get(scrollKey))
+          const target = scrollStorage.get(scrollKey)
+          if (target > 0) disposeRestore = restoreMarkdownScroll(scroller, target)
+          else if (scroller) scroller.scrollTop = 0
         } catch (err) {
           setError(String((err && err.message) || err))
         }

@@ -224,6 +224,14 @@ const scrollStorage = (() => {
       read()[key] = Math.max(0, Math.round(Number(value) || 0))
       if (!cache.timer) cache.timer = setTimeout(flush, 350)
     },
+    /** Write the in-memory map right now (used when the page is about to unload). */
+    flushNow() {
+      if (cache.timer) {
+        clearTimeout(cache.timer)
+        cache.timer = 0
+      }
+      flush()
+    },
   }
 })()
 
