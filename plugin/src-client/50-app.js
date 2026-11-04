@@ -102,11 +102,53 @@ function App() {
   const dirsRef = React.useRef(dirs)
   const expandedRef = React.useRef(expanded)
   const tabsRef = React.useRef(tabs)
+  const activeIdRef = React.useRef(activeId)
+  const contentRef = React.useRef(null)
   const panelsRef = React.useRef({ modal: false, sync: false, git: false, roots: false })
   dirsRef.current = dirs
   expandedRef.current = expanded
   tabsRef.current = tabs
+  activeIdRef.current = activeId
   panelsRef.current = { modal: !!modalRequest, sync: syncOpen, git: gitOpen, roots: rootsOpen }
+
+  /**
+   * Save the active markdown tab's scroll offset NOW, before the DOM switches
+   * away from it. Saving in an unmount cleanup is wrong: the scroll container is
+   * already swapped (scrollTop 0), which overwrote the real position.
+   */
+  const saveActiveScroll = React.useCallback(() => {
+    const scroller = contentRef.current
+    const active = activeIdRef.current
+    if (!scroller || !active) return
+    const tab = tabsRef.current.find((item) => item.id === active)
+    if (!tab || tab.kind !== 'md') return
+    scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
+  }, [])
+
+  React.useEffect(() => {
+    const scroller = contentRef.current
+    if (!scroller) return undefined
+    const onScroll = () => {
+      const active = activeIdRef.current
+      const tab = tabsRef.current.find((item) => item.id === active)
+      if (!tab || tab.kind !== 'md') return
+      scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
+    }
+    const onBeforeUnload = () => {
+      const active = activeIdRef.current
+      const tab = tabsRef.current.find((item) => item.id === active)
+      if (tab && tab.kind === 'md' && contentRef.current) {
+        scrollStorage.set(`md:${tab.path}`, contentRef.current.scrollTop)
+      }
+      scrollStorage.flushNow()
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [])
 
   // 稳定引用：子分片把这些回调放进 effect 依赖（如代码弹窗的 Esc 监听），
   // 每次渲染都换新函数会让它们反复解绑/重绑。
@@ -241,6 +283,7 @@ function App() {
     (rel, line) => {
       const value = String(rel || '').trim()
       if (!value) return
+      saveActiveScroll()
       const kind = isMdFile(value) ? 'md' : isCodeFile(value) ? 'code' : ''
       if (!kind) {
         setError(`暂不支持的文件类型：${value}`)
@@ -263,6 +306,7 @@ function App() {
 
   const closeTab = React.useCallback(
     (id) => {
+      saveActiveScroll()
       loadedRef.current.delete(id)
       const closing = tabsRef.current.find((tab) => tab.id === id) || null
       setTabs((prev) => {
@@ -433,10 +477,19 @@ function App() {
       h(
         'div',
         { className: 'mdr-right' },
-        h(TabBar, { tabs, activeId, onActivate: setActiveId, onClose: closeTab }),
+        h(TabBar, {
+          tabs,
+          activeId,
+          onActivate: (id) => {
+            if (id === activeIdRef.current) return
+            saveActiveScroll()
+            setActiveId(id)
+          },
+          onClose: closeTab,
+        }),
         h(
           'div',
-          { className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''), onClick: onContentClick },
+          { className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''), ref: contentRef, onClick: onContentClick },
           activeTab == null
             ? h(EmptyState, { meta })
             : activeTab.kind === 'md'
