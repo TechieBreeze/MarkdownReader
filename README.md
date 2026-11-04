@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | 任务 ID | 20261104-markdown-reader-plugin |
-| 状态 | in-progress（已交付，待浏览器目测） |
+| 状态 | done（已验收，2026-11-04） |
 | 负责人 | lead（git 视图 / 搜索+JSON / mermaid 三个客户端分片由 teammate 并行） |
 | 开始日期 | 2026-11-04 |
 | 写入范围 | 本任务目录；插件运行时代码整包在 `plugin/`（安装为 DSH bundle） |
@@ -26,7 +26,8 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 - [x] mermaid 懒渲染（teammate）
 - [x] Ctrl+点击定义跳转（Host `/api/def` + CodeView 候选选择器）
 - [x] Host 最新版生效（无需重启 DSH：禁用→启用 bundle 会重新加载 Host 模块，已实测）
-- [ ] 浏览器实测（用户刷新后按 `docs/acceptance-checklist.md` 目测）
+- [x] 浏览器实测（用户刷新后按 `docs/acceptance-checklist.md` 逐项确认；含代码弹窗、项目/任务分层、git 链接、
+  HTML/图片预览、代码高亮/hover/常驻标黄/跳转/返回、同步面板、SVG 适配与目录树恢复，全部通过）
 
 ## 输入
 
@@ -68,6 +69,12 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 
 ## 下一步
 
-- [ ] 用户按 `docs/acceptance-checklist.md` 目测，把异常条目反馈给 agent 回归
-- [ ] 需要时移植「工作台 chip / git graph / 同步检查更新 / SOA 适配层」
-- [ ] 完成后把本任务状态改为 done，并归档到 `archive/`
+- [x] 用户按验收清单目测，反馈的 3 批问题全部回归通过
+- [ ] 需要时移植原工具剩余功能：工作台任务 chip 已做；剩余 git graph 交互细节、同步之外的「检查更新」远端策略、SOA（ody）适配层、性能日志
+- [ ] 插件分支已推送到 `git@github.com:TechieBreeze/MarkdownReader.git` 的 `dsh-plugin` 分支，作为插件版目标分支（原仓库 master 未改动）
+
+| 回归工具 | 位置 |
+|---|---|
+| fake React/DOM 断言（代码高亮/弹窗/工作台/面板/图片） | `work/harnesses/*.mjs` |
+| Host API 独立测试服务（不重启 DSH 验证 lib/* 改动） | `work/host-test.mjs`（:8799） |
+| 与原版 /api/git/resolve 逐条对照 | `work/compare-link-resolve.mjs` |
