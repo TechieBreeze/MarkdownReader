@@ -85,3 +85,11 @@ mermaid 懒渲染、Ctrl+点击定义跳转（Java 声明启发式 + JS/TS impor
 | 跳转后的返回按钮 | 顶栏 ← / →（nav history，Alt+←/→，跳转时入栈，返回恢复标签+行+滚动）；代码标签页在被跳转打开时（tab.navFrom）头部显示「← 返回」，调用同一个 goNav(-1) |
 
 Host 新增/放宽：`/api/html`、`/api/git/resolve`、`project=` 作用域（search/files/git repos）、`/api/raw` 支持 css/js/字体等静态资源（HTML 预览的外部资源）。全部已实测（57377 热重载后）。
+
+## 附录：第 5 轮迭代（用户第 3 批反馈）
+
+| 反馈 | 修复 |
+|---|---|
+| 链接适配要和原版一致 | 已对照原版 `/api/git/resolve` 做真机对比：5225 个（文档×仓库链接）中抽样 121 个逐个比较，120 个命中完全一致、0 个只原版命中、0 个只我们命中（唯一未命中原版同样未命中）；另外补齐「嵌套仓库/多模块目录」候选查找兜底（按目录名 = 远端项目名全根查找），仓库链接初始样式/标题/Shift+点击·右键原生行为对齐原版 |
+| 图片预览点击会清空、不能缩放/拖拽 | ImageView 重写：始终单 `<img>`、src 只由 path 派生（点击/滚轮/拖拽绝不清空）；点击切换适配↔100%；滚轮/Ctrl+滚轮 1.2× 步进（25%–400%，以光标为锚点）；双击还原；放大后可拖拽平移；ResizeObserver 适配面板；SVG width=100% 兜底；缩放/滚动状态按 tab 持久化 |
+| markdown 代码块高亮要和原版一致 | 原版 fenced code 用与代码视图同一管线（`renderHighlightedCode` + `hljsLang` 归一化 + Java/Kotlin 类型/方法/变量补色 + 分片执行）。插件新增 `renderFenceCodeHtml`/`hljsLangNormalized`（20-code.js），10-markdown 的代码块改为调用它并按 60ms 预算分片；验证与代码标签页输出**逐字节一致**（java/vue/json/js/kt/properties/xml/bat，含 1382 行真实 Java 文件） |

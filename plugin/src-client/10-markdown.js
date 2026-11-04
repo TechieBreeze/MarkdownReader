@@ -112,10 +112,12 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   for (const anchor of [...container.querySelectorAll('a[href]')]) {
     const raw = anchor.getAttribute('href') || ''
     if (isRepoBlobUrl(raw)) {
-      anchor.classList.add('mdr-repo-link')
+      // Keep the remote href: Shift+click / right-click stay native. Styled like
+      // the original tool's repository links while the local target is resolved.
+      anchor.classList.add('mdr-jump', 'mdr-repo-link')
       anchor.target = '_blank'
       anchor.rel = 'noopener noreferrer'
-      anchor.title = '仓库链接：解析到本地后可直接打开代码（Shift+点击 / 右键按仓库链接打开）'
+      anchor.title = '在仓库中新标签页打开（正在解析本地文件…）'
       repoLinks.push({ anchor, url: raw })
       continue
     }
@@ -206,23 +208,45 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       .catch(() => {})
   }
 
-  // 4) fenced code blocks -> highlight.js (mermaid kept for the lazy slice)
-  container.querySelectorAll('pre > code').forEach((code) => {
-    const source = code.textContent || ''
+  // 4) fenced code blocks -> the SAME pipeline as the code view (hljs language
+  //    aliases + Java/Kotlin post passes), sliced so a doc with hundreds of
+  //    blocks does not block the main thread.
+  const fenceBlocks = []
+  for (const code of container.querySelectorAll('pre > code')) {
     const match = /language-([\w+-]+)/.exec(code.className || '')
     const lang = match ? match[1] : ''
     if (lang === 'mermaid') {
-      code.dataset.mermaidSource = source
+      code.dataset.mermaidSource = code.textContent || ''
       code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
-      return
+      continue
     }
-    try {
-      code.innerHTML = window.hljs.highlight(source, { language: lang || 'plaintext', ignoreIllegals: true }).value || escapeHtml(source)
-      code.classList.add('hljs')
-    } catch {
-      code.innerHTML = escapeHtml(source)
+    fenceBlocks.push({ code, lang })
+  }
+  if (fenceBlocks.length) {
+    let index = 0
+    const step = () => {
+      const started = performance.now()
+      for (; index < fenceBlocks.length; index += 1) {
+        const { code, lang } = fenceBlocks[index]
+        const source = code.textContent || ''
+        try {
+          code.innerHTML =
+            typeof renderFenceCodeHtml === 'function'
+              ? renderFenceCodeHtml(source, lang)
+              : escapeHtml(source)
+          code.classList.add('hljs')
+        } catch {
+          code.innerHTML = escapeHtml(source)
+        }
+        if (performance.now() - started > 60) {
+          index += 1
+          break
+        }
+      }
+      if (index < fenceBlocks.length) setTimeout(step, 16)
     }
-  })
+    setTimeout(step, 0)
+  }
 
   // 5) mermaid fences are rendered lazily by the mermaid slice
   try {

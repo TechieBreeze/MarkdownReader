@@ -320,6 +320,171 @@ function highlightLinesCached(content, lang) {
   return lines
 }
 
+/* ================= md fenced code blocks (same pipeline as the code view) =================
+   10-markdown.js hands every ```lang fence to renderFenceCodeHtml(source, lang) instead of
+   running hljs itself. Both views then share highlightCodeHtml → highlightToLines, so the
+   token classes (and therefore the colours) of a md code block are identical to the same
+   source in a code tab/modal: multi-line comments/strings stay coloured, and Java/Kotlin get
+   the type/method/variable post passes. */
+
+/* 代码块语言名归一化（port of the standalone reader's hljsLang):
+   ```lang 里的常见别名 → highlight.js 语言名；未收录的语言返回 ''（调用方保持原文）。 */
+const HLJS_LANG_ALIAS = {
+  // 前端框架模板 → xml（hljs common 包无 vue/svelte 语言）
+  vue: 'xml',
+  svelte: 'xml',
+  astro: 'xml',
+  angular: 'xml',
+  hbs: 'xml',
+  handlebars: 'xml',
+  pug: 'xml',
+  ejs: 'xml',
+  jsp: 'xml',
+  thymeleaf: 'xml',
+  html: 'xml',
+  htm: 'xml',
+  svg: 'xml',
+  xhtml: 'xml',
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'javascript',
+  node: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  py: 'python',
+  py3: 'python',
+  python3: 'python',
+  ipython: 'python',
+  gyp: 'python',
+  pycon: 'python',
+  rb: 'ruby',
+  gemspec: 'ruby',
+  podspec: 'ruby',
+  yml: 'yaml',
+  sh: 'bash',
+  shell: 'bash',
+  zsh: 'bash',
+  console: 'bash',
+  golang: 'go',
+  rs: 'rust',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  cs: 'csharp',
+  'c#': 'csharp',
+  'c++': 'cpp',
+  cpp: 'cpp',
+  hpp: 'cpp',
+  'h++': 'cpp',
+  hh: 'cpp',
+  cc: 'cpp',
+  objc: 'objectivec',
+  'obj-c': 'objectivec',
+  bat: 'dos',
+  cmd: 'dos',
+  dos: 'dos',
+  ps1: 'powershell',
+  powershell: 'powershell',
+  patch: 'diff',
+  md: 'markdown',
+  markdown: 'markdown',
+  jsonc: 'json',
+  json5: 'json',
+  text: '',
+  txt: '',
+  plaintext: '',
+  plain: '',
+  mermaid: '',
+  ini: 'ini',
+  properties: 'ini',
+}
+
+/** Alias targets missing from the vendored common bundle → closest available grammar.
+    `dos` is mapped to bash here for the same reason LANG_MAP maps `.bat` to bash. */
+const HLJS_LANG_FALLBACK = { dos: 'bash' }
+
+/** Normalize a fence language hint to a highlight.js language name ('' = plain text).
+    The ALIAS table is applied BEFORE the "already a hljs name" check on purpose: the
+    code view resolves languages from the file extension (`langForPath`, e.g. .js →
+    javascript, .kt → kotlin, .html → xml), so a ```js / ```kt / ```html fence must
+    resolve to the same canonical name to produce byte-identical token classes. */
+function hljsLangNormalized(lang) {
+  const lib = typeof window !== 'undefined' ? window.hljs : null
+  if (!lang || !lib || typeof lib.getLanguage !== 'function') return ''
+  const raw = String(lang).trim().toLowerCase().replace(/^\./, '')
+  if (!raw) return ''
+  if (Object.prototype.hasOwnProperty.call(HLJS_LANG_ALIAS, raw)) {
+    const mapped = HLJS_LANG_ALIAS[raw]
+    if (!mapped) return '' // text / plaintext / mermaid … → keep the source as-is
+    if (lib.getLanguage(mapped)) return mapped
+    const fallback = HLJS_LANG_FALLBACK[mapped]
+    if (fallback && lib.getLanguage(fallback)) return fallback
+    return ''
+  }
+  if (lib.getLanguage(raw)) return raw // already a canonical hljs name
+  return ''
+}
+
+/**
+ * md-scoped VSCode Dark+ palette — keep in sync with the `.mdr-code` palette in
+ * GIT_CSS (15-git.js). 00-core's APP_CSS already covers the common tokens for
+ * `.mdr-root`, but it has no rules for the Java/Kotlin post-pass classes
+ * (`hljs-constant`, `hljs-params.hljs-type`, …), so md fences would otherwise
+ * leave ALL-CAPS constants white and paint parameter types as plain variables.
+ * Injected once (idempotently) the first time a fence is rendered.
+ */
+const FENCE_CSS_ID = 'mdr-fence-css'
+const FENCE_CSS = `
+.mdr-md pre code .hljs-keyword,.mdr-md pre code .hljs-doctag,.mdr-md pre code .hljs-template-tag,.mdr-md pre code .hljs-tag,.mdr-md pre code .hljs-name,.mdr-md pre code .hljs-attr,.mdr-md pre code .hljs-selector-tag,.mdr-md pre code .hljs-meta,.mdr-md pre code .hljs-section,.mdr-md pre code .hljs-link,.mdr-md pre code .hljs-variable.language_{color:#569cd6}
+.mdr-md pre code .hljs-string,.mdr-md pre code .hljs-meta .hljs-string,.mdr-md pre code .hljs-code,.mdr-md pre code .hljs-formula{color:#ce9178}
+.mdr-md pre code .hljs-comment,.mdr-md pre code .hljs-quote{color:#6a9955}
+.mdr-md pre code .hljs-number,.mdr-md pre code .hljs-literal,.mdr-md pre code .hljs-symbol,.mdr-md pre code .hljs-bullet{color:#b5cea8}
+.mdr-md pre code .hljs-type,.mdr-md pre code .hljs-title,.mdr-md pre code .hljs-title.class_,.mdr-md pre code .hljs-title.class_.inherited__,.mdr-md pre code .hljs-built_in{color:#4ec9b0}
+.mdr-md pre code .hljs-title.function_,.mdr-md pre code .hljs-title.function_.invoke__{color:#dcdcaa}
+.mdr-md pre code .hljs-variable,.mdr-md pre code .hljs-property,.mdr-md pre code .hljs-attribute,.mdr-md pre code .hljs-params,.mdr-md pre code .hljs-template-variable{color:#9cdcfe}
+.mdr-md pre code .hljs-selector-id,.mdr-md pre code .hljs-selector-class,.mdr-md pre code .hljs-selector-attr,.mdr-md pre code .hljs-selector-pseudo{color:#d7ba7d}
+.mdr-md pre code .hljs-regexp{color:#d16969}
+.mdr-md pre code .hljs-operator,.mdr-md pre code .hljs-punctuation,.mdr-md pre code .hljs-subst{color:#d4d4d4}
+.mdr-md pre code .hljs-addition{color:#b5cea8;background-color:rgba(46,160,67,.15)}
+.mdr-md pre code .hljs-deletion{color:#f48771;background-color:rgba(248,81,73,.15)}
+.mdr-md pre code .hljs-constant{color:#b5cea8}
+.mdr-md pre code .hljs-params.hljs-type{color:#4ec9b0}
+.mdr-md pre code .hljs-params.hljs-variable{color:#9cdcfe}
+.mdr-md pre code .hljs-params.hljs-keyword{color:#569cd6}
+.mdr-md pre code .hljs-params.hljs-constant{color:#b5cea8}
+`
+
+/** Inject the md-fence palette once; safe to call on every fence render. */
+function ensureFenceCss() {
+  if (typeof document === 'undefined' || !document.head) return
+  const existing = typeof document.getElementById === 'function' ? document.getElementById(FENCE_CSS_ID) : null
+  if (existing) return
+  const style = document.createElement('style')
+  style.id = FENCE_CSS_ID
+  style.textContent = FENCE_CSS
+  document.head.appendChild(style)
+}
+
+/**
+ * Highlight one fenced code block exactly like the code view would: whole-source
+ * hljs pass + Java/Kotlin post passes + per-line span rebuild, joined back with
+ * newlines for the `<pre><code>` innerHTML. Unknown/absent language → escaped
+ * plain text (never throws; synchronous, one block at a time).
+ */
+function renderFenceCodeHtml(source, langHint) {
+  const text = String(source == null ? '' : source)
+  const hl = hljsLangNormalized(langHint)
+  if (!hl) return escapeHtml(text)
+  try {
+    ensureFenceCss()
+    return highlightToLines(highlightCodeHtml(text, hl), isJavaKtLang(hl)).join('\n')
+  } catch {
+    return escapeHtml(text)
+  }
+}
+
 /* -------------------------------------------------------------- code scroll */
 
 /**
