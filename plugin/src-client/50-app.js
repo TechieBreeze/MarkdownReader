@@ -148,6 +148,27 @@ function GitGraphIcon(props) {
   )
 }
 
+/**
+ * Collapse an accidentally doubled multi-root prefix: `X/X/rest` -> `X/rest`.
+ *
+ * Only in multi-root mode and only when `X` is an actual workspace root — a
+ * single-root project legitimately may contain `<dir>/<dir>/…` and must not be
+ * rewritten. The old locator prepended the current project to an already
+ * prefixed path and persisted the dead `X/X/...` paths into the tree expansion
+ * store; the Host now tolerates them but the client also self-heals here.
+ */
+function collapseDoubledVtopPrefix(rel, meta) {
+  const text = String(rel == null ? '' : rel)
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+  if (!meta || meta.single || !Array.isArray(meta.roots)) return text
+  let segs = text.split('/').filter(Boolean)
+  while (segs.length >= 2 && segs[0] === segs[1] && meta.roots.some((root) => root.name === segs[0])) {
+    segs = segs.slice(1)
+  }
+  return segs.join('/')
+}
+
 function App() {
   // 「上一次会话的项目选择」在首帧就决定任务集 / 展开态，避免先渲染 全部 再闪切。
   const initialProjectRef = React.useRef(loadProjectSelection())
@@ -354,7 +375,9 @@ function App() {
   /* --------------------------------------------------------------- loading */
 
   const loadDir = React.useCallback((rel) => {
-    const key = String(rel == null ? '' : rel)
+    // Defensive: a stale persisted `X/X/...` expansion path must never be
+    // requested as-is (see collapseDoubledVtopPrefix).
+    const key = collapseDoubledVtopPrefix(String(rel == null ? '' : rel), metaRef.current)
     // 同一目录可能被「恢复展开态 / 展开点击 / 刷新」同时要求加载，inflight 去重。
     if (inflightDirsRef.current.has(key)) return Promise.resolve()
     inflightDirsRef.current.add(key)
@@ -606,37 +629,39 @@ function App() {
   /** Expand the file's ancestors (respecting project prefixes) and highlight it. */
   const locateInTree = React.useCallback(
     (filePath) => {
-      const path = String(filePath || '')
-        .replace(/\\/g, '/')
-        .replace(/^\/+/, '')
-      if (!path) return
       const metaNow = metaRef.current
+      // Self-heal a doubled prefix on the file path itself (old persisted tabs).
+      const path = collapseDoubledVtopPrefix(String(filePath || ''), metaNow)
+      if (!path) return
       const roots = metaNow ? metaNow.roots.map((root) => root.name) : []
       const multiNow = !!(metaNow && !metaNow.single)
       const segs = path.split('/').filter(Boolean)
       const current = currentProjectRef.current
-      const root = current && multiNow ? current : ''
-      const prefixes = multiNow
-        ? roots.includes(segs[0])
-          ? [segs[0]]
-          : current
-            ? [current]
-            : roots
-        : ['']
+      // Tree node paths are already vtop-prefixed in multi-root mode. A path
+      // that already starts with a root name (e.g. 20260917-微服务/docs/...)
+      // must be used AS-IS — prepending the current project again produced the
+      // dead `20260917-微服务/20260917-微服务/docs/...` set.
+      const alreadyPrefixed = multiNow && roots.includes(segs[0])
+      const fullPaths = alreadyPrefixed
+        ? [segs.join('/')]
+        : multiNow
+          ? (current ? [current] : roots).map((prefix) => `${prefix}/${segs.join('/')}`)
+          : [segs.join('/')]
       const next = new Set(expandedRef.current)
-      if (root) next.add(root)
-      for (const prefix of prefixes) {
-        const full = prefix ? `${prefix}/${segs.join('/')}` : segs.join('/')
+      for (const full of fullPaths) {
         const parts = full.split('/')
         for (let index = 1; index < parts.length; index += 1) next.add(parts.slice(0, index).join('/'))
       }
+      if (current && multiNow) next.add(current) // project-scoped tree root
       setExpanded(next)
       expandedRef.current = next
       saveTreeExpansion(current, next)
       for (const rel of next) {
         if (!dirsRef.current[rel]) loadDir(rel)
       }
-      setLocateTarget(path)
+      // 高亮目标也要用「树节点实际路径」：多根模式未带前缀时补当前项目。
+      const locatePath = alreadyPrefixed || !multiNow ? path : current ? `${current}/${path}` : path
+      setLocateTarget(locatePath)
       setTimeout(() => setLocateTarget(''), 2600)
     },
     [loadDir],
@@ -667,7 +692,9 @@ function App() {
       saveProjectSelection(next)
       setWorkbench(nextWorkbench)
       workbenchRef.current = nextWorkbench
-      const nextExpanded = new Set(loadTreeExpansion(next))
+      const nextExpanded = new Set(
+        loadTreeExpansion(next).map((rel) => collapseDoubledVtopPrefix(rel, metaRef.current)),
+      )
       setExpanded(nextExpanded)
       expandedRef.current = nextExpanded
       setDirs({})
@@ -805,6 +832,24 @@ function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [goNav, closeModal, closeSync, closeGit])
 
+  // 旧版本 locator 曾把「项目名/项目名/...」双前缀写进展开态持久化。多根模式下
+  // 折叠一次并回写（只折叠「首两段相同且首段是真实项目名」的路径，单根模式不动）。
+  React.useEffect(() => {
+    if (!meta) return
+    const previous = expandedRef.current
+    const next = new Set()
+    let changed = false
+    for (const rel of previous) {
+      const fixed = collapseDoubledVtopPrefix(rel, meta)
+      if (fixed !== rel) changed = true
+      if (fixed) next.add(fixed)
+    }
+    if (!changed) return
+    setExpanded(next)
+    expandedRef.current = next
+    saveTreeExpansion(currentProjectRef.current, next)
+  }, [meta, currentProject])
+
   // Panel switch unmounts/remounts Page: `dirs` starts empty while `expanded`
   // came from storage. Once meta (and the project-scoped root) is known, load
   // every expanded dir that has no data yet, not only the root.
@@ -812,7 +857,8 @@ function App() {
     if (!meta) return
     const targets = new Set([rootKey])
     for (const rel of expandedRef.current) {
-      if (rel && !dirsRef.current[rel]) targets.add(rel)
+      const clean = collapseDoubledVtopPrefix(rel, meta)
+      if (clean && !dirsRef.current[clean]) targets.add(clean)
     }
     for (const rel of targets) loadDir(rel)
   }, [meta, currentProject, rootKey, loadDir])
