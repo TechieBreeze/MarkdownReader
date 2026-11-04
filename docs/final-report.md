@@ -52,3 +52,19 @@ mermaid 懒渲染、Ctrl+点击定义跳转（Java 声明启发式 + JS/TS impor
 2. linked dir 安装：本任务目录不能删/移，否则插件失效；移动后需重新 `install_bundle`。
 3. Java 定义启发式：重载/同名方法返回多候选（已有候选选择器）；如需精确到 AST，可后续接 tree-sitter-java。
 4. 搜索/快速打开有界（时间预算 + 文件上限），超大仓库可能 `truncated`。
+
+## 附录：第 2-3 轮迭代（2026-11-04 晚）
+
+用户第 1 轮验收反馈的 6 项全部处理并复验：
+
+| 反馈 | 修复 | 复验 |
+|---|---|---|
+| 代码点击应开弹窗 | CodeModal（`24-modal.js`）：/api/code 加载、CodeBody 渲染、行号高亮、分支/提交、Ctrl+点击就地跳转 + ← 返回栈 + 开成标签页 | ✅ 用户确认 |
+| 顶栏多出「打开」 | 移除「打开/搜索」按钮（保留 Ctrl+P / Ctrl+Shift+F），改为 工作区/同步/Git 图/JSON/刷新 | ✅ 用户确认 |
+| 没有 Git 视图按钮 | GitGraphModal（`28-gitgraph.js`）：`/api/git/repos` + `/api/git/graph`，手绘 SVG 车道、分支 chips、提交详情、复制 hash | ✅ 用户确认 |
+| 没有同步更新按钮 | SyncPanel（`27-sync.js`）+ Host `/api/sync/{status,pull}`；已把插件分支推到 `dsh-plugin` 并写入 config | ✅ 用户确认已连接（文案占位已修） |
+| 目录树切面板后一直加载中 | App 在 remount 后按 expanded 路径重拉目录，inflight 去重，加载失败/空目录状态 | ✅ 用户确认 |
+| 滚动位置丢失（md 标签/切面板） | 根因：卸载 cleanup 时 DOM 已切换/摘除，`scrollTop` 归零覆盖了正确值。改为「滚动时持续保存 + 切换前主动保存 + beforeunload flush」，无存档回顶部 | ✅ 用户确认三种路径都保住 |
+
+同步远程：`git@github.com:TechieBreeze/MarkdownReader.git` 分支 `dsh-plugin`（本任务镜像分支，原仓库 master 未改动）。
+拉取后生效方式：Client 刷新页面；Host 代码在插件管理器里 bundle 禁用→启用。
