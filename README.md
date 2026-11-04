@@ -3,7 +3,7 @@
 | 项 | 值 |
 |---|---|
 | 任务 ID | 20261104-markdown-reader-plugin |
-| 状态 | in-progress |
+| 状态 | in-progress（已交付，待浏览器目测） |
 | 负责人 | lead（git 视图 / 搜索+JSON / mermaid 三个客户端分片由 teammate 并行） |
 | 开始日期 | 2026-11-04 |
 | 写入范围 | 本任务目录；插件运行时代码整包在 `plugin/`（安装为 DSH bundle） |
@@ -21,12 +21,12 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 - [x] 多工作区根（添加/移除、虚拟顶层目录）
 - [x] 标签页与目录展开状态本地持久化
 - [x] Host API：meta/roots/list/markdown/code/exists/raw/git(meta diff file)/search/files/def/vendor
-- [ ] 代码页 git 分支/提交 diff 视图（teammate 进行中）
-- [ ] 项目内搜索 / 快速打开 / JSON 工具（teammate 进行中）
-- [ ] mermaid 懒渲染（teammate 进行中）
-- [ ] Ctrl+点击定义跳转（Host `/api/def` 已就绪，待 CodeView 稳定后接入客户端）
-- [ ] Host 代码最新版生效（需要重启一次 DSH 桌面端；Client 刷新页面即可）
-- [ ] 浏览器实测（同事/用户刷新验证；本 agent 无浏览器控制）
+- [x] 代码页 git 分支/提交 diff 视图（teammate）
+- [x] 项目内搜索 / 快速打开 / JSON 工具（teammate）
+- [x] mermaid 懒渲染（teammate）
+- [x] Ctrl+点击定义跳转（Host `/api/def` + CodeView 候选选择器）
+- [x] Host 最新版生效（无需重启 DSH：禁用→启用 bundle 会重新加载 Host 模块，已实测）
+- [ ] 浏览器实测（用户刷新后按 `docs/acceptance-checklist.md` 目测）
 
 ## 输入
 
@@ -41,7 +41,8 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
   - `locale/{en,zh}.json` + `icon.svg`：插件展示元数据
 - `plugin/README.md`：架构、安装、开发流程、已知限制
 - `work/host-test.mjs`：独立 Host API 测试服务（不重启 DSH 也能验证 Host 改动）
-- `docs/`：最终验收报告（任务收尾时补）
+- `docs/acceptance-checklist.md`：浏览器目测清单
+- `docs/final-report.md`：交付报告（验证证据 / 功能对照 / 风险）
 
 ## 过程记录
 
@@ -67,6 +68,6 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 
 ## 下一步
 
-- [ ] 收队友分片 → 统一 build → 浏览器验证
-- [ ] Ctrl+点击定义接入 CodeView（候选列表 → 打开文件行）
-- [ ] 重启 DSH 验证 Host 最新版，再补 docs 验收报告
+- [ ] 用户按 `docs/acceptance-checklist.md` 目测，把异常条目反馈给 agent 回归
+- [ ] 需要时移植「工作台 chip / git graph / 同步检查更新 / SOA 适配层」
+- [ ] 完成后把本任务状态改为 done，并归档到 `archive/`
