@@ -13,6 +13,8 @@ import { ROUTE, VERSION } from './constants.js'
 import { sendJson, sendError, sendFile, readBody } from './http.js'
 import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
 import { findDefinitions } from './defs.js'
+import { syncStatus, syncPull } from './sync.js'
+import { gitGraph, listRepos } from './gitgraph.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -69,6 +71,10 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/search' && req.method === 'GET') return apiSearch(res, state, url)
     if (pathname === '/api/files' && req.method === 'GET') return apiFiles(res, state, url)
     if (pathname === '/api/def' && req.method === 'POST') return await apiDef(req, res, state)
+    if (pathname === '/api/sync/status' && req.method === 'GET') return sendJson(res, 200, await syncStatus(state, url.searchParams.get('fetch') === '1'))
+    if (pathname === '/api/sync/pull' && req.method === 'POST') return sendJson(res, 200, await syncPull(state))
+    if (pathname === '/api/git/graph' && req.method === 'GET') return sendJson(res, 200, await gitGraph(state, url))
+    if (pathname === '/api/git/repos' && req.method === 'GET') return sendJson(res, 200, { ok: true, repos: listRepos(state) })
     if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
     if (pathname === '/api/git/file' && req.method === 'GET') return await apiGitFile(res, state, url)
     if (pathname === '/api/git/diff' && req.method === 'GET') return await apiGitDiff(res, state, url)

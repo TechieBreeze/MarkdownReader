@@ -150,8 +150,7 @@ function ensureVendor() {
 
 /* ----------------------------------------------------------------- storage */
 
-const treeStorage = {
-  load() {
+const treeStorage = {  load() {
     try {
       const value = JSON.parse(localStorage.getItem(TREE_KEY) || '[]')
       return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
@@ -169,6 +168,7 @@ const treeStorage = {
 }
 
 const TABS_KEY = 'mdreader.plugin.tabs.v1'
+const SCROLL_KEY = 'mdreader.plugin.scroll.v1'
 
 const tabsStorage = {
   load() {
@@ -196,6 +196,44 @@ const tabsStorage = {
     }
   },
 }
+
+/**
+ * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
+ * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
+ * is authoritative when storage is unavailable.
+ */
+const scrollStorage = (() => {
+  const cache = { value: null, timer: 0 }
+  const read = () => {
+    if (cache.value) return cache.value
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SCROLL_KEY) || '{}')
+      cache.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      cache.value = {}
+    }
+    return cache.value
+  }
+  const flush = () => {
+    cache.timer = 0
+    try {
+      localStorage.setItem(SCROLL_KEY, JSON.stringify(read()))
+    } catch {
+      // quota / private mode: in-memory copy still works for this page
+    }
+  }
+  return {
+    get(key) {
+      const value = Number(read()[key])
+      return Number.isFinite(value) && value > 0 ? value : 0
+    },
+    set(key, value) {
+      if (!key) return
+      read()[key] = Math.max(0, Math.round(Number(value) || 0))
+      if (!cache.timer) cache.timer = setTimeout(flush, 350)
+    },
+  }
+})()
 
 /* ------------------------------------------------------------------- icons */
 
@@ -480,13 +518,60 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   }
 }
 
+/**
+ * Restore a saved markdown scroll offset, re-applying it while lazy content
+ * (mermaid diagrams, images) grows the document. Stops the moment the user
+ * scrolls/wheels/keys by themselves.
+ */
+function restoreMarkdownScroll(scroller, target) {
+  if (!scroller || !target) return () => {}
+  let cancelled = false
+  let userMoved = false
+  const markUser = () => {
+    userMoved = true
+  }
+  const apply = () => {
+    if (cancelled || userMoved) return
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+    scroller.scrollTop = Math.min(target, max)
+  }
+  scroller.addEventListener('wheel', markUser, { passive: true })
+  scroller.addEventListener('touchstart', markUser, { passive: true })
+  scroller.addEventListener('keydown', markUser)
+  apply()
+  const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
+  return () => {
+    cancelled = true
+    timers.forEach((timer) => clearTimeout(timer))
+    scroller.removeEventListener('wheel', markUser)
+    scroller.removeEventListener('touchstart', markUser)
+    scroller.removeEventListener('keydown', markUser)
+  }
+}
+
 function MarkdownView(props) {
   const { tab, multi, rootNames } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
+  const scrollKey = `md:${tab.path}`
+
+  // Persist this tab's scroll position while it is visible, and save once more
+  // when it unmounts (tab switch, panel switch, page leave).
+  React.useEffect(() => {
+    const box = boxRef.current
+    const scroller = box ? box.closest('.mdr-content') : null
+    if (!scroller) return undefined
+    const save = () => scrollStorage.set(scrollKey, scroller.scrollTop)
+    scroller.addEventListener('scroll', save, { passive: true })
+    return () => {
+      save()
+      scroller.removeEventListener('scroll', save)
+    }
+  }, [scrollKey])
 
   React.useEffect(() => {
     let cancelled = false
+    let disposeRestore = () => {}
     ensureVendor()
       .then(() => {
         if (cancelled || !boxRef.current) return
@@ -500,6 +585,8 @@ function MarkdownView(props) {
           boxRef.current.innerHTML = html
           enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
+          const scroller = boxRef.current.closest('.mdr-content')
+          disposeRestore = restoreMarkdownScroll(scroller, scrollStorage.get(scrollKey))
         } catch (err) {
           setError(String((err && err.message) || err))
         }
@@ -507,8 +594,9 @@ function MarkdownView(props) {
       .catch((err) => setError(String((err && err.message) || err)))
     return () => {
       cancelled = true
+      disposeRestore()
     }
-  }, [tab.id, tab.content, tab.path, multi, rootNames])
+  }, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
 
   return h(
     'div',
@@ -1741,6 +1829,22 @@ function DefinitionChooser(props) {
   )
 }
 
+// ---- 24-modal.js ----
+/**
+ * Code modal (弹窗) — owned by the modal slice.
+ *
+ * Contract (wired by 50-app.js):
+ *   h(CodeModal, {
+ *     request,          // null | { path: string, line: number } — code file to show
+ *     onClose,          // close the modal
+ *     onOpenTab,        // open the same file at the same line as a tab
+ *     onOpen,           // open another file (Ctrl+click navigation) in a tab
+ *   })
+ */
+function CodeModal() {
+  return null
+}
+
 // ---- 25-search.js ----
 /** Global search panel + quick open (owned by the search slice). */
 
@@ -2016,6 +2120,40 @@ function SearchPanel(props) {
         h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
       ),
     ),
+  )
+}
+
+// ---- 27-sync.js ----
+/**
+ * 同步 / 检查更新 panel — owned by the panels slice.
+ *
+ * Contract (wired by 50-app.js): h(SyncPanel, { onClose })
+ * Host: GET /markdown-reader/api/sync/status?fetch=1, POST /markdown-reader/api/sync/pull
+ */
+function SyncPanel(props) {
+  const { onClose } = props
+  return h(
+    'div',
+    { className: 'mdr-overlay', onClick: onClose },
+    h('div', { className: 'mdr-panel', onClick: (event) => event.stopPropagation() }, '同步面板由 panels 分片实现'),
+  )
+}
+
+// ---- 28-gitgraph.js ----
+/**
+ * Git 版本树 modal — owned by the panels slice.
+ *
+ * Contract (wired by 50-app.js): h(GitGraphModal, { path, onClose, onOpen })
+ *   path: active tab path (or a repo info) to resolve the repository
+ *   onOpen(path, commit?) opens a file/commit in a tab
+ * Host: GET /api/git/repos, GET /api/git/graph?path=&limit=
+ */
+function GitGraphModal(props) {
+  const { onClose } = props
+  return h(
+    'div',
+    { className: 'mdr-overlay', onClick: onClose },
+    h('div', { className: 'mdr-panel', onClick: (event) => event.stopPropagation() }, '版本树由 panels 分片实现'),
   )
 }
 

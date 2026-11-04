@@ -138,13 +138,60 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   }
 }
 
+/**
+ * Restore a saved markdown scroll offset, re-applying it while lazy content
+ * (mermaid diagrams, images) grows the document. Stops the moment the user
+ * scrolls/wheels/keys by themselves.
+ */
+function restoreMarkdownScroll(scroller, target) {
+  if (!scroller || !target) return () => {}
+  let cancelled = false
+  let userMoved = false
+  const markUser = () => {
+    userMoved = true
+  }
+  const apply = () => {
+    if (cancelled || userMoved) return
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+    scroller.scrollTop = Math.min(target, max)
+  }
+  scroller.addEventListener('wheel', markUser, { passive: true })
+  scroller.addEventListener('touchstart', markUser, { passive: true })
+  scroller.addEventListener('keydown', markUser)
+  apply()
+  const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
+  return () => {
+    cancelled = true
+    timers.forEach((timer) => clearTimeout(timer))
+    scroller.removeEventListener('wheel', markUser)
+    scroller.removeEventListener('touchstart', markUser)
+    scroller.removeEventListener('keydown', markUser)
+  }
+}
+
 function MarkdownView(props) {
   const { tab, multi, rootNames } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
+  const scrollKey = `md:${tab.path}`
+
+  // Persist this tab's scroll position while it is visible, and save once more
+  // when it unmounts (tab switch, panel switch, page leave).
+  React.useEffect(() => {
+    const box = boxRef.current
+    const scroller = box ? box.closest('.mdr-content') : null
+    if (!scroller) return undefined
+    const save = () => scrollStorage.set(scrollKey, scroller.scrollTop)
+    scroller.addEventListener('scroll', save, { passive: true })
+    return () => {
+      save()
+      scroller.removeEventListener('scroll', save)
+    }
+  }, [scrollKey])
 
   React.useEffect(() => {
     let cancelled = false
+    let disposeRestore = () => {}
     ensureVendor()
       .then(() => {
         if (cancelled || !boxRef.current) return
@@ -158,6 +205,8 @@ function MarkdownView(props) {
           boxRef.current.innerHTML = html
           enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
+          const scroller = boxRef.current.closest('.mdr-content')
+          disposeRestore = restoreMarkdownScroll(scroller, scrollStorage.get(scrollKey))
         } catch (err) {
           setError(String((err && err.message) || err))
         }
@@ -165,8 +214,9 @@ function MarkdownView(props) {
       .catch((err) => setError(String((err && err.message) || err)))
     return () => {
       cancelled = true
+      disposeRestore()
     }
-  }, [tab.id, tab.content, tab.path, multi, rootNames])
+  }, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
 
   return h(
     'div',
