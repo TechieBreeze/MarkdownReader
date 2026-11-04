@@ -2777,22 +2777,28 @@ function SyncPanel(props) {
   })
 
   const counts = configured
-    ? h(
-        'div',
-        { className: 'mdr-sync-counts' },
-        h(
-          'span',
-          { className: 'mdr-sync-pill' + (fetched && behind > 0 ? ' upd' : '') },
-          `落后 ${fetched ? behind : '—'} 条`,
-        ),
-        h(
-          'span',
-          { className: 'mdr-sync-pill' + (fetched && ahead > 0 ? ' warn' : '') },
-          `领先 ${fetched ? ahead : '—'} 条`,
-        ),
-        fetched && dirty ? h('span', { className: 'mdr-sync-tip' }, '本地有未提交改动，拉取会被拒绝') : null,
-        fetched && ahead > 0 ? h('span', { className: 'mdr-sync-tip' }, '本地提交不会被覆盖') : null,
-      )
+    ? fetched
+      ? h(
+          'div',
+          { className: 'mdr-sync-counts' },
+          h(
+            'span',
+            { className: 'mdr-sync-pill' + (behind > 0 ? ' upd' : '') },
+            `落后 ${behind} 条`,
+          ),
+          h(
+            'span',
+            { className: 'mdr-sync-pill' + (ahead > 0 ? ' warn' : '') },
+            `领先 ${ahead} 条`,
+          ),
+          dirty ? h('span', { className: 'mdr-sync-tip' }, '本地有未提交改动，拉取会被拒绝') : null,
+          ahead > 0 ? h('span', { className: 'mdr-sync-tip' }, '本地提交不会被覆盖') : null,
+        )
+      : h(
+          'div',
+          { className: 'mdr-sync-counts' },
+          h('span', { className: 'mdr-sync-tip' }, '尚未检查更新：点击「检查更新」获取远程状态后再显示落后/领先条数'),
+        )
     : null
 
   const help = status && !configured
