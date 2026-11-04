@@ -153,6 +153,12 @@ export function createState(config = {}) {
         if (candidate) {
           root = candidate
           rest = parts.slice(1)
+          // Defensive: an older client (or stale persisted tree state) sometimes
+          // emits the project prefix twice (`<vtop>/<vtop>/…`). Accept it when the
+          // repeated form does not exist on disk.
+          if (rest.length > 1 && rest[0] === candidate.name && !fs.existsSync(path.resolve(root.path, ...rest))) {
+            rest = rest.slice(1)
+          }
         }
       }
       if (!root) {

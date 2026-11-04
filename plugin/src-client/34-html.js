@@ -16,8 +16,13 @@
  *     · one <img> (src derived only from tab.path — never replaced on click)
  *       centered on a checkered stage, letterboxed to fit by default.
  *     · gestures: click toggles 适应 ↔ 100%, wheel / Ctrl+wheel zooms in steps
- *       (25%–400% of fit, anchored at the cursor), double-click resets to fit,
+ *       (25%–800% of fit, anchored at the cursor), double-click resets to fit,
  *       drag pans when the zoomed image overflows; a % badge shows the scale.
+ *     · SVG files without intrinsic pixels (viewBox only / width="100%"): the
+ *       SVG text is fetched from /api/raw and its viewBox (or numeric
+ *       width/height) becomes the intrinsic pixel base, so diagrams open filling
+ *       the panel and 100% means the diagram's real pixels; if parsing fails the
+ *       base falls back to the measured box (header shows "—" when unmeasurable).
  *     · zoom + scroll are remembered on tab (imgScale/scrollLeft/scrollTop, plus
  *       a module cache) so switching tabs and back keeps the view; error state
  *       with retry; header shows filename (path tooltip) + natural size.
@@ -60,13 +65,27 @@ const HTML_TAB_CSS = `
 const IMAGE_PAD = 20
 /** Zoom factor is relative to the fit size (1 = fit); gestures clamp to this. */
 const IMAGE_MIN_ZOOM = 0.25
-const IMAGE_MAX_ZOOM = 4
+/**
+ * Generous upper cap so a visually tiny image (an SVG with only a viewBox, a
+ * 24×24 icon export, …) can still be enlarged to fill / overflow the window.
+ * Relative to FIT, not to the tiny natural size.
+ */
+const IMAGE_MAX_ZOOM = 8
 /** One wheel notch multiplies the current zoom by this factor. */
 const IMAGE_WHEEL_STEP = 1.2
+/**
+ * If the natural size would render smaller than this, the base is derived from
+ * the container instead of the (often meaningless) intrinsic pixel size.
+ */
+const IMAGE_TINY_FIT = 40
 /** First-paint fallback when the stage cannot be measured yet. */
 const IMAGE_FALLBACK_VIEWPORT = { width: 960, height: 640 }
 /** zoom/scroll memory keyed by tab id, so tab switches keep the view. */
 const imageViewStateCache = new Map()
+/** Parsed intrinsic size (viewBox) per SVG path; avoids refetching on remounts. */
+const svgIntrinsicCache = new Map()
+/** Do not pull gigantic SVG documents just to read their root tag. */
+const SVG_INTRINSIC_MAX_CHARS = 512 * 1024
 
 const IMAGE_TAB_CSS = `
 .mdr-image{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
@@ -103,20 +122,55 @@ function imageStepZoom(zoom, direction) {
 }
 
 /**
- * Scale that makes the natural size fit the stage content box. Never upscales
- * beyond 100% (same as the original `max-width/max-height` behaviour).
+ * Scale that makes the natural size fit the stage content box. By default it
+ * never upscales (the original `max-width/max-height` behaviour); `allowUpscale`
+ * is used for tiny / dimensionless images so they fill the panel.
  */
-function imageFitScale(naturalWidth, naturalHeight, viewWidth, viewHeight, padding) {
+function imageFitScale(naturalWidth, naturalHeight, viewWidth, viewHeight, padding, allowUpscale) {
   const width = Number(naturalWidth) || 0
   const height = Number(naturalHeight) || 0
   const pad = Math.max(0, Number(padding) || 0)
   const availableWidth = (Number(viewWidth) || 0) - pad * 2
   const availableHeight = (Number(viewHeight) || 0) - pad * 2
   if (!(width > 0) || !(height > 0) || !(availableWidth > 0) || !(availableHeight > 0)) return 1
-  return Math.min(1, availableWidth / width, availableHeight / height)
+  const fit = Math.min(availableWidth / width, availableHeight / height)
+  return allowUpscale ? fit : Math.min(1, fit)
 }
 
-/** Explicit rendered size for the current zoom; null until the natural size is known. */
+/**
+ * Fit decision for a measured image: normal images keep 1:1 as "fit"; images
+ * whose fit box would be tiny (SVG viewBox-only exports, icon-sized assets) are
+ * scaled up to the container so the default view actually fills the panel.
+ */
+function imageFitPlan(naturalWidth, naturalHeight, viewWidth, viewHeight, padding, threshold) {
+  const width = Number(naturalWidth) || 0
+  const height = Number(naturalHeight) || 0
+  if (!(width > 0) || !(height > 0)) return { scale: 1, tiny: true }
+  const tight = imageFitScale(width, height, viewWidth, viewHeight, padding, false)
+  const limit = Number(threshold) > 0 ? Number(threshold) : IMAGE_TINY_FIT
+  const tiny = Math.max(width * tight, height * tight) < limit
+  return { scale: imageFitScale(width, height, viewWidth, viewHeight, padding, tiny), tiny }
+}
+
+/**
+ * Virtual "natural" box for images without a usable intrinsic size: fill the
+ * stage preserving the rendered aspect ratio (or a sane 1:1 square).
+ */
+function imageVirtualBase(viewWidth, viewHeight, padding, ratio) {
+  const pad = Math.max(0, Number(padding) || 0)
+  const availableWidth = Math.max(1, (Number(viewWidth) || 0) - pad * 2)
+  const availableHeight = Math.max(1, (Number(viewHeight) || 0) - pad * 2)
+  const aspect = Number(ratio) > 0 ? Number(ratio) : 1
+  let width = availableWidth
+  let height = availableWidth / aspect
+  if (height > availableHeight) {
+    height = availableHeight
+    width = availableHeight * aspect
+  }
+  return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) }
+}
+
+/** Explicit rendered size for the current zoom; null until a base size is known. */
 function imageDisplaySize(naturalWidth, naturalHeight, fitScale, zoom) {
   const width = Number(naturalWidth) || 0
   const height = Number(naturalHeight) || 0
@@ -125,7 +179,7 @@ function imageDisplaySize(naturalWidth, naturalHeight, fitScale, zoom) {
   return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) }
 }
 
-/** Header percentage: displayed size relative to the natural pixels. */
+/** Header percentage: displayed size relative to the natural (or virtual) base. */
 function imageZoomPercent(zoom, fitScale) {
   return Math.max(1, Math.round(imageClampZoom(zoom) * (Number(fitScale) || 1) * 100))
 }
@@ -136,6 +190,86 @@ function imagePanScroll(startLeft, startTop, deltaX, deltaY) {
     left: Math.max(0, (Number(startLeft) || 0) - (Number(deltaX) || 0)),
     top: Math.max(0, (Number(startTop) || 0) - (Number(deltaY) || 0)),
   }
+}
+
+/** Scroll offsets that keep the point under the cursor stable while zooming. */
+function imageAnchoredScroll(scrollLeft, scrollTop, pointerX, pointerY, ratio) {
+  const factor = Number(ratio) > 0 ? Number(ratio) : 1
+  const px = Number(pointerX) || 0
+  const py = Number(pointerY) || 0
+  return {
+    left: Math.max(0, ((Number(scrollLeft) || 0) + px) * factor - px),
+    top: Math.max(0, ((Number(scrollTop) || 0) + py) * factor - py),
+  }
+}
+
+/** Numeric SVG length ("1265.67", "1265.67px"); percentages / keywords -> 0. */
+function svgLengthValue(raw) {
+  const text = String(raw == null ? '' : raw).trim()
+  const match = /^(-?\d*\.?\d+(?:e[-+]?\d+)?)\s*(?:px)?$/i.exec(text)
+  if (!match) return 0
+  const value = Number(match[1])
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/**
+ * Intrinsic size of an SVG document from its root element.
+ *
+ * `naturalWidth` is useless for common exports (`width="100%"`, viewBox only),
+ * so the raw SVG text is parsed instead: viewBox wins (that is the diagram's
+ * real pixel size), numeric width/height attributes are the fallback. Both are
+ * ignored when percentage-based. Pure function — unit-tested with fixtures.
+ */
+function parseSvgIntrinsic(source) {
+  try {
+    const text = String(source == null ? '' : source)
+    if (!text) return null
+    const tagMatch = /<svg\b[^>]*>/i.exec(text)
+    if (!tagMatch) return null
+    const tag = tagMatch[0]
+    const viewBoxMatch = /\bviewBox\s*=\s*(["'])([\s\S]*?)\1/i.exec(tag)
+    if (viewBoxMatch) {
+      const parts = String(viewBoxMatch[2]).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)
+      if (parts && parts.length >= 4) {
+        const width = Number(parts[2])
+        const height = Number(parts[3])
+        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+          return { width, height, source: 'viewBox' }
+        }
+      }
+    }
+    const widthMatch = /\bwidth\s*=\s*(["'])([^"']*)\1/i.exec(tag)
+    const heightMatch = /\bheight\s*=\s*(["'])([^"']*)\1/i.exec(tag)
+    const width = widthMatch ? svgLengthValue(widthMatch[2]) : 0
+    const height = heightMatch ? svgLengthValue(heightMatch[2]) : 0
+    if (width > 0 && height > 0) return { width, height, source: 'size' }
+  } catch {
+    // malformed document: caller falls back to the measured box
+  }
+  return null
+}
+
+/** Fetch + parse an SVG's intrinsic size; resolves to null when unmeasurable. */
+function loadSvgIntrinsic(path) {
+  const key = String(path || '')
+  if (!key) return Promise.resolve(null)
+  const cached = svgIntrinsicCache.get(key)
+  if (cached) return Promise.resolve(cached)
+  if (typeof fetch !== 'function') return Promise.resolve(null)
+  return fetch(`${ROUTE}/api/raw?path=${encodeURIComponent(key)}`)
+    .then((response) => (response && response.ok ? response.text() : ''))
+    .then((text) => {
+      if (typeof text !== 'string' || !text || text.length > SVG_INTRINSIC_MAX_CHARS) return null
+      const parsed = parseSvgIntrinsic(text)
+      if (parsed) svgIntrinsicCache.set(key, parsed)
+      return parsed
+    })
+    .catch(() => null)
+}
+
+/** Whether a path should be probed for SVG viewBox dimensions. */
+function isSvgPath(path) {
+  return /\.svg$/i.test(String(path || ''))
 }
 
 /** Restored zoom factor for a (re)mounted image tab. */
@@ -416,6 +550,12 @@ function ImageView(props) {
   const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
 
   const [natural, setNatural] = React.useState(null)
+  // Intrinsic dimensions parsed out of the SVG source (viewBox / numeric
+  // width+height): naturalWidth is 0 for common `width="100%"` exports.
+  const [svgIntrinsic, setSvgIntrinsic] = React.useState(null)
+  // Aspect ratio measured from the rendered box when the file has no intrinsic
+  // pixel size (SVG with only viewBox / width="100%"); 0 = unknown.
+  const [renderedRatio, setRenderedRatio] = React.useState(0)
   const [viewport, setViewport] = React.useState(null)
   const [zoom, setZoom] = React.useState(() => imageInitialZoom(tab, stateKey))
   const [loaded, setLoaded] = React.useState(false)
@@ -429,12 +569,12 @@ function ImageView(props) {
   const clickTimerRef = React.useRef(0)
   const pendingScrollRef = React.useRef(null)
   const restoredRef = React.useRef(false)
-  const naturalRef = React.useRef(natural)
-  naturalRef.current = natural
+  const intrinsicRef = React.useRef(null)
   const zoomRef = React.useRef(zoom)
   zoomRef.current = zoom
   const viewportRef = React.useRef(viewport)
   viewportRef.current = viewport
+  const sizedRef = React.useRef(false)
   const legacyNaturalRef = React.useRef(imageInitialNaturalZoom(tab, stateKey))
   const applyZoomRef = React.useRef(null)
 
@@ -487,9 +627,38 @@ function ImageView(props) {
 
   React.useEffect(() => {
     setNatural(null)
+    setRenderedRatio(0)
     setLoaded(false)
     setError('')
     restoredRef.current = false
+  }, [path])
+
+  // SVG sizing: the raster naturalWidth is often 0 for diagrams exported with
+  // width="100%" / only a viewBox, so read the document text (same origin) and
+  // use the viewBox — or numeric width/height — as the intrinsic pixel size.
+  // Fetching never touches the <img> src, so the preview cannot blank out.
+  React.useEffect(() => {
+    let alive = true
+    if (!isSvgPath(path)) {
+      setSvgIntrinsic(null)
+      return () => {
+        alive = false
+      }
+    }
+    const cached = svgIntrinsicCache.get(path)
+    if (cached) {
+      setSvgIntrinsic(cached)
+      return () => {
+        alive = false
+      }
+    }
+    setSvgIntrinsic(null)
+    loadSvgIntrinsic(path).then((parsed) => {
+      if (alive && parsed) setSvgIntrinsic(parsed)
+    })
+    return () => {
+      alive = false
+    }
   }, [path])
 
   React.useEffect(
@@ -502,21 +671,39 @@ function ImageView(props) {
 
   const viewWidth = viewport && viewport.width > 0 ? viewport.width : IMAGE_FALLBACK_VIEWPORT.width
   const viewHeight = viewport && viewport.height > 0 ? viewport.height : IMAGE_FALLBACK_VIEWPORT.height
-  const fitScale = natural ? imageFitScale(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD) : 1
-  const display = natural ? imageDisplaySize(natural.width, natural.height, fitScale, zoom) : null
-  const percent = natural ? imageZoomPercent(zoom, fitScale) : 0
+  // Parsed SVG viewBox beats raster naturalWidth (which is 0/small for
+  // `width="100%"` exports); non-SVG images keep the naturalWidth behaviour.
+  const intrinsic =
+    svgIntrinsic && svgIntrinsic.width > 0 && svgIntrinsic.height > 0
+      ? svgIntrinsic
+      : natural && natural.width > 0 && natural.height > 0
+        ? natural
+        : null
+  intrinsicRef.current = intrinsic
+  const plan = intrinsic
+    ? imageFitPlan(intrinsic.width, intrinsic.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
+    : null
+  const fitScale = plan ? plan.scale : 1
+  // No intrinsic size (or a tiny SVG export whose fit box would be a speck):
+  // derive the base from the container so the default view fills the panel.
+  const base = intrinsic || imageVirtualBase(viewWidth, viewHeight, IMAGE_PAD, renderedRatio)
+  const display = intrinsic || loaded ? imageDisplaySize(base.width, base.height, fitScale, zoom) : null
+  const percent = intrinsic ? imageZoomPercent(zoom, fitScale) : Math.round(imageClampZoom(zoom) * 100)
+  const atFit = Math.abs(zoom - 1) < 0.001
+  sizedRef.current = !!display
   const canPan = !!display && (display.width > viewWidth - IMAGE_PAD * 2 || display.height > viewHeight - IMAGE_PAD * 2)
 
   // Restore the previous zoom (100% legacy) and scroll once the size is known.
   React.useEffect(() => {
     if (!legacyNaturalRef.current || !natural) return
     legacyNaturalRef.current = false
-    const scale = imageFitScale(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD)
+    const targetPlan = imageFitPlan(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
+    const scale = targetPlan.scale
     if (scale > 0 && Math.abs(scale - 1) > 0.01 && applyZoomRef.current) applyZoomRef.current(1 / scale)
   }, [natural, viewWidth, viewHeight])
 
   React.useEffect(() => {
-    if (restoredRef.current || !natural) return
+    if (restoredRef.current || !display) return
     restoredRef.current = true
     const stage = stageRef.current
     if (!stage) return
@@ -525,7 +712,7 @@ function ImageView(props) {
     const top = cached && Number.isFinite(cached.scrollTop) ? cached.scrollTop : Number(tab && tab.scrollTop) || 0
     if (left > 0) stage.scrollLeft = left
     if (top > 0) stage.scrollTop = top
-  }, [natural, display && display.width, display && display.height, stateKey, tab])
+  }, [display && display.width, display && display.height, stateKey, tab])
 
   React.useEffect(() => {
     const stage = stageRef.current
@@ -540,7 +727,7 @@ function ImageView(props) {
     const stage = stageRef.current
     if (!stage || typeof stage.addEventListener !== 'function') return undefined
     const onWheel = (event) => {
-      if (!naturalRef.current) return
+      if (!sizedRef.current) return
       const delta = Number(event.deltaY) || 0
       if (!delta) return
       if (typeof event.preventDefault === 'function') event.preventDefault()
@@ -563,8 +750,10 @@ function ImageView(props) {
     const stage = stageRef.current
     const width = stage && stage.clientWidth ? stage.clientWidth : viewportRef.current && viewportRef.current.width ? viewportRef.current.width : IMAGE_FALLBACK_VIEWPORT.width
     const height = stage && stage.clientHeight ? stage.clientHeight : viewportRef.current && viewportRef.current.height ? viewportRef.current.height : IMAGE_FALLBACK_VIEWPORT.height
-    const size = naturalRef.current
-    return size ? imageFitScale(size.width, size.height, width, height, IMAGE_PAD) : 1
+    const size = intrinsicRef.current
+    if (!size || !(size.width > 0) || !(size.height > 0)) return 1
+    const plan = imageFitPlan(size.width, size.height, width, height, IMAGE_PAD, IMAGE_TINY_FIT)
+    return plan.scale
   }
 
   /** Zoom change; keeps the point under `anchor` stable, then re-applies scroll. */
@@ -576,13 +765,13 @@ function ImageView(props) {
     if (anchor && stage) {
       const rect = typeof stage.getBoundingClientRect === 'function' ? stage.getBoundingClientRect() : null
       if (rect) {
-        const px = Number(anchor.clientX) - rect.left
-        const py = Number(anchor.clientY) - rect.top
-        const ratio = next / current
-        pendingScrollRef.current = {
-          left: Math.max(0, (stage.scrollLeft + px) * ratio - px),
-          top: Math.max(0, (stage.scrollTop + py) * ratio - py),
-        }
+        pendingScrollRef.current = imageAnchoredScroll(
+          stage.scrollLeft,
+          stage.scrollTop,
+          Number(anchor.clientX) - rect.left,
+          Number(anchor.clientY) - rect.top,
+          next / current,
+        )
       }
     }
     zoomRef.current = next
@@ -594,8 +783,10 @@ function ImageView(props) {
   const toggleZoom = () => {
     const base = imageClampZoom(zoomRef.current)
     if (Math.abs(base - 1) < 0.001) {
+      // "100%": natural pixels when the size is known (clamped to the generous
+      // range); for a dimensionless SVG every zoom step is relative to fit.
       const scale = currentFitScale()
-      applyZoom(scale > 0 ? 1 / scale : 1)
+      applyZoom(scale > 0 && scale < 1 ? 1 / scale : 2)
     } else {
       applyZoom(1)
     }
@@ -628,20 +819,25 @@ function ImageView(props) {
     setLoaded(true)
     const image = event && event.target
     if (!image) return
-    let width = Number(image.naturalWidth) || 0
-    let height = Number(image.naturalHeight) || 0
-    if (!(width > 0 && height > 0)) {
-      // SVG with width="100%" (mermaid exports) can report no natural size:
-      // fall back to its rendered box so the layout is never 0×0.
-      width = Number(image.clientWidth) || 0
-      height = Number(image.clientHeight) || 0
+    const width = Number(image.naturalWidth) || 0
+    const height = Number(image.naturalHeight) || 0
+    if (width > 0 && height > 0) {
+      setNatural({ width, height })
+      setRenderedRatio(0)
+      // SVG exported with width="100%" can lay out 0×0 before we force a size.
+      if (typeof image.style === 'object' && (!image.clientWidth || !image.clientHeight)) {
+        image.style.width = `${width}px`
+        image.style.height = `${height}px`
+      }
+      return
     }
-    if (!(width > 0 && height > 0)) return
-    setNatural({ width, height })
-    if (typeof image.style === 'object' && (!image.clientWidth || !image.clientHeight)) {
-      image.style.width = `${width}px`
-      image.style.height = `${height}px`
-    }
+    // No intrinsic pixel size (viewBox-only SVG): keep the natural size unknown
+    // (header shows "—") and remember the rendered aspect ratio for the
+    // container-derived base, so the image is neither 0×0 nor a tiny speck.
+    setNatural(null)
+    const boxWidth = Number(image.clientWidth) || 0
+    const boxHeight = Number(image.clientHeight) || 0
+    setRenderedRatio(boxWidth > 0 && boxHeight > 0 ? boxWidth / boxHeight : 0)
   }
 
   const onImageError = () => {
@@ -709,8 +905,22 @@ function ImageView(props) {
     { className: 'mdr-image-head' },
     h('span', { className: 'mdr-image-icon' }, h(Icons.image, { size: 14 })),
     h('span', { className: 'mdr-image-name', title: path || '（未选择图片）' }, name || '图片'),
-    natural ? h('span', { className: 'mdr-image-dims' }, `${natural.width}×${natural.height} px`) : null,
-    natural ? h('span', { className: 'mdr-image-zoom', title: '滚轮缩放 · 点击切换 100% · 双击还原' }, `${percent}%`) : null,
+    h(
+      'span',
+      {
+        className: 'mdr-image-dims',
+        title: intrinsic ? '图片原始尺寸' : '无法获取原始尺寸（SVG 可能只有 viewBox / width="100%"）',
+      },
+      intrinsic ? `${Math.round(intrinsic.width)}×${Math.round(intrinsic.height)} px` : '—',
+    ),
+    h(
+      'span',
+      {
+        className: 'mdr-image-zoom',
+        title: atFit ? '当前为适应窗口' : `已放大到适应尺寸的 ${Math.round(imageClampZoom(zoom) * 100)}%`,
+      },
+      atFit ? '适应' : `${percent}%`,
+    ),
     h('span', { className: 'mdr-spacer' }),
     h('span', { className: 'mdr-image-hint' }, '滚轮缩放 · 拖动平移 · 双击还原'),
     locate
