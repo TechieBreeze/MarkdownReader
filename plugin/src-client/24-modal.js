@@ -3,17 +3,20 @@
  *
  * Contract (wired by 50-app.js):
  *   h(CodeModal, {
- *     request,          // null | { path: string, line: number } — code file to show
+ *     request,          // null | { path, line, branch?, commit? } — code file to show
  *     onClose,          // close the modal
- *     onOpenTab,        // open the same file at the same line as a tab
+ *     onOpenTab,        // (target) => void — open the current file+line+git view as a tab
  *     onOpen,           // open another file (Ctrl+click navigation) in a tab
  *   })
  *
  * Behaviour (ported from input/reference/index.html #modal-mask):
  *   - renders the file with the shared CodeBody (same line numbers/hljs colors as
- *     the code tab) and jumps to request.line with a transient .mdr-cl.hit;
- *   - header has the path, the git bar (branch/commit view, shared useGitView)
- *     and the ← 返回 / 开成标签页 / ✕ buttons;
+ *     the code tab) and jumps to request.line with a PERSISTENT .mdr-cl.hit
+ *     (no fade timer; moves on another jump, gone when the modal closes);
+ *   - header has the path, the git bar (branch/commit view, shared useGitView but
+ *     with its own view key) and the ← 返回 / 开成标签页 / ✕ buttons;
+ *   - request.branch / request.commit (git-adapted link): that branch/commit view
+ *     is applied inside the modal and 开成标签页 carries it to the new tab;
  *   - Ctrl/Cmd+click navigates IN PLACE with a back stack (single candidate auto
  *     navigates, several reuse DefinitionChooser, none keeps the view + a note);
  *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
@@ -48,7 +51,11 @@ function CodeModalInner(props) {
   const { request, onClose, onOpenTab, onOpen } = props
   const requestPath = String((request && request.path) || '')
   const requestLine = Math.max(0, Number(request && request.line) || 0)
-  const reqKey = `${requestPath}\u0000${requestLine}`
+  // Git-adapted link: the modal applies the requested branch/commit view inside
+  // the popup (its own git view key, so the tab underneath is untouched).
+  const requestBranch = String((request && request.branch) || '')
+  const requestCommit = String((request && request.commit) || '')
+  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
 
   const [view, setView] = React.useState(() => ({
     path: requestPath,
@@ -66,6 +73,7 @@ function CodeModalInner(props) {
   const cardRef = React.useRef(null)
   const seqRef = React.useRef(0)
   const handledReqRef = React.useRef('')
+  const pendingGitRef = React.useRef('')
   const currentRef = React.useRef({ path: requestPath, line: requestLine })
   const chooserRef = React.useRef(null)
   chooserRef.current = chooser
@@ -112,8 +120,11 @@ function CodeModalInner(props) {
     setRestoreScroll(null)
     setNote('')
     setChooser(null)
+    // The git-adapted request view is applied once, when THIS request's file
+    // text is in. In-place Ctrl+click navigation later must not re-apply it.
+    pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
     loadFile(requestPath, requestLine)
-  }, [reqKey, requestPath, requestLine, loadFile])
+  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
@@ -198,19 +209,49 @@ function CodeModalInner(props) {
   }, [onClose])
 
   const gitTab = React.useMemo(
-    () => ({ id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }),
+    () => ({
+      id: 'modal:' + displayPath,
+      kind: 'code',
+      path: displayPath,
+      content: displayContent,
+      // The modal keeps its own branch/commit view: it must not mutate the
+      // selection of the code tab showing the same file underneath.
+      gitKey: 'modal:' + displayPath,
+    }),
     [displayPath, displayContent],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
+
+  // Apply the git-adapted request view (branch/commit) once the file text is in.
+  // In-place Ctrl+click navigation loads another file: the opener's branch/commit
+  // is deliberately NOT carried over (matches the original's in-place navigation).
+  React.useEffect(() => {
+    if (!requestBranch && !requestCommit) return
+    if (pendingGitRef.current !== reqKey) return
+    if (!view || view.loading || view.content == null) return
+    pendingGitRef.current = ''
+    gitActions.applyTarget(requestBranch || null, requestCommit || null)
+  }, [reqKey, requestBranch, requestCommit, view, gitActions])
+
   const workspaceContent = view && view.content != null ? view.content : ''
   const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   const lang = (view && view.lang) || langForPath(displayPath)
-  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}`
+  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
+    gitView.branchContent == null ? 'ws' : 'branch'
+  }`
   const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
-  const ready = !!(view && view.content != null) && !view.loading
   const openAsTab = () => {
     if (!view || !view.path) return
-    if (typeof onOpenTab === 'function') onOpenTab({ path: view.path, line: view.line })
+    if (typeof onOpenTab === 'function') {
+      // Carry the branch/commit view that is actually rendered so the new tab
+      // shows the same version of the file.
+      const target = { path: view.path, line: view.line }
+      if (gitView.git) {
+        if (gitView.commit) target.commit = gitView.commit
+        if (gitView.branchContent != null) target.branch = gitView.branch
+      }
+      onOpenTab(target)
+    }
     if (typeof onClose === 'function') onClose()
   }
   const openFallbackTab = () => {
@@ -264,6 +305,7 @@ function CodeModalInner(props) {
         targetLine: view.line || 0,
         viewKey,
         restoreScroll,
+        jumpHover: isJavaKtLang(lang),
       }),
     )
   }

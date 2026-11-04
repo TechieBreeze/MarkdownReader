@@ -57,8 +57,24 @@ function encodeQuery(params) {
   return text ? `?${text}` : ''
 }
 
+/**
+ * Current-project scope (vtop name, null = all). The Host supports a `project`
+ * filter on /api/search, /api/files and /api/git/repos; the panels that call
+ * those endpoints (25-search.js / 28-gitgraph.js) don't know about the project
+ * layer, so the scope is injected here. Set by the workbench (50-app.js).
+ */
+let projectScope = null
+function setProjectScope(name) {
+  projectScope = name || null
+}
+const PROJECT_SCOPED_ENDPOINTS = new Set(['/api/search', '/api/files', '/api/git/repos'])
+
 async function fetchJson(endpoint, params, init) {
-  const response = await fetch(ROUTE + endpoint + encodeQuery(params), init)
+  let query = params
+  if (projectScope && PROJECT_SCOPED_ENDPOINTS.has(endpoint) && !(query && query.project)) {
+    query = { ...(query || {}), project: projectScope }
+  }
+  const response = await fetch(ROUTE + endpoint + encodeQuery(query), init)
   let payload = null
   try {
     payload = await response.json()
@@ -187,6 +203,73 @@ const tabsStorage = {
       // ignore storage failures
     }
   },
+}
+
+/* ------------------------------------------------ workbench (项目 → 任务) keys */
+
+/**
+ * The standalone reader's two layers need two independent stores per project:
+ *
+ *   任务集/标签页  curProject ? mdreader.plugin.tasks.<project>.v1
+ *                              : mdreader.plugin.tasks.v1   (全部项目 / legacy)
+ *   目录树展开态   mdreader.plugin.tree.<project|all>.v1
+ *
+ * Migration sources: the earlier plugin stored one flat tab set under
+ * mdreader.plugin.tabs.v1 (see tabsStorage above); the standalone tool used
+ * mdreader.tasks.v1 / mdreader.tree.v1. The tree legacy key is read once as the
+ * default for the 全部 view, then re-saved under the new key.
+ */
+const LEGACY_TREE_KEY = TREE_KEY
+const PROJECT_KEY = 'mdreader.plugin.project.v1'
+
+function taskStoreKey(project) {
+  return project ? `mdreader.plugin.tasks.${project}.v1` : 'mdreader.plugin.tasks.v1'
+}
+
+function treeStoreKey(project) {
+  return `mdreader.plugin.tree.${project || 'all'}.v1`
+}
+
+function readStoredJson(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || 'null')
+    return value == null ? fallback : value
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // private mode / quota: the in-memory state still works for this page
+  }
+}
+
+/** Persisted project selection (null = 全部). */
+function loadProjectSelection() {
+  const value = readStoredJson(PROJECT_KEY, null)
+  return value && typeof value.name === 'string' && value.name ? value.name : null
+}
+
+function saveProjectSelection(project) {
+  writeStoredJson(PROJECT_KEY, { name: project || '' })
+}
+
+/** Expansion paths for one project view; migrates the pre-project tree key. */
+function loadTreeExpansion(project) {
+  const stored = readStoredJson(treeStoreKey(project), null)
+  let paths = stored && Array.isArray(stored.paths) ? stored.paths.filter((item) => typeof item === 'string') : null
+  if (!paths && !project) {
+    const legacy = readStoredJson(LEGACY_TREE_KEY, null)
+    paths = Array.isArray(legacy) ? legacy.filter((item) => typeof item === 'string') : []
+  }
+  return paths || []
+}
+
+function saveTreeExpansion(project, paths) {
+  writeStoredJson(treeStoreKey(project), { paths: [...paths] })
 }
 
 /**

@@ -65,8 +65,24 @@ function encodeQuery(params) {
   return text ? `?${text}` : ''
 }
 
+/**
+ * Current-project scope (vtop name, null = all). The Host supports a `project`
+ * filter on /api/search, /api/files and /api/git/repos; the panels that call
+ * those endpoints (25-search.js / 28-gitgraph.js) don't know about the project
+ * layer, so the scope is injected here. Set by the workbench (50-app.js).
+ */
+let projectScope = null
+function setProjectScope(name) {
+  projectScope = name || null
+}
+const PROJECT_SCOPED_ENDPOINTS = new Set(['/api/search', '/api/files', '/api/git/repos'])
+
 async function fetchJson(endpoint, params, init) {
-  const response = await fetch(ROUTE + endpoint + encodeQuery(params), init)
+  let query = params
+  if (projectScope && PROJECT_SCOPED_ENDPOINTS.has(endpoint) && !(query && query.project)) {
+    query = { ...(query || {}), project: projectScope }
+  }
+  const response = await fetch(ROUTE + endpoint + encodeQuery(query), init)
   let payload = null
   try {
     payload = await response.json()
@@ -195,6 +211,73 @@ const tabsStorage = {
       // ignore storage failures
     }
   },
+}
+
+/* ------------------------------------------------ workbench (项目 → 任务) keys */
+
+/**
+ * The standalone reader's two layers need two independent stores per project:
+ *
+ *   任务集/标签页  curProject ? mdreader.plugin.tasks.<project>.v1
+ *                              : mdreader.plugin.tasks.v1   (全部项目 / legacy)
+ *   目录树展开态   mdreader.plugin.tree.<project|all>.v1
+ *
+ * Migration sources: the earlier plugin stored one flat tab set under
+ * mdreader.plugin.tabs.v1 (see tabsStorage above); the standalone tool used
+ * mdreader.tasks.v1 / mdreader.tree.v1. The tree legacy key is read once as the
+ * default for the 全部 view, then re-saved under the new key.
+ */
+const LEGACY_TREE_KEY = TREE_KEY
+const PROJECT_KEY = 'mdreader.plugin.project.v1'
+
+function taskStoreKey(project) {
+  return project ? `mdreader.plugin.tasks.${project}.v1` : 'mdreader.plugin.tasks.v1'
+}
+
+function treeStoreKey(project) {
+  return `mdreader.plugin.tree.${project || 'all'}.v1`
+}
+
+function readStoredJson(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || 'null')
+    return value == null ? fallback : value
+  } catch {
+    return fallback
+  }
+}
+
+function writeStoredJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // private mode / quota: the in-memory state still works for this page
+  }
+}
+
+/** Persisted project selection (null = 全部). */
+function loadProjectSelection() {
+  const value = readStoredJson(PROJECT_KEY, null)
+  return value && typeof value.name === 'string' && value.name ? value.name : null
+}
+
+function saveProjectSelection(project) {
+  writeStoredJson(PROJECT_KEY, { name: project || '' })
+}
+
+/** Expansion paths for one project view; migrates the pre-project tree key. */
+function loadTreeExpansion(project) {
+  const stored = readStoredJson(treeStoreKey(project), null)
+  let paths = stored && Array.isArray(stored.paths) ? stored.paths.filter((item) => typeof item === 'string') : null
+  if (!paths && !project) {
+    const legacy = readStoredJson(LEGACY_TREE_KEY, null)
+    paths = Array.isArray(legacy) ? legacy.filter((item) => typeof item === 'string') : []
+  }
+  return paths || []
+}
+
+function saveTreeExpansion(project, paths) {
+  writeStoredJson(treeStoreKey(project), { paths: [...paths] })
 }
 
 /**
@@ -386,7 +469,9 @@ const APP_CSS = `
 `
 
 // ---- 10-markdown.js ----
-/** Markdown rendering: marked -> DOM -> code links, bare paths, images, hljs. */
+/** Markdown rendering: marked -> DOM -> jumps (code/md/html/image/git links), hljs. */
+
+const REPO_BLOB_MARKERS = ['/-/blob/', '/blob/', '/-/raw/', '/raw/']
 
 function looksLikePath(text) {
   if (!text || text.length > 260) return false
@@ -403,6 +488,75 @@ function findLineToken(anchor) {
     return { node, line: Number(node.textContent.trim()) }
   }
   return null
+}
+
+function isRepoBlobUrl(href) {
+  if (!/^https?:\/\//i.test(href)) return false
+  return REPO_BLOB_MARKERS.some((marker) => href.includes(marker))
+}
+
+/**
+ * Tab kind for a resolved path. Ordered so `.html` is a rendered tab (not
+ * source), images preview, markdown stays markdown, everything else code.
+ */
+function linkKindFor(resolved) {
+  const ext = extOf(resolved)
+  if (ext === '.md' || ext === '.markdown') return 'md'
+  if (ext === '.html' || ext === '.htm') return 'html'
+  if (isImageFile(resolved)) return 'image'
+  if (isCodeFile(resolved)) return 'code'
+  return ''
+}
+
+function appendLineBadge(anchor, line) {
+  if (line == null) return
+  anchor.dataset.line = String(line)
+  const badge = document.createElement('span')
+  badge.className = 'mdr-badge'
+  badge.textContent = String(line)
+  anchor.appendChild(badge)
+}
+
+function parseBranchCommit(query) {
+  const result = { branch: '', commit: '' }
+  if (!query) return result
+  let params
+  try {
+    params = new URLSearchParams(query)
+  } catch {
+    return result
+  }
+  const branch = params.get('branch') || params.get('ref') || ''
+  const commit = params.get('commit') || params.get('sha') || ''
+  if (branch && /^[A-Za-z0-9._/-]+$/.test(branch)) result.branch = branch
+  if (commit && /^[A-Za-z0-9._/-]+$/.test(commit)) result.commit = commit
+  return result
+}
+
+/** Attach the data-* contract that 50-app.js routes on. */
+function applyLocalLink(anchor, resolved, line, branch, commit) {
+  const kind = linkKindFor(resolved)
+  if (!kind) return
+  anchor.dataset.path = resolved
+  anchor.dataset.kind = kind
+  if (line != null) anchor.dataset.line = String(line)
+  if (branch) anchor.dataset.branch = branch
+  if (commit) anchor.dataset.commit = commit
+  const suffix = (line != null ? ` :${line}` : '') + (branch ? `（${branch} 版本）` : '')
+  if (kind === 'code') {
+    anchor.classList.add('mdr-jump')
+    anchor.removeAttribute('href')
+    anchor.title = `${resolved}${suffix}（点击弹窗；Ctrl/Cmd+点击开为标签页）`
+    appendLineBadge(anchor, line)
+  } else {
+    anchor.classList.add('mdr-local-link')
+    anchor.removeAttribute('href')
+    anchor.title = `${resolved}${suffix}`
+    if (kind === 'md') {
+      anchor.removeAttribute('target')
+      anchor.classList.add('mdr-md-link')
+    }
+  }
 }
 
 function enhanceMarkdown(container, mdPath, multi, rootNames) {
@@ -423,52 +577,75 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     img.alt = img.alt || ''
   })
 
-  // 2) links: classify into md jump / code jump / external
+  // 2) anchors: repository links are resolved in a batch below; everything else
+  //    is classified locally into md/code/html/image jumps.
+  const repoLinks = []
   for (const anchor of [...container.querySelectorAll('a[href]')]) {
     const raw = anchor.getAttribute('href') || ''
+    if (isRepoBlobUrl(raw)) {
+      anchor.classList.add('mdr-repo-link')
+      anchor.target = '_blank'
+      anchor.rel = 'noopener noreferrer'
+      anchor.title = '仓库链接：解析到本地后可直接打开代码（Shift+点击 / 右键按仓库链接打开）'
+      repoLinks.push({ anchor, url: raw })
+      continue
+    }
     if (/^(https?:|mailto:)/i.test(raw)) {
       anchor.target = '_blank'
       anchor.rel = 'noopener noreferrer'
       continue
     }
     if (raw.startsWith('#')) continue
-    const { path: href, hash } = splitHref(raw)
-    let decoded = href
+    const { path: beforeHash, hash } = splitHref(raw)
+    const queryAt = beforeHash.indexOf('?')
+    const query = queryAt < 0 ? '' : beforeHash.slice(queryAt + 1)
+    const cleanHref = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt)
+    let decoded = cleanHref
     try {
-      decoded = decodeURIComponent(href)
+      decoded = decodeURIComponent(cleanHref)
     } catch {
-      decoded = href
+      decoded = cleanHref
     }
     const resolved = resolveRel(mdPath, decoded, multi, rootNames)
-    const titlePath = resolved
-    if (isCodeFile(resolved)) {
-      let line = null
-      const token = findLineToken(anchor)
-      if (token) {
-        line = token.line
-        token.node.classList.add('mdr-line-token')
-      }
-      if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
-      anchor.removeAttribute('href')
-      anchor.classList.add('mdr-jump')
-      anchor.dataset.path = resolved
-      anchor.title = `${titlePath}${line ? ':' + line : ''}`
-      if (line != null) {
-        anchor.dataset.line = String(line)
-        const badge = document.createElement('span')
-        badge.className = 'mdr-badge'
-        badge.textContent = String(line)
-        anchor.appendChild(badge)
-      }
-    } else if (isMdFile(resolved)) {
-      anchor.removeAttribute('href')
-      anchor.dataset.path = resolved
-      anchor.title = titlePath
-    } else {
-      anchor.removeAttribute('href')
-      anchor.classList.add('mdr-plain')
-      anchor.title = titlePath
+    const extra = parseBranchCommit(query)
+    let line = null
+    const token = findLineToken(anchor)
+    if (token) {
+      line = token.line
+      token.node.classList.add('mdr-line-token')
     }
+    if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
+    applyLocalLink(anchor, resolved, line, extra.branch, extra.commit)
+  }
+
+  // 2b) resolve remote repo-view links to local workspace files
+  if (repoLinks.length) {
+    const unique = [...new Set(repoLinks.map((item) => item.url))]
+    fetchJson('/api/git/resolve', { url: unique, path: mdPath })
+      .then((payload) => {
+        const map = (payload && payload.resolved) || {}
+        for (const item of repoLinks) {
+          const hit = map[item.url]
+          if (!hit || !hit.path) continue
+          const anchor = item.anchor
+          anchor.classList.add('mdr-jump')
+          anchor.classList.remove('mdr-repo-link')
+          anchor.dataset.path = hit.path
+          anchor.dataset.kind = linkKindFor(hit.path) || 'code'
+          if (hit.line) {
+            anchor.dataset.line = String(hit.line)
+            appendLineBadge(anchor, hit.line)
+          }
+          if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
+          // Keep href so Shift+click / right-click / copy-link still reach the
+          // repository page; plain click is routed in-app by 50-app.js.
+          anchor.title =
+            `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
+            (hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
+            '（Shift+点击 / 右键打开仓库原链接）'
+        }
+      })
+      .catch(() => {})
   }
 
   // 3) bare backtick paths become links when the file actually resolves
@@ -490,6 +667,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           const anchor = document.createElement('a')
           anchor.className = 'mdr-jump'
           anchor.dataset.path = hit.abs
+          anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
           anchor.title = hit.abs
           anchor.textContent = item.text
           item.code.textContent = ''
@@ -499,13 +677,12 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       .catch(() => {})
   }
 
-  // 4) fenced code blocks -> highlight.js (mermaid kept as a visible note)
+  // 4) fenced code blocks -> highlight.js (mermaid kept for the lazy slice)
   container.querySelectorAll('pre > code').forEach((code) => {
     const source = code.textContent || ''
     const match = /language-([\w+-]+)/.exec(code.className || '')
     const lang = match ? match[1] : ''
     if (lang === 'mermaid') {
-      // Keep the raw source on the node for the lazy mermaid slice.
       code.dataset.mermaidSource = source
       code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
       return
@@ -1093,14 +1270,18 @@ function enhanceMermaid(container, scroller) {
 }
 
 // ---- 15-git.js ----
-/**
+﻿/**
  * Code-tab git viewer (owned by the git slice): branch/commit selection, the
  * commit-version diff view, and the per-file view state / metadata caches.
  *
  * Everything here is read-only: the host exposes only git log/show/for-each-ref
- * style endpoints, the working tree is never touched. State is cached per
- * relative path at module level so switching tabs (CodeView remounts) keeps the
- * selected branch / commit, while the App still owns the tab objects themselves.
+ * style endpoints, the working tree is never touched. State is cached at module
+ * level so switching tabs (CodeView remounts) keeps the selected branch /
+ * commit, while the App still owns the tab objects themselves.
+ *
+ * View keys: a code tab is keyed by its path; the code modal passes its own
+ * `gitKey` ("modal:<path>") so the popup's branch/commit view never mutates the
+ * branch the tab underneath is showing.
  */
 
 /** Rows above this count are virtualized (only the viewport +/- buffer is painted). */
@@ -1111,14 +1292,20 @@ const GIT_LINE_H = 20
 const GIT_BUFFER = 40
 
 const gitMetaCache = new Map() // path -> Promise<meta|null>
-const gitViewCache = new Map() // path -> mutable view state
+const gitViewCache = new Map() // view key -> mutable view state
 
-function gitViewFor(path) {
-  const key = String(path || '')
-  let view = gitViewCache.get(key)
+function gitViewKey(tab) {
+  const source = tab || {}
+  return String(source.gitKey || source.path || '')
+}
+
+function gitViewFor(key) {
+  const name = String(key || '')
+  let view = gitViewCache.get(name)
   if (!view) {
     view = {
       ready: false,
+      readyPromise: null,
       git: false,
       repo: '',
       currentBranch: '',
@@ -1135,7 +1322,7 @@ function gitViewFor(path) {
       seq: 0, // race guard: bumped on every branch/commit selection
       branchContent: null, // content of the selected branch's HEAD (null = workspace content)
     }
-    gitViewCache.set(key, view)
+    gitViewCache.set(name, view)
   }
   return view
 }
@@ -1159,6 +1346,36 @@ function loadGitMeta(path) {
     .catch(() => null) // non-git file / host error -> hide the bar quietly
   gitMetaCache.set(key, promise)
   return promise
+}
+
+/**
+ * Load the git meta for a view once and seed the initial branch/commits. Shared
+ * by the initial mount and by `applyGitTarget` so a git-adapted link cannot race
+ * the initial load.
+ */
+async function ensureGitViewReady(key, path, refresh) {
+  const view = gitViewFor(key)
+  if (view.ready) return view
+  if (!view.readyPromise) {
+    view.readyPromise = loadGitMeta(path).then((meta) => {
+      if (!view.ready) {
+        view.ready = true
+        if (!meta) {
+          view.git = false
+        } else {
+          view.git = true
+          view.repo = meta.repo
+          view.branch = meta.branch
+          view.currentBranch = meta.currentBranch
+          view.branches = meta.branches
+          view.commits = meta.commits
+        }
+      }
+      refresh()
+      return view
+    })
+  }
+  return view.readyPromise
 }
 
 /** Full file at a commit + this commit's hunks -> the row sequence to render. */
@@ -1204,11 +1421,15 @@ function countDiffStats(hunks) {
   return stats
 }
 
-/** Switch branch: refetch that branch's commits AND its HEAD version of the file. */
-async function selectGitBranch(path, branch, refresh) {
-  const view = gitViewFor(path)
+/**
+ * Switch branch: refetch that branch's commits AND its HEAD version of the file.
+ * The meta endpoint resolves the requested branch against the real ref list, so
+ * the applied view is what the dropdowns then show (`effective`), not a typo.
+ */
+async function selectGitBranch(key, path, branch, refresh) {
+  const view = gitViewFor(key)
   const seq = (view.seq += 1)
-  view.branch = branch
+  view.branch = String(branch || '')
   view.commit = null
   view.commitMeta = null
   view.fileLines = null
@@ -1218,20 +1439,22 @@ async function selectGitBranch(path, branch, refresh) {
   view.loading = true
   refresh()
   try {
-    const [meta, file] = await Promise.all([
-      fetchJson('/api/git/meta', { path, branch }),
-      fetchJson('/api/git/file', { path, commit: branch }).catch(() => null),
-    ])
+    const meta = await fetchJson('/api/git/meta', { path, branch })
     if (view.seq !== seq) return // a newer selection already won
+    const effective = meta.branch || branch
     view.branches = Array.isArray(meta.branches) && meta.branches.length ? meta.branches : view.branches
     view.currentBranch = meta.currentBranch || view.currentBranch
     view.commits = Array.isArray(meta.commits) ? meta.commits : []
+    view.branch = effective
+    // "git show <branch>:<file>" is the branch HEAD file — the first commit
+    // option must render THIS branch's content, not the working tree.
+    const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
+    if (view.seq !== seq) return
     if (file && file.content != null) {
-      // The first commit option must show THIS branch's content, not the working tree.
       view.branchContent = String(file.content)
     } else {
       view.branchContent = null
-      view.hint = `⚠ 分支 ${branch} 不存在此文件`
+      view.hint = `⚠ 分支 ${effective} 不存在此文件`
     }
   } catch (error) {
     if (view.seq !== seq) return
@@ -1242,9 +1465,9 @@ async function selectGitBranch(path, branch, refresh) {
   refresh()
 }
 
-/** Select a real commit (diff view) or become back to "◎ <branch> 最新" (commit = ''). */
-async function selectGitCommit(path, commit, refresh) {
-  const view = gitViewFor(path)
+/** Select a real commit (diff view) or go back to "◎ <branch> 最新" (commit = ''). */
+async function selectGitCommit(key, path, commit, refresh) {
+  const view = gitViewFor(key)
   if (!commit) {
     view.seq += 1
     view.commit = null
@@ -1281,6 +1504,7 @@ async function selectGitCommit(path, commit, refresh) {
     } else {
       view.stats = countDiffStats(view.hunks)
     }
+    view.commitMeta = view.commitMeta || (diff && diff.meta) || (file && file.meta) || null
   } catch (error) {
     if (view.seq !== seq) return
     view.hunks = []
@@ -1292,56 +1516,62 @@ async function selectGitCommit(path, commit, refresh) {
 }
 
 /**
- * Per-path git state for CodeView: loads meta once, exposes branch/commit
- * actions. The view object is module-cached (mutable) so a remount keeps the
- * user's selection; `bump` re-renders after async work / mutation.
+ * Apply a git-adapted link (`tab.branch` / `tab.commit`, modal request
+ * `{path,line,branch,commit}`): a commit view wins, otherwise the requested
+ * branch's HEAD file is loaded. Switching branch refetches that branch's commit
+ * list AND file, so the dropdowns always reflect the applied view.
+ */
+async function applyGitTarget(tab, branch, commit, refresh) {
+  if (!tab || (!branch && !commit)) return
+  const key = gitViewKey(tab)
+  const path = tab.path
+  const view = await ensureGitViewReady(key, path, refresh)
+  if (!view.git) return
+  if (commit) {
+    if (branch && branch !== view.branch) await selectGitBranch(key, path, branch, refresh)
+    if (view.commit !== commit) await selectGitCommit(key, path, commit, refresh)
+  } else if (branch && branch !== view.branch) {
+    await selectGitBranch(key, path, branch, refresh)
+  }
+}
+
+/**
+ * Per-path git state for CodeView / the code modal: loads meta once, exposes
+ * branch/commit actions. The view object is module-cached (mutable) so a remount
+ * keeps the user's selection; `bump` re-renders after async work / mutation.
  */
 function useGitView(tab) {
   const path = tab.path
+  const key = gitViewKey(tab)
   const [, bump] = React.useReducer((count) => count + 1, 0)
-  const view = gitViewFor(path)
+  const view = gitViewFor(key)
   React.useEffect(() => {
-    const seq = view.seq
-    loadGitMeta(path).then((meta) => {
-      if (view.seq !== seq) return // user already changed branch/commit
-      if (!meta) {
-        if (!view.ready) {
-          view.ready = true
-          view.git = false
-        }
-        bump()
-        return
-      }
-      if (!view.ready) {
-        view.ready = true
-        view.git = true
-        view.repo = meta.repo
-        view.branch = meta.branch
-        view.currentBranch = meta.currentBranch
-        view.branches = meta.branches
-        view.commits = meta.commits
-      }
-      bump()
-    })
-    // `path` and the module-cached view decide the load; bump is stable.
-  }, [path, view, bump])
+    void ensureGitViewReady(key, path, bump)
+  }, [key, path])
   const actions = React.useMemo(
     () => ({
+      refresh() {
+        bump()
+      },
+      applyTarget(branch, commit) {
+        void applyGitTarget(tab, branch, commit, bump)
+      },
       selectBranch(branch) {
         if (!view.git || !branch || branch === view.branch) return
-        void selectGitBranch(path, branch, bump)
+        void selectGitBranch(key, path, branch, bump)
       },
       selectCommit(commit) {
         const value = String(commit || '')
         if (value === (view.commit || '')) return
-        void selectGitCommit(path, value, bump)
+        void selectGitCommit(key, path, value, bump)
       },
       clearCommit() {
         if (!view.commit) return
-        void selectGitCommit(path, '', bump)
+        void selectGitCommit(key, path, '', bump)
       },
     }),
-    [path, view, bump],
+    // `tab` is recreated on every App render; the cached `view` and `key` decide.
+    [key, path, view],
   )
   return { view, actions }
 }
@@ -1351,12 +1581,25 @@ function GitBar(props) {
   const { view, actions } = props
   const branchOptions = view.branches.map((branch) => h('option', { key: branch, value: branch }, branch))
   const commitOptions = [h('option', { key: '__latest', value: '' }, `◎ ${view.branch || '当前分支'} 最新`)]
+  let commitListed = false
   for (const commit of view.commits) {
+    if (view.commit && commit.hash === view.commit) commitListed = true
     commitOptions.push(
       h(
         'option',
         { key: commit.hash, value: commit.hash },
         `${commit.short} ${commit.author} ${commit.date} ${String(commit.subject || '').slice(0, 30)}`,
+      ),
+    )
+  }
+  // A jump-adapted link may name a commit outside this branch's recent log: add
+  // it so the select reflects the view that is actually rendered.
+  if (view.commit && !commitListed) {
+    commitOptions.push(
+      h(
+        'option',
+        { key: '__jump', value: view.commit },
+        `${view.commitMeta ? view.commitMeta.short : String(view.commit).slice(0, 7)} (跳转提交)`,
       ),
     )
   }
@@ -1395,6 +1638,8 @@ const GIT_CSS = `
 .mdr-code .mdr-git-sel:hover{border-color:var(--dsw-alias-brand-primary)}
 .mdr-code .mdr-git-btn{padding:2px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .mdr-code .mdr-git-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.mdr-code .mdr-code-back{padding:2px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap;flex:0 0 auto}
+.mdr-code .mdr-code-back:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
 .mdr-code .mdr-git-info{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px}
 .mdr-code .mdr-git-hash{font-family:Consolas,"Courier New",monospace;color:#d7ba7d}
 .mdr-code .mdr-git-author{color:#89d185}
@@ -1407,12 +1652,49 @@ const GIT_CSS = `
 .mdr-code .mdr-cl.mdr-git-del{background:rgba(248,81,73,.12)}
 .mdr-code .mdr-cl.mdr-git-del .mdr-cl-no{background:rgba(248,81,73,.2);color:#f48771}
 .mdr-code .mdr-cl.mdr-git-del .mdr-cl-code{text-decoration:line-through;opacity:.72}
+.mdr-code .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
+.mdr-code .mdr-cl.mdr-git-ctx .mdr-cl-no{color:#6e7681}
 .mdr-code .mdr-code-head{flex-wrap:wrap;row-gap:4px}
 .mdr-code .mdr-code-body.mdr-git-vscroll{padding:0}
 .mdr-code .mdr-git-vwrap{position:relative;min-width:100%}
 .mdr-code .mdr-git-vscroll .mdr-cl{position:absolute;left:0;height:${GIT_LINE_H}px;line-height:${GIT_LINE_H}px;min-height:0}
 .mdr-code .mdr-git-vscroll .mdr-cl-no{position:static}
+/* ==== VSCode Dark+ palette (kept from input/reference/index.html; the code view
+   owns these rules so tabs and the modal always agree) ==== */
+.mdr-code .hljs-keyword,.mdr-code .hljs-doctag,.mdr-code .hljs-template-tag,.mdr-code .hljs-tag,.mdr-code .hljs-name,.mdr-code .hljs-attr,.mdr-code .hljs-selector-tag,.mdr-code .hljs-meta,.mdr-code .hljs-section,.mdr-code .hljs-link,.mdr-code .hljs-variable.language_{color:#569cd6}
+.mdr-code .hljs-string,.mdr-code .hljs-meta .hljs-string,.mdr-code .hljs-code,.mdr-code .hljs-formula{color:#ce9178}
+.mdr-code .hljs-comment,.mdr-code .hljs-quote{color:#6a9955}
+.mdr-code .hljs-number,.mdr-code .hljs-literal,.mdr-code .hljs-symbol,.mdr-code .hljs-bullet{color:#b5cea8}
+.mdr-code .hljs-type,.mdr-code .hljs-title,.mdr-code .hljs-title.class_,.mdr-code .hljs-title.class_.inherited__,.mdr-code .hljs-built_in{color:#4ec9b0}
+.mdr-code .hljs-title.function_,.mdr-code .hljs-title.function_.invoke__{color:#dcdcaa}
+.mdr-code .hljs-variable,.mdr-code .hljs-property,.mdr-code .hljs-attribute,.mdr-code .hljs-params,.mdr-code .hljs-template-variable{color:#9cdcfe}
+.mdr-code .hljs-selector-id,.mdr-code .hljs-selector-class,.mdr-code .hljs-selector-attr,.mdr-code .hljs-selector-pseudo{color:#d7ba7d}
+.mdr-code .hljs-regexp{color:#d16969}
+.mdr-code .hljs-operator,.mdr-code .hljs-punctuation,.mdr-code .hljs-subst{color:#d4d4d4}
+.mdr-code .hljs-addition{color:#b5cea8;background-color:rgba(46,160,67,.15)}
+.mdr-code .hljs-deletion{color:#f48771;background-color:rgba(248,81,73,.15)}
+/* Java/Kotlin 补色：全大写常量/枚举值（枚举值也要有颜色且可点） */
+.mdr-code .hljs-constant{color:#b5cea8}
+/* 参数列表整段带 hljs-params：用复合选择器把补出来的类型/变量/关键字还原成各自颜色 */
+.mdr-code .hljs-params.hljs-type{color:#4ec9b0}
+.mdr-code .hljs-params.hljs-variable{color:#9cdcfe}
+.mdr-code .hljs-params.hljs-keyword{color:#569cd6}
+.mdr-code .hljs-params.hljs-constant{color:#b5cea8}
+/* 跳转行持久高亮（黄色，直到下一次跳转 / 关闭；没有任何定时器移除） */
 .mdr-code .mdr-cl.hit{background:rgba(255,214,102,.16);box-shadow:inset 3px 0 0 #ffd33d}
+.mdr-code .mdr-cl.hit .mdr-cl-no{background:rgba(255,214,102,.22);color:#ffd33d}
+.mdr-code .mdr-cl.mdr-git-add.hit,.mdr-code .mdr-cl.mdr-git-del.hit,.mdr-code .mdr-cl.mdr-git-ctx.hit{box-shadow:inset 3px 0 0 #ffd33d}
+/* Ctrl+点击可跳转 token 的 hover 提示：仅 Java/Kotlin 视图挂 .jump-hover 时生效
+   （与原版一致：下划线 + 轻微变亮 + pointer）。删除行不给提示——它的行号是旧文件
+   的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
+.mdr-code .mdr-code-body.jump-hover span.hljs-title.function_:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-variable:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-type:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-title.class_:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-constant:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-type:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-variable:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
+.mdr-code .mdr-code-body.jump-hover .mdr-cl.mdr-git-del span:hover{text-decoration:none;cursor:default;filter:none}
 `
 
 // ---- 20-code.js ----
@@ -1442,7 +1724,10 @@ const LANG_MAP = {
   '.toml': 'ini',
   '.sql': 'sql',
   '.sh': 'bash',
-  '.bat': 'dos',
+  // the vendored hljs common bundle has no 'dos' grammar: shell is the closest
+  // (the standalone reader mapped bat -> bash for the same reason).
+  '.bat': 'bash',
+  '.cmd': 'bash',
   '.ps1': 'powershell',
   '.py': 'python',
   '.go': 'go',
@@ -1460,24 +1745,289 @@ function langForPath(rel) {
   return LANG_MAP[extOf(rel)] || ''
 }
 
+/* ================= 代码高亮统一管线 =================
+   Ported from the standalone reader (input/reference/index.html):
+     highlightCodeHtml → hljs 高亮 + Java/Kotlin 类型增强 → HTML 字符串
+     highlightToLines  → HTML 字符串 → 每行 HTML（跨行注释/字符串不切坏 + Java/Kotlin 标识符补色）
+   整文件只做一次 hljs（virtual scroll 下也只算一次），按行重建时保持多行 token 的
+   span 在每行上开闭，所以多行注释/字符串的每一行颜色都正确。
+
+   与 per-line hljs 的差别（用户报的 bug）：
+     · per-line 把 `/* …` 与 `… *​/` 各自当独立文本 → 整段注释/字符串不上色；
+     · hljs 的 Java/Kotlin 语法只给「带赋值的声明」识别类型，静态调用点、无初始化声明、
+       字段/返回类型、泛型实参、方法调用名、变量/字段引用全留白 → 靠下面两个后处理补色。 */
+
+/* Java/Kotlin？这两种语言额外做类型增强与标识符补色 */
+function isJavaKtLang(lang) {
+  return lang === 'java' || lang === 'kotlin' || lang === 'kt'
+}
+
+/* Java/Kotlin 类型增强（VSCode Dark+ 观感）：hljs 的 Java/Kotlin 语法只对
+   「带赋值的声明」识别类型（hljs-type），静态调用点（JSONObject.parseObject）、
+   无初始化声明、字段/返回类型里的类名都不高亮。
+   精确增强（只补类型语义位置，统一用 hljs-type 类型色，不碰已高亮的 token，
+   不误伤字符串/注释/常量）：
+     · 后跟 . 或 空白 → 类名（静态调用 / 声明 / 返回类型）
+     · 后跟 < → 泛型「头」（List<…> 的 List、OutputDTO<…> 的 OutputDTO）
+     · 泛型 <Type>（hljs 会把 < 转义成 HTML 实体）
+     · 逗号后的泛型实参（Map<Long, Boolean> 里的 Boolean）
+   排除全大写标识符（常量/枚举），排除已被 span 包裹的内容。
+   注：正则里的 \x26lt; 表示「&」+「lt;」两个字符（即 < 的 HTML 实体），
+   「&」写成 \x26 是为了避免它在源码里被当成 HTML 实体起始。 */
+function enhanceJavaKtTypes(html) {
+  return html.replace(
+    /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|\b[A-Z]\w*\b(?=\s*\x26lt;)|(?<=<|\x26lt;)\b[A-Z]\w*\b|,\s*(\b[A-Z]\w*\b)/g,
+    (m, g1) => {
+      if (m.startsWith('<span')) return m
+      if (g1) {
+        // 逗号后的泛型实参：Map<Long, Boolean> 里的 Boolean
+        if (!/[a-z]/.test(g1)) return m // 全大写 → 常量/枚举，跳过
+        const head = m.slice(0, m.length - g1.length)
+        return head + `<span class="hljs-type">${g1}</span>`
+      }
+      if (!/[a-z]/.test(m)) return m // 全大写常量/枚举 → 跳过
+      return `<span class="hljs-type">${m}</span>`
+    },
+  )
+}
+
+/* Java/Kotlin 关键字（含基本类型）—— 标识符补色与参数列表识别共用 */
+const JAVA_KW = (function () {
+  const set = {}
+  ;(
+    'abstract assert boolean break byte case catch char class const continue default do double ' +
+    'else enum extends final finally float for goto if implements import instanceof int interface ' +
+    'long native new package private protected public return short static strictfp super switch ' +
+    'synchronized this throw throws transient try void volatile while true false null var record ' +
+    'sealed permits yield module requires exports opens uses provides to transitive ' +
+    'as break by catch class companion const constructor crossinline data dynamic enum expect ' +
+    'external final infix init inline inner internal lateinit noinline open operator out override ' +
+    'private protected public reified sealed suspend tailrec vararg actual abstract annotation ' +
+    'fun val typeof typealias when where in is object'
+  )
+    .split(' ')
+    .forEach((keyword) => {
+      set[keyword] = 1
+    })
+  return set
+})()
+
+/* Java/Kotlin 标识符补色：hljs 不标方法调用名与变量/字段引用。
+   只处理「未被任何 span 包裹」的纯文本标识符（绝无双重包裹）：
+   · xxx.yyy( 的 yyy / 独立的 yyy( → hljs-title function_（函数名色）
+   · 其余小写开头标识符（变量/字段/参数引用）→ hljs-variable（变量色）
+   显式排除 Java/Kotlin 关键字与字面量、PascalCase 类型/全大写常量；
+   字符串/注释/数字已被 hljs 包裹（classes 非空），不会走到这里，本函数也不匹配数字。
+   inImport=true（import 语句里的包路径）：PascalCase 段是**类名** → 类型色。
+   返回 token 数组而不是拼好的 HTML：调用方负责转义与拼接。 */
+function hljsPostProcJavaKtTokens(txt, inImport) {
+  const out = []
+  let last = 0
+  const re = /\b[A-Za-z_$][\w$]*\b/g
+  let match
+  while ((match = re.exec(txt)) !== null) {
+    const word = match[0]
+    if (JAVA_KW[word]) continue // 关键字/字面量 → 不动
+    let cls
+    if (/^[A-Z]/.test(word)) {
+      if (/[a-z]/.test(word)) {
+        if (!inImport) continue // PascalCase → 类型归类型增强管
+        cls = 'hljs-type' // import 路径里的类名 → 类型
+      } else {
+        cls = 'hljs-constant' // 全大写 → 常量/枚举值（枚举值要能点）
+      }
+    } else {
+      cls = txt.charAt(match.index + word.length) === '(' ? 'hljs-title function_' : 'hljs-variable'
+    }
+    if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
+    out.push({ cls, txt: word })
+    last = match.index + word.length
+  }
+  if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
+  return out
+}
+
+/* 这个文本节点是不是 import 语句里的包路径？
+   判据：前一个兄弟节点是 import/static 关键字 span（hljs 只把关键字包成 span）。 */
+function isImportPathText(node) {
+  let prev = node.previousSibling
+  while (prev && prev.nodeType === 3 && !prev.textContent.trim()) prev = prev.previousSibling
+  if (!prev || prev.nodeType !== 1) return false
+  const text = (prev.textContent || '').trim()
+  if (text === 'import') return true
+  if (text === 'static') {
+    let before = prev.previousSibling
+    while (before && before.nodeType === 3 && !before.textContent.trim()) before = before.previousSibling
+    return !!before && before.nodeType === 1 && (before.textContent || '').trim() === 'import'
+  }
+  return false
+}
+
+/* Java/Kotlin 参数列表里的标识符。
+   背景：hljs 把整个参数列表塞进一个 <span class="hljs-params">(…)</span>，
+   而类型增强是「整段 span 跳过」→ 参数里的类型既没上色、也不是独立 token。
+   这里在按行重建时单独识别：
+     · PascalCase（首字母大写且含小写）→ 类型（hljs-type）
+     · 全大写 → 常量/枚举 → 不动
+     · 关键字/基本类型 → 关键字色（hljs-keyword）
+     · 其余小写标识符 → 参数名（hljs-variable） */
+function hljsParamTokens(txt) {
+  const out = []
+  let last = 0
+  const re = /\b[A-Za-z_$][\w$]*\b/g
+  let match
+  while ((match = re.exec(txt)) !== null) {
+    const word = match[0]
+    let cls = ''
+    if (/^[A-Z]/.test(word)) {
+      if (/[a-z]/.test(word)) cls = 'hljs-type' // PascalCase → 类型
+    } else if (JAVA_KW[word]) {
+      cls = 'hljs-keyword' // 关键字 / 基本类型
+    } else {
+      cls = 'hljs-variable' // 参数名
+    }
+    if (!cls) continue
+    if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
+    out.push({ cls, txt: word })
+    last = match.index + word.length
+  }
+  if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
+  return out
+}
+
+/* hljs 高亮 → HTML 字符串（未收录语言 / 高亮异常 → 转义后的原文） */
+function highlightCodeHtml(content, lang) {
+  const lib = typeof window !== 'undefined' ? window.hljs : null
+  const source = String(content == null ? '' : content)
+  const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
+  if (!lib || !name) return escapeHtml(source)
+  let html
+  try {
+    html = lib.highlight(source, { language: name, ignoreIllegals: true }).value
+  } catch {
+    return escapeHtml(source)
+  }
+  if (isJavaKtLang(lang)) html = enhanceJavaKtTypes(html)
+  return html
+}
+
+/* HTML 字符串 → 每行 HTML（按行重建 DOM，跨行 token 保持正确）
+   · 文本节点是【解码后】的内容（HTML 实体已还原成 < > 等字符），
+     重新拼回 HTML 时必须再转义一次，否则 < 会被浏览器当成标签开头。
+   · Java/Kotlin：未被 span 包裹的纯文本 → 补方法调用名与变量/字段引用；
+     参数列表（hljs-params 里的纯文本）→ 补类型与参数名。 */
+function highlightToLines(html, isJavaKt) {
+  const tmpl = document.createElement('template')
+  tmpl.innerHTML = html
+  const lines = []
+  let current = []
+  lines.push(current)
+  function walk(node, classes) {
+    if (node.nodeType === 3) {
+      // text node：取出跨行文本逐行切开
+      const parts = node.textContent.split('\n')
+      const inParams = isJavaKt && classes.length && classes[classes.length - 1] === 'hljs-params'
+      const inImport = isJavaKt && !classes.length && isImportPathText(node)
+      for (let index = 0; index < parts.length; index += 1) {
+        if (index > 0) {
+          current = []
+          lines.push(current)
+        }
+        if (parts[index] !== '') {
+          const tokens = isJavaKt
+            ? inParams
+              ? hljsParamTokens(parts[index])
+              : !classes.length
+                ? hljsPostProcJavaKtTokens(parts[index], inImport)
+                : [{ cls: '', txt: parts[index] }]
+            : [{ cls: '', txt: parts[index] }]
+          for (const token of tokens) {
+            current.push({ cls: classes.concat(token.cls ? token.cls.split(' ') : []), txt: escapeHtml(token.txt) })
+          }
+        }
+      }
+    } else if (node.nodeType === 1 || node.nodeType === 11) {
+      // 保留 title 的语义子类（class_/function_/inherited__/invoke__），
+      // 使函数名与类名在配色下可区分
+      const cls = String(node.className || '')
+        .split(' ')
+        .filter(
+          (one) =>
+            one.startsWith('hljs-') || one === 'class_' || one === 'function_' || one === 'inherited__' || one === 'invoke__',
+        )
+      const childClasses = classes.concat(cls)
+      for (const child of node.childNodes || []) walk(child, childClasses)
+    }
+  }
+  walk(tmpl.content, [])
+  return lines.map((tokens) =>
+    tokens.map((token) => (token.cls.length ? `<span class="${token.cls.join(' ')}">${token.txt}</span>` : token.txt)).join(''),
+  )
+}
+
+/** One line's highlighted HTML through the same whole-line pipeline (kept for other views). */
 function highlightLineHtml(text, lang) {
   try {
-    const value = window.hljs.highlight(text, { language: lang || 'plaintext', ignoreIllegals: true }).value
-    return value === '' ? ' ' : value
+    const lines = highlightByLine(String(text == null ? '' : text), lang || 'plaintext')
+    return (lines && lines[0]) || ' '
   } catch {
     return escapeHtml(text) || ' '
   }
+}
+
+/* 整文件一次 hljs → 按行切分。开销是文件长度线性的一次调用（虚拟滚动也只是
+   一次；不再 per-row 独立高亮），并按下述内容哈希缓存，切回标签页不重复算。 */
+function highlightByLine(content, lang) {
+  return highlightToLines(highlightCodeHtml(content, lang), isJavaKtLang(lang))
+}
+
+/** 高亮结果缓存：key = lang + 内容哈希（整文件一次高亮的结果按文件缓存）。 */
+const HIGHLIGHT_CACHE_MAX = 8
+const highlightCache = new Map()
+
+function textHash(value) {
+  const text = String(value)
+  // FNV-1a 32-bit，包含长度，避免不同内容同 key
+  let hash = 2166136261
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 16777619) >>> 0
+  }
+  return hash.toString(16)
+}
+
+function highlightLinesCached(content, lang) {
+  const text = String(content == null ? '' : content)
+  const key = `${lang || ''}\u0000${text.length}\u0000${textHash(text)}`
+  const hit = highlightCache.get(key)
+  if (hit) {
+    // LRU：命中后挪到末尾
+    highlightCache.delete(key)
+    highlightCache.set(key, hit)
+    return hit
+  }
+  let lines
+  try {
+    lines = highlightByLine(text, lang)
+  } catch {
+    lines = text.split('\n').map((one) => escapeHtml(one))
+  }
+  highlightCache.set(key, lines)
+  while (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
+    const oldest = highlightCache.keys().next().value
+    highlightCache.delete(oldest)
+  }
+  return lines
 }
 
 /* -------------------------------------------------------------- code scroll */
 
 /**
  * Per-file scroll positions of the code viewport, shared by all mounted code
- * views (code tab + modal would normally fight over one memory; the modal keeps
- * its own stack instead and passes no key). The reported bug was "switch tab and
- * the code scroll jumps back to the top / to the link line", so the position is
- * persisted per file and restored on remount — a *fresh* jump request (open a
- * link with a line number) still wins over the memory.
+ * views. The reported bug was "switch tab and the code scroll jumps back to the
+ * top / to the link line", so the position is persisted per file and restored on
+ * remount — an *explicit* jump request (open a link with a line number, or an
+ * already-open tab that gets a new line) still wins over the memory.
  */
 const CODE_SCROLL_KEY = 'mdreader.plugin.codescroll.v1'
 
@@ -1531,16 +2081,20 @@ const codeScrollStore = (() => {
   }
 })()
 
-/** One row's HTML. diffMode adds the +/-/space gutter sign and diff row classes. */
-function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
+/** One row's HTML. diffMode adds the +/- gutter sign and diff row classes. */
+function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top) {
   const classes = ['mdr-cl']
   if (row.kind === 'add') classes.push('mdr-git-add')
   else if (row.kind === 'del') classes.push('mdr-git-del')
-  if (hitLine && row.no === hitLine) classes.push('hit')
-  const sign = diffMode ? (row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  ') : ''
+  else if (row.kind === 'ctx') classes.push('mdr-git-ctx')
+  // 跳转行持久高亮：只有确实落在这一行（row index）才加 .hit；删除行不加
+  // （旧文件行号与当前渲染的新版本文本错位，标上去反而误导）。
+  if (hitIndex != null && hitIndex >= 0 && index === hitIndex && row.kind !== 'del') classes.push('hit')
+  const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
+  const gutter = diffMode ? sign : '  '
   const style = top == null ? '' : ` style="top:${top}px"`
   const no = row.no == null ? '' : row.no
-  return `<div class="${classes.join(' ')}" data-line="${no}"${style}><span class="mdr-cl-no">${no}</span><span class="mdr-cl-code">${sign}${codeHtml}</span></div>`
+  return `<div class="${classes.join(' ')}" data-line="${no}"${style}><span class="mdr-cl-no">${no}</span><span class="mdr-cl-code">${gutter}${codeHtml}</span></div>`
 }
 
 /**
@@ -1568,45 +2122,67 @@ function useCodeRows(view, workspaceContent) {
  * Rows viewport. Files over GIT_V_THRESHOLD rows keep full highlighting but only
  * paint the viewport +/- GIT_BUFFER rows (20px absolute rows inside a spacer).
  *
- * Optional props (code tab + modal):
+ * Props (code tab + modal):
  *   scrollKey      file key for the persisted scroll memory (omit = no persistence)
  *   contentReady   false while the file text is still loading: defer the
  *                  jump/restore decision instead of deciding against 1 empty row
  *   restoreScroll  { top } — exactly restore this position (modal ← 返回), takes
  *                  precedence over the line jump and the scroll memory
+ *   jumpHover      Java/Kotlin: add `.jump-hover` so Ctrl+clickable tokens get the
+ *                  original hover affordance (underline / pointer)
+ *   freshOpen      true for a tab that was just opened (content not loaded yet).
+ *                  A line request from a fresh open is an EXPLICIT jump and always
+ *                  wins over the persisted scroll memory; a remount caused by
+ *                  switching back to an open tab restores the remembered position.
  */
 function CodeBody(props) {
-  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll } = props
+  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll, jumpHover, freshOpen } = props
   const total = rows.length
   const virtual = total > GIT_V_THRESHOLD
   const scrollerRef = React.useRef(null)
   const [win, setWin] = React.useState(() => ({ first: 0, last: Math.min(total, 160) }))
-  const [hitLine, setHitLine] = React.useState(0)
   const rafRef = React.useRef(0)
   const rowsRef = React.useRef(rows)
   rowsRef.current = rows
-  const firstPaintRef = React.useRef(true)
   const lastTopRef = React.useRef(0)
   const saveTimerRef = React.useRef(0)
+  // Captured on mount only: a fresh open keeps "explicit jump" semantics even
+  // after the content arrives and the prop flips to false.
+  const freshOpenRef = React.useRef(!!freshOpen)
   const scrollMetaRef = React.useRef({ key: '', diff: false, ready: true })
   scrollMetaRef.current = {
     key: scrollKey == null ? '' : String(scrollKey),
     diff: !!diffMode,
     ready: contentReady !== false,
   }
-  const hlRef = React.useRef(null)
-  if (!hlRef.current || hlRef.current.rows !== rows || hlRef.current.lang !== lang) {
-    hlRef.current = { rows, lang, map: new Map() }
-  }
-  const codeHtmlAt = (index) => {
-    const cache = hlRef.current
-    if (!cache.map.has(index)) {
+  const restoreAppliedRef = React.useRef(null)
+  const jumpAppliedRef = React.useRef(0)
+  // Whole-file highlight once, cached by content hash: switching tabs / branch /
+  // commit back and forth never re-highlights.
+  const joinedText = React.useMemo(
+    () => rows.map((row) => (row && row.text != null ? String(row.text) : '')).join('\n'),
+    [rows],
+  )
+  const hljsReady = typeof window !== 'undefined' && !!window.hljs
+  const hlLines = React.useMemo(() => highlightLinesCached(joinedText, lang), [joinedText, lang, hljsReady])
+  // Jump target: match by file line number, preferring real rows over deleted
+  // diff rows (deleted rows carry the OLD line number and are struck through, so
+  // they may be scrolled to but are never marked as "the jumped line"). A line
+  // past EOF clamps to the last row (jump still lands somewhere sensible) but is
+  // not highlighted.
+  const jumpTarget = React.useMemo(() => {
+    const line = Number(targetLine) || 0
+    if (line <= 0) return { index: -1, hit: -1 }
+    let deleted = -1
+    for (let index = 0; index < rows.length; index += 1) {
       const row = rows[index]
-      cache.map.set(index, highlightLineHtml(row && row.text != null ? String(row.text) : '', lang))
+      if (!row || row.no !== line) continue
+      if (row.kind !== 'del') return { index, hit: index }
+      if (deleted < 0) deleted = index
     }
-    return cache.map.get(index)
-  }
-
+    if (deleted >= 0) return { index: deleted, hit: -1 }
+    return { index: Math.max(0, Math.min(line, rows.length) - 1), hit: -1 }
+  }, [rows, targetLine])
   const paintWindow = () => {
     const el = scrollerRef.current
     if (!el) return
@@ -1638,47 +2214,45 @@ function CodeBody(props) {
     if (contentReady === false) return undefined
     const el = scrollerRef.current
     if (!el) return undefined
-    const firstPaint = firstPaintRef.current
-    firstPaintRef.current = false
-    setHitLine(0)
     const storeKey = scrollKey == null ? '' : String(scrollKey)
+    // Modal ← 返回: an explicit restore is consumed once (a later re-render must
+    // not yank the pane back to the same position).
+    const freshRestore = !!(restoreScroll && Number.isFinite(restoreScroll.top) && restoreScroll !== restoreAppliedRef.current)
+    if (freshRestore) restoreAppliedRef.current = restoreScroll
     const savedTop = !diffMode && storeKey ? codeScrollStore.get(storeKey) : 0
-    const restoreTop =
-      restoreScroll && Number.isFinite(restoreScroll.top) ? Math.max(0, Math.round(restoreScroll.top)) : null
-    // Base view: honor the requested line, the scroll memory or the explicit
-    // restore. Diff view: start at the top (deleted rows have no workspace line).
-    let rowIndex = -1
-    if (!diffMode && targetLine > 0) {
-      rowIndex = rows.findIndex((row) => row.no === targetLine)
-      if (rowIndex < 0) rowIndex = Math.min(targetLine - 1, Math.max(0, total - 1))
-    }
+    // An explicit jump: content settled with a target line. It wins over the
+    // scroll memory the first time this line is requested for this file; after
+    // that (switch away and back) the remembered position is restored instead.
+    const jumpPending = !freshRestore && targetLine > 0 && jumpTarget.index >= 0
+    const sameLineAlready = storeKey ? codeJumpSeen.get(storeKey) === targetLine : jumpAppliedRef.current === targetLine
+    // A just-opened tab with a requested line is explicit even if the same line
+    // was jumped to earlier in this session (e.g. reopen the same code link).
+    const jumpIsNew = freshOpenRef.current || !sameLineAlready
     let mode = 'top'
-    if (diffMode) mode = 'top'
-    else if (restoreTop != null) mode = 'restore'
-    else if (rowIndex >= 0) {
-      // A remount (switch away and back) keeps the scroll position; an explicit
-      // jump request for this line wins over the remembered position.
-      const seen = !!storeKey && codeJumpSeen.get(storeKey) === targetLine
-      mode = firstPaint && seen && savedTop > 0 ? 'saved' : 'jump'
-    } else if (firstPaint && savedTop > 0) {
-      mode = 'saved'
+    if (freshRestore) mode = 'restore'
+    else if (jumpPending && jumpIsNew) mode = 'jump'
+    else if (savedTop > 0) mode = 'saved'
+    else if (jumpPending) mode = 'jump'
+    if (mode === 'restore') {
+      el.scrollTop = Math.max(0, Math.round(restoreScroll.top))
+    } else if (mode === 'saved') {
+      el.scrollTop = savedTop
+    } else if (mode === 'jump') {
+      // Centre the target row like the original scrollCodeToLine.
+      const top = jumpTarget.index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
+      el.scrollTop = Math.max(0, top)
+    } else {
+      el.scrollTop = 0
     }
-    if (mode === 'restore') el.scrollTop = restoreTop
-    else if (mode === 'saved') el.scrollTop = savedTop
-    else if (mode === 'jump') el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
-    else el.scrollTop = 0
     lastTopRef.current = el.scrollTop
     paintWindow()
-    if (mode === 'jump' && storeKey) codeJumpSeen.set(storeKey, targetLine)
-    const markHit = targetLine > 0 && rowIndex >= 0 && (mode === 'jump' || mode === 'restore')
-    if (markHit) {
-      setHitLine(targetLine)
-      const timer = setTimeout(() => setHitLine(0), 2400)
-      return () => clearTimeout(timer)
+    if (mode === 'jump') {
+      jumpAppliedRef.current = targetLine
+      if (storeKey) codeJumpSeen.set(storeKey, targetLine)
     }
     return undefined
     // rows identity changes whenever the rendered content (commit/branch/file) changes.
-  }, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll])
+  }, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll, jumpTarget])
 
   React.useEffect(
     () => () => {
@@ -1707,28 +2281,39 @@ function CodeBody(props) {
   const windowFrom = virtual ? Math.max(0, Math.min(win.first, Math.max(0, total - 1))) : 0
   const windowTo = virtual ? Math.min(total, Math.max(windowFrom, win.last)) : 0
 
+  const codeHtmlAt = (index) => {
+    const value = hlLines && hlLines[index]
+    if (value != null) return value
+    const row = rows[index]
+    return escapeHtml(row && row.text != null ? String(row.text) : '') || ' '
+  }
+
   const plainHtml = React.useMemo(() => {
     if (virtual) return ''
     let html = ''
     for (let index = 0; index < rows.length; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, hitLine, codeHtmlAt(index), null)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null)
     }
     return html
-  }, [virtual, rows, lang, diffMode, hitLine])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines])
 
   const windowHtml = React.useMemo(() => {
     if (!virtual) return ''
     let html = ''
     for (let index = windowFrom; index < windowTo; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, hitLine, codeHtmlAt(index), index * GIT_LINE_H)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H)
     }
     return html
-  }, [virtual, rows, lang, diffMode, hitLine, windowFrom, windowTo])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo])
+
+  // `.jump-hover` is the original container gate for the Ctrl+click affordance;
+  // deleted diff rows are excluded by CSS (their line numbers are the OLD file's).
+  const bodyClass = 'mdr-code-body' + (virtual ? ' mdr-git-vscroll' : '') + (jumpHover ? ' jump-hover' : '')
 
   return h(
     'div',
     {
-      className: 'mdr-code-body' + (virtual ? ' mdr-git-vscroll' : ''),
+      className: bodyClass,
       ref: scrollerRef,
       onScroll,
     },
@@ -1760,8 +2345,11 @@ function CodeGitInfo(props) {
   return h('div', { className: 'mdr-git-info' }, parts)
 }
 
+/** Tab id -> `${branch}\0${commit}` already applied (so remount does not re-apply). */
+const gitTabViewApplied = new Map()
+
 function CodeView(props) {
-  const { tab, onOpen } = props
+  const { tab, onOpen, onBack } = props
   const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
   const workspaceContent = String(tab.content == null ? '' : tab.content)
@@ -1786,8 +2374,23 @@ function CodeView(props) {
     })
     return dispose
   }, [tab.id, tab.path, onOpen])
+
+  // git-adapted code link: tab.branch / tab.commit must be applied to this tab's
+  // git view on open (and when an already-open tab receives a new target view).
+  // A fresh tab (`content == null`) re-applies even for the same target, so
+  // closing and reopening the link shows the requested branch again.
+  React.useEffect(() => {
+    if (!tab.branch && !tab.commit) return
+    const key = `${tab.branch || ''}\u0000${tab.commit || ''}`
+    if (gitTabViewApplied.get(tab.id) === key && tab.content != null) return
+    gitTabViewApplied.set(tab.id, key)
+    void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
+  }, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
+
   const { rows, diffMode } = useCodeRows(view, workspaceContent)
-  const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}`
+  const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
+    view.branchContent == null ? 'ws' : 'branch'
+  }`
   const showInfo = !!view.commit || !!view.hint || !!view.loading
   // Scroll memory is per file; the commit view gets its own slot so switching
   // back from a diff does not restore a diff scroll position into the file view.
@@ -1802,6 +2405,13 @@ function CodeView(props) {
       'div',
       { className: 'mdr-code-head' },
       h(Icons.code, { size: 14 }),
+      typeof onBack === 'function' && tab.navFrom
+        ? h(
+            'button',
+            { type: 'button', className: 'mdr-code-back', title: '返回上一次跳转位置', onClick: onBack },
+            '← 返回',
+          )
+        : null,
       h('span', { className: 'mdr-code-path', title: tab.path }, tab.path),
       h('span', { className: 'mdr-spacer' }),
       view.git ? h(GitBar, { view, actions }) : null,
@@ -1819,6 +2429,10 @@ function CodeView(props) {
         viewKey,
         scrollKey,
         contentReady,
+        jumpHover: isJavaKtLang(lang),
+        // A tab whose content has not loaded yet was just opened: its line request
+        // is an explicit jump and must beat any remembered scroll position.
+        freshOpen: tab.content == null,
       }),
     ),
     defState
@@ -1880,12 +2494,19 @@ function symbolAtPoint(rootEl, event) {
 /**
  * Attach the Ctrl/Cmd+click listener. `onResult(candidates, symbol, clicked)`
  * is called with a non-empty candidate list.
+ *
+ * Deleted rows of the commit-diff view (`.mdr-git-del`) are NOT jumpable: their
+ * `data-line` is the OLD file's line number and the rendered text is the new
+ * version, so a jump would land in the wrong place (the original disables the
+ * affordance and the click for these rows too).
  */
 function setupDefinitionClick(rootEl, tab, onResult) {
   if (!rootEl) return () => {}
   let busy = false
   const handler = async (event) => {
     if (!(event.ctrlKey || event.metaKey)) return
+    const target = event.target
+    if (target && target.closest && target.closest('.mdr-git-del')) return
     const hit = symbolAtPoint(rootEl, event)
     if (!hit || hit.symbol.length < 2) return
     event.preventDefault()
@@ -1985,17 +2606,20 @@ function DefinitionChooser(props) {
  *
  * Contract (wired by 50-app.js):
  *   h(CodeModal, {
- *     request,          // null | { path: string, line: number } — code file to show
+ *     request,          // null | { path, line, branch?, commit? } — code file to show
  *     onClose,          // close the modal
- *     onOpenTab,        // open the same file at the same line as a tab
+ *     onOpenTab,        // (target) => void — open the current file+line+git view as a tab
  *     onOpen,           // open another file (Ctrl+click navigation) in a tab
  *   })
  *
  * Behaviour (ported from input/reference/index.html #modal-mask):
  *   - renders the file with the shared CodeBody (same line numbers/hljs colors as
- *     the code tab) and jumps to request.line with a transient .mdr-cl.hit;
- *   - header has the path, the git bar (branch/commit view, shared useGitView)
- *     and the ← 返回 / 开成标签页 / ✕ buttons;
+ *     the code tab) and jumps to request.line with a PERSISTENT .mdr-cl.hit
+ *     (no fade timer; moves on another jump, gone when the modal closes);
+ *   - header has the path, the git bar (branch/commit view, shared useGitView but
+ *     with its own view key) and the ← 返回 / 开成标签页 / ✕ buttons;
+ *   - request.branch / request.commit (git-adapted link): that branch/commit view
+ *     is applied inside the modal and 开成标签页 carries it to the new tab;
  *   - Ctrl/Cmd+click navigates IN PLACE with a back stack (single candidate auto
  *     navigates, several reuse DefinitionChooser, none keeps the view + a note);
  *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
@@ -2030,7 +2654,11 @@ function CodeModalInner(props) {
   const { request, onClose, onOpenTab, onOpen } = props
   const requestPath = String((request && request.path) || '')
   const requestLine = Math.max(0, Number(request && request.line) || 0)
-  const reqKey = `${requestPath}\u0000${requestLine}`
+  // Git-adapted link: the modal applies the requested branch/commit view inside
+  // the popup (its own git view key, so the tab underneath is untouched).
+  const requestBranch = String((request && request.branch) || '')
+  const requestCommit = String((request && request.commit) || '')
+  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
 
   const [view, setView] = React.useState(() => ({
     path: requestPath,
@@ -2048,6 +2676,7 @@ function CodeModalInner(props) {
   const cardRef = React.useRef(null)
   const seqRef = React.useRef(0)
   const handledReqRef = React.useRef('')
+  const pendingGitRef = React.useRef('')
   const currentRef = React.useRef({ path: requestPath, line: requestLine })
   const chooserRef = React.useRef(null)
   chooserRef.current = chooser
@@ -2094,8 +2723,11 @@ function CodeModalInner(props) {
     setRestoreScroll(null)
     setNote('')
     setChooser(null)
+    // The git-adapted request view is applied once, when THIS request's file
+    // text is in. In-place Ctrl+click navigation later must not re-apply it.
+    pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
     loadFile(requestPath, requestLine)
-  }, [reqKey, requestPath, requestLine, loadFile])
+  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
@@ -2180,19 +2812,49 @@ function CodeModalInner(props) {
   }, [onClose])
 
   const gitTab = React.useMemo(
-    () => ({ id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }),
+    () => ({
+      id: 'modal:' + displayPath,
+      kind: 'code',
+      path: displayPath,
+      content: displayContent,
+      // The modal keeps its own branch/commit view: it must not mutate the
+      // selection of the code tab showing the same file underneath.
+      gitKey: 'modal:' + displayPath,
+    }),
     [displayPath, displayContent],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
+
+  // Apply the git-adapted request view (branch/commit) once the file text is in.
+  // In-place Ctrl+click navigation loads another file: the opener's branch/commit
+  // is deliberately NOT carried over (matches the original's in-place navigation).
+  React.useEffect(() => {
+    if (!requestBranch && !requestCommit) return
+    if (pendingGitRef.current !== reqKey) return
+    if (!view || view.loading || view.content == null) return
+    pendingGitRef.current = ''
+    gitActions.applyTarget(requestBranch || null, requestCommit || null)
+  }, [reqKey, requestBranch, requestCommit, view, gitActions])
+
   const workspaceContent = view && view.content != null ? view.content : ''
   const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   const lang = (view && view.lang) || langForPath(displayPath)
-  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}`
+  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
+    gitView.branchContent == null ? 'ws' : 'branch'
+  }`
   const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
-  const ready = !!(view && view.content != null) && !view.loading
   const openAsTab = () => {
     if (!view || !view.path) return
-    if (typeof onOpenTab === 'function') onOpenTab({ path: view.path, line: view.line })
+    if (typeof onOpenTab === 'function') {
+      // Carry the branch/commit view that is actually rendered so the new tab
+      // shows the same version of the file.
+      const target = { path: view.path, line: view.line }
+      if (gitView.git) {
+        if (gitView.commit) target.commit = gitView.commit
+        if (gitView.branchContent != null) target.branch = gitView.branch
+      }
+      onOpenTab(target)
+    }
     if (typeof onClose === 'function') onClose()
   }
   const openFallbackTab = () => {
@@ -2246,6 +2908,7 @@ function CodeModalInner(props) {
         targetLine: view.line || 0,
         viewKey,
         restoreScroll,
+        jumpHover: isJavaKtLang(lang),
       }),
     )
   }
@@ -3810,10 +4473,10 @@ function GitGraphModal(props) {
 }
 
 // ---- 30-tree.js ----
-/** Directory tree with on-demand loading and persisted expansion. */
+/** Directory tree with on-demand loading and persisted (per-project) expansion. */
 
 function TreeNode(props) {
-  const { node, depth, expanded, dirs, failed, activePath, onToggle, onOpen } = props
+  const { node, depth, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
   const open = node.dir && expanded.has(node.path)
   const children = node.dir && open ? dirs[node.path] : null
   // `dirs[path]` 有值 = 已加载（可能是空数组）；failed[path] = 加载失败。
@@ -3822,6 +4485,16 @@ function TreeNode(props) {
   const meta = node.dir ? { kind: 'folder', color: 'var(--dsw-alias-label-secondary)' } : fileIcon(node.ext)
   const Icon = Icons[meta.kind]
   const childIndent = { paddingLeft: 18 + depth * 14 }
+  const located = !!locatedPath && locatedPath === node.path
+  const rowRef = React.useRef(null)
+
+  // 「定位」：目标文件所在行滚到视野中间。展开由 App 的 locateInTree 负责。
+  React.useEffect(() => {
+    if (!located) return
+    const row = rowRef.current
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }, [located])
+
   let placeholder = null
   if (open && failedHere) {
     placeholder = h('div', { className: 'mdr-tip', style: { ...childIndent, color: 'var(--dsw-alias-state-error-primary)' } }, '加载失败，点目录树右上角刷新重试')
@@ -3836,8 +4509,9 @@ function TreeNode(props) {
     h(
       'div',
       {
-        className: 'mdr-tr' + (activePath === node.path ? ' on' : ''),
-        style: { paddingLeft: 6 + depth * 14 },
+        className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
+        ref: rowRef,
+        style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
         title: node.path,
         onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),
       },
@@ -3855,6 +4529,7 @@ function TreeNode(props) {
             dirs,
             failed,
             activePath,
+            locatedPath,
             onToggle,
             onOpen,
           }),
@@ -3865,9 +4540,9 @@ function TreeNode(props) {
 }
 
 function Tree(props) {
-  const { rootEntries, expanded, dirs, failed, activePath, onToggle, onOpen } = props
+  const { rootEntries, rootPath, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
   if (!rootEntries) {
-    const rootFailed = !!(failed && failed[''])
+    const rootFailed = !!(failed && failed[rootPath || ''])
     return h(
       'div',
       {
@@ -3883,7 +4558,9 @@ function Tree(props) {
   return h(
     'div',
     null,
-    rootEntries.map((node) => h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, onToggle, onOpen })),
+    rootEntries.map((node) =>
+      h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen }),
+    ),
   )
 }
 
@@ -3891,34 +4568,764 @@ function Tree(props) {
 /**
  * Workbench layer (项目 → 任务) — owned by the workbench slice.
  *
- * The App shell renders: project switcher/panel, task chips (工作台), and keeps
- * one task = one ordered tab set + active tab + per-tab scroll, persisted per
- * project. Stub today; the workbench teammate replaces it.
+ * One 项目 (workspace root, `currentProject` = null means 全部) owns an ordered
+ * list of 任务 (workbench chips). A task is an ordered tab set + one active tab.
+ * Everything is persisted per project (see taskStoreKey in 00-core.js):
+ *
+ *   { activeTaskId, tasks: [{ id, name, activeId, tabs: [stored tab] }] }
+ *
+ * Stored tabs drop the loaded content (它只在激活时懒加载) but keep path, kind,
+ * jump line, git version (branch/commit) and the HTML render/source mode.
+ *
+ * The App (50-app.js) owns the live task state; this module owns the pure
+ * state machine helpers and the chip-row component so the App shell stays
+ * readable. Task ids look like `task<N>` and the tab id is always
+ * `<kind>:<path>` — the same document opened in two tasks is two tab instances
+ * with the same id, which keeps loading/de-dup logic simple.
  */
-function WorkbenchBar() {
+
+/** Task id sequence (seeded from restored state so ids never collide). */
+let taskSeq = 0
+
+/** tab id -> last known scrollTop (fed by 50-app.js; kept out of React state). */
+const tabScrollMemory = new Map()
+
+function rememberTabScroll(tabId, top) {
+  if (!tabId) return
+  const value = Math.max(0, Math.round(Number(top) || 0))
+  tabScrollMemory.set(tabId, value)
+}
+
+function recallTabScroll(tabId) {
+  return tabScrollMemory.get(tabId) || 0
+}
+
+function nextTaskId() {
+  taskSeq += 1
+  return `task${taskSeq}`
+}
+
+/** Seed the id counter from restored ids so new tasks never duplicate one. */
+function seedTaskSeq(tasks) {
+  for (const task of tasks || []) {
+    const match = /^task(\d+)$/.exec(String((task && task.id) || ''))
+    if (match) taskSeq = Math.max(taskSeq, Number(match[1]))
+  }
+}
+
+/**
+ * Tab kind by extension (the standalone reader's `tabKindForPath`): a `.html`
+ * file opens as a rendered tab (not source), images preview, markdown renders,
+ * everything else is a text/code tab.
+ */
+function kindForPath(rel) {
+  const ext = extOf(rel)
+  if (ext === '.md' || ext === '.markdown') return 'md'
+  if (ext === '.html' || ext === '.htm') return 'html'
+  if (isImageFile(rel)) return 'image'
+  return 'code'
+}
+
+/** One empty workbench task. */
+function newTaskRecord(name) {
+  return { id: nextTaskId(), name: String(name || '任务'), tabs: [], activeId: null }
+}
+
+/** Live tab record from a stored/live tab; content is always lazy-loaded. */
+function normalizeTab(raw) {
+  if (!raw || typeof raw.path !== 'string' || !raw.path) return null
+  const path = raw.path.replace(/\\/g, '/').replace(/^\/+/, '')
+  const kind = kindForPath(path)
+  // The standalone tool persisted `jumpLine` / `scrollTop`; the plugin's own
+  // older flat store used `line` / `scroll`. Accept both.
+  const line = Math.max(0, Number(raw.line != null ? raw.line : raw.jumpLine) || 0)
+  return {
+    id: `${kind}:${path}`,
+    kind,
+    path,
+    content: null,
+    lang: kind === 'code' ? langForPath(path) : kind === 'html' ? 'xml' : '',
+    line,
+    branch: typeof raw.branch === 'string' ? raw.branch : '',
+    commit: typeof raw.commit === 'string' ? raw.commit : '',
+    htmlMode: raw.htmlMode === 'source' ? 'source' : 'render',
+    navFrom: !!raw.navFrom,
+    error: '',
+    scroll: Math.max(0, Number(raw.scroll != null ? raw.scroll : raw.scrollTop) || 0),
+  }
+}
+
+/**
+ * Clamp a persisted workbench blob into the live shape. Returns null when there
+ * is nothing usable (caller then creates the default 任务).
+ */
+function normalizeWorkbench(data) {
+  if (!data || !Array.isArray(data.tasks) || !data.tasks.length) return null
+  const tasks = []
+  for (const rawTask of data.tasks) {
+    if (!rawTask || typeof rawTask !== 'object') continue
+    const tabs = []
+    for (const rawTab of Array.isArray(rawTask.tabs) ? rawTask.tabs : []) {
+      const tab = normalizeTab(rawTab)
+      if (!tab) continue
+      // The same path may only appear once per task (id is kind:path).
+      if (tabs.some((item) => item.id === tab.id)) continue
+      if (tab.scroll > 0) rememberTabScroll(tab.id, tab.scroll)
+      tabs.push(tab)
+    }
+    const wantedActive = rawTask.activeId != null ? rawTask.activeId : rawTask.activeTabId
+    const activeId = tabs.some((tab) => tab.id === wantedActive)
+      ? wantedActive
+      : tabs.length
+        ? tabs[tabs.length - 1].id
+        : null
+    tasks.push({
+      id: typeof rawTask.id === 'string' && rawTask.id ? rawTask.id : nextTaskId(),
+      name: String(rawTask.name || '任务'),
+      tabs,
+      activeId,
+    })
+  }
+  if (!tasks.length) return null
+  seedTaskSeq(tasks)
+  const activeTaskId = tasks.some((task) => task.id === data.activeTaskId) ? data.activeTaskId : tasks[0].id
+  return { tasks, activeTaskId }
+}
+
+/**
+ * Restore the workbench for a project. Migration order:
+ *   1. the project's own new key;
+ *   2. (全部 only) the earlier flat plugin tab set mdreader.plugin.tabs.v1.
+ * The standalone tool's mdreader.tasks.v1 has the same shape as our stored state,
+ * so normalizeWorkbench accepts it directly as the legacy key for 全部.
+ */
+function restoreWorkbench(project) {
+  const stored = normalizeWorkbench(readStoredJson(taskStoreKey(project), null))
+  if (stored) return stored
+  if (project) return null
+  const legacy = readStoredJson('mdreader.plugin.tasks.v1', null)
+  const migrated = normalizeWorkbench(legacy)
+  if (migrated) return migrated
+  const flat = readStoredJson(TABS_KEY, null)
+  if (flat && Array.isArray(flat.tabs) && flat.tabs.length) {
+    const task = newTaskRecord('默认')
+    const tabs = []
+    for (const rawTab of flat.tabs) {
+      const tab = normalizeTab(rawTab)
+      if (tab && !tabs.some((item) => item.id === tab.id)) tabs.push(tab)
+    }
+    if (!tabs.length) return null
+    task.tabs = tabs
+    task.activeId = tabs.some((tab) => tab.id === flat.activeId)
+      ? flat.activeId
+      : tabs[tabs.length - 1].id
+    return { tasks: [task], activeTaskId: task.id }
+  }
   return null
+}
+
+/** Persist one project's workbench (ordered tasks, per-task tabs + active tab). */
+function saveWorkbench(project, workbench) {
+  if (!workbench || !Array.isArray(workbench.tasks)) return
+  const data = {
+    activeTaskId: workbench.activeTaskId,
+    tasks: workbench.tasks.map((task) => ({
+      id: task.id,
+      name: task.name,
+      activeId: task.activeId,
+      tabs: task.tabs.map((tab) => ({
+        path: tab.path,
+        line: tab.line || 0,
+        branch: tab.branch || '',
+        commit: tab.commit || '',
+        htmlMode: tab.htmlMode === 'source' ? 'source' : 'render',
+        navFrom: !!tab.navFrom,
+        scroll: recallTabScroll(tab.id) || tab.scroll || 0,
+      })),
+    })),
+  }
+  writeStoredJson(taskStoreKey(project), data)
+}
+
+/* -------------------------------------------------------------- chip row UI */
+
+const WORKBENCH_CSS = `
+.mdr-taskbar{display:flex;align-items:center;gap:4px;flex:0 0 auto;min-height:33px;padding:3px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);overflow-x:auto;overflow-y:hidden}
+.mdr-task-chip{display:inline-flex;align-items:center;gap:5px;height:24px;max-width:230px;padding:0 6px 0 8px;border:1px solid transparent;border-left:2px solid transparent;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;cursor:pointer;white-space:nowrap;user-select:none;flex:0 0 auto}
+.mdr-task-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.mdr-task-chip.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);border-left-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary);font-weight:500}
+.mdr-task-chip.dragging{opacity:.45}
+.mdr-task-name{overflow:hidden;text-overflow:ellipsis}
+.mdr-task-count{opacity:.6;font-size:11px}
+.mdr-task-del{display:inline-flex;align-items:center;justify-content:center;padding:0 2px;border-radius:3px;opacity:.5;font-size:12px;line-height:1}
+.mdr-task-del:hover{opacity:1;color:var(--dsw-alias-state-error-primary)}
+.mdr-task-new{display:inline-flex;align-items:center;justify-content:center;width:24px;height:22px;border-radius:4px;color:var(--dsw-alias-label-secondary);font-size:15px;line-height:1;cursor:pointer;flex:0 0 auto}
+.mdr-task-new:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-brand-primary)}
+.mdr-task-rename{height:22px;width:132px;padding:0 6px;border:1px solid var(--dsw-alias-brand-primary);border-radius:4px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;outline:none}
+.mdr-task-tip{flex:0 0 auto;font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;opacity:.75}
+`
+
+/**
+ * The 工作台 chip row above the tree: ordered task chips, ＋ 新建, 双击重命名,
+ * × 删除, HTML5 drag & drop reorder (drag must not start from the × button).
+ */
+function WorkbenchBar(props) {
+  const { tasks, activeTaskId, onSwitch, onNew, onRename, onDelete, onReorder } = props
+  const [editingId, setEditingId] = React.useState('')
+  const [draft, setDraft] = React.useState('')
+  const [draggingId, setDraggingId] = React.useState('')
+  const dragRef = React.useRef('')
+  const inputRef = React.useRef(null)
+
+  React.useEffect(() => {
+    if (editingId && inputRef.current) {
+      inputRef.current.focus()
+      if (typeof inputRef.current.select === 'function') inputRef.current.select()
+    }
+  }, [editingId])
+
+  const beginRename = (task) => {
+    setEditingId(task.id)
+    setDraft(task.name)
+  }
+  const commitRename = () => {
+    if (editingId) onRename(editingId, draft)
+    setEditingId('')
+  }
+  const cancelRename = () => setEditingId('')
+
+  const chips = tasks.map((task) => {
+    const editing = editingId === task.id
+    return h(
+      'div',
+      {
+        key: task.id,
+        className:
+          'mdr-task-chip' + (task.id === activeTaskId ? ' on' : '') + (draggingId === task.id ? ' dragging' : ''),
+        title: editing ? '' : `${task.name}（${task.tabs.length} 个标签页）· 双击重命名 · 拖拽调整顺序`,
+        draggable: !editing,
+        onClick: () => {
+          if (!editing && task.id !== activeTaskId) onSwitch(task.id)
+        },
+        onDoubleClick: (event) => {
+          if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) return
+          beginRename(task)
+        },
+        onDragStart: (event) => {
+          if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) {
+            event.preventDefault()
+            return
+          }
+          dragRef.current = task.id
+          setDraggingId(task.id)
+          try {
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData('text/plain', task.id)
+          } catch {
+            // some webviews expose a read-only dataTransfer; drag still reorders
+          }
+        },
+        onDragOver: (event) => {
+          if (!dragRef.current || dragRef.current === task.id) return
+          event.preventDefault()
+          try {
+            event.dataTransfer.dropEffect = 'move'
+          } catch {
+            // ignore
+          }
+          const rect = event.currentTarget.getBoundingClientRect()
+          const before = event.clientX < rect.left + rect.width / 2
+          onReorder(dragRef.current, task.id, before)
+        },
+        onDrop: (event) => event.preventDefault(),
+        onDragEnd: () => {
+          dragRef.current = ''
+          setDraggingId('')
+        },
+      },
+      editing
+        ? h('input', {
+            ref: inputRef,
+            className: 'mdr-task-rename',
+            value: draft,
+            onClick: (event) => event.stopPropagation(),
+            onChange: (event) => setDraft(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                commitRename()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                cancelRename()
+              }
+            },
+            onBlur: commitRename,
+          })
+        : h('span', { className: 'mdr-task-name' }, task.name),
+      h('span', { className: 'mdr-task-count' }, String(task.tabs.length)),
+      !editing
+        ? h(
+            'span',
+            {
+              className: 'mdr-task-del',
+              title: '删除任务（其中的标签页一并关闭，不影响磁盘文件）',
+              onClick: (event) => {
+                event.stopPropagation()
+                onDelete(task.id)
+              },
+            },
+            '×',
+          )
+        : null,
+    )
+  })
+
+  return h(
+    'div',
+    { className: 'mdr-taskbar' },
+    h('style', { dangerouslySetInnerHTML: { __html: WORKBENCH_CSS } }),
+    chips,
+    h('span', { className: 'mdr-task-new', title: '新建任务', onClick: onNew }, '＋'),
+    h('span', { className: 'mdr-task-tip' }, '任务 = 一组标签页 · 双击改名'),
+  )
 }
 
 // ---- 34-html.js ----
 /**
  * HTML / image tab views — owned by the html slice.
  *
- * Contracts (wired by 50-app.js, owned by the workbench teammate):
- *   h(HtmlTabView, { tab, onLocate })     tab = { id, kind:'html', path, content?, htmlMode:'render'|'source', line }
- *                                         渲染模式：<iframe src="/markdown-reader/api/html?path=…">
- *                                         源码模式：带行号的 HTML 源码（可切回渲染）
- *   h(ImageView, { tab })                 tab = { id, kind:'image', path }
+ * Contracts (wired by 50-app.js / the workbench slice):
+ *   h(HtmlTabView, { tab, onToggleMode, onLocate })
+ *     tab = { id, kind:'html', path, content?: string|null, htmlMode:'render'|'source', line:number, error?:string }
+ *     · render mode is the DEFAULT: a full-height sandboxed iframe pointing at
+ *       /api/html?path=… (the Host rewrites relative resources to /api/raw).
+ *       The iframe stays mounted while the user toggles to source mode, so
+ *       coming back does not reload the document (scripts / scroll survive).
+ *     · source mode lazily fetches /api/code (only when tab.content is null),
+ *       renders line numbers + hljs highlight via highlightLineHtml/langForPath
+ *       from 20-code.js, and keeps the jumped-to line highlighted persistently.
+ *   h(ImageView, { tab, onLocate? })
+ *     tab = { id, kind:'image', path }
+ *     · centered image from /api/raw, letterboxed fit by default, click to
+ *       toggle 100% (scrollable) and back; natural-size badge + error retry.
+ *
+ * All styles are component-local with mdr-html-* / mdr-image-* prefixes; only
+ * shared utility classes (.mdr-btn/.mdr-spacer) are reused, none are changed.
  */
-function HtmlTabView() {
-  return null
+
+/** Same line height as the code view so the source mode looks identical. */
+const HTML_SRC_LINE_H = 20
+/** Above this many lines the source view only paints the viewport (+ buffer). */
+const HTML_SRC_VIRTUAL_THRESHOLD = 800
+const HTML_SRC_BUFFER = 40
+/** Bound the per-line highlight cache for very large documents. */
+const HTML_SRC_HL_CACHE_LIMIT = 8000
+
+const HTML_TAB_CSS = `
+.mdr-html{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
+.mdr-html-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap;row-gap:4px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
+.mdr-html-icon{display:inline-flex;flex:0 0 auto;color:var(--dsw-alias-brand-primary)}
+.mdr-html-path{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.mdr-html-badge{flex:0 0 auto;padding:0 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.mdr-html-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:11.5px;color:var(--dsw-alias-state-error-primary);background:rgba(248,81,73,.07)}
+.mdr-html-body{position:relative;display:flex;flex-direction:column;flex:1;min-height:0}
+.mdr-html-render{position:relative;display:flex;flex:1;min-height:0;background:#fff}
+.mdr-html-frame{display:block;flex:1;width:100%;height:100%;border:0;background:#fff}
+.mdr-html-frame-note{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font-size:12.5px}
+.mdr-html-source{flex:1;min-height:0;overflow:auto;background:#1e1e1e}
+.mdr-html-rows{position:relative;min-width:100%}
+.mdr-html-row{display:flex;min-height:20px;line-height:20px;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px}
+.mdr-html-src-virtual .mdr-html-row{position:absolute;left:0;right:0;height:20px;min-height:0}
+.mdr-html-row.hit{background:rgba(255,214,102,.16);box-shadow:inset 3px 0 0 #ffd33d}
+.mdr-html-no{flex:0 0 62px;text-align:right;padding-right:14px;color:#858585;background:#252526;border-right:1px solid #3e3e42;user-select:none;position:sticky;left:0;z-index:1}
+.mdr-html-code{flex:1;padding-left:16px;color:#d4d4d4;white-space:pre;tab-size:4}
+.mdr-html-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:44px 16px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
+.mdr-html-state-err{color:var(--dsw-alias-state-error-primary)}
+`
+
+const IMAGE_TAB_CSS = `
+.mdr-image{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
+.mdr-image-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap;row-gap:4px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
+.mdr-image-icon{display:inline-flex;flex:0 0 auto;color:var(--dsw-alias-brand-primary)}
+.mdr-image-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+.mdr-image-dims{flex:0 0 auto;padding:0 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.mdr-image-hint{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
+.mdr-image-stage{position:relative;display:flex;flex:1;min-height:0;overflow:auto;background-color:#1e1e1e;background-image:linear-gradient(45deg,#262626 25%,transparent 25%),linear-gradient(-45deg,#262626 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#262626 75%),linear-gradient(-45deg,transparent 75%,#262626 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+.mdr-image-wrap{display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:auto;width:100%;height:100%;padding:20px;box-sizing:border-box}
+.mdr-image-img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;cursor:zoom-in;user-select:none;box-shadow:0 0 0 1px rgba(255,255,255,.08),0 8px 30px rgba(0,0,0,.45)}
+.mdr-image-zoomed .mdr-image-wrap{width:auto;height:auto;max-width:none;max-height:none}
+.mdr-image-zoomed .mdr-image-img{max-width:none;max-height:none;cursor:zoom-out}
+.mdr-image-error{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-state-error-primary);font-size:12.5px;text-align:center}
+.mdr-image-error-path{color:var(--dsw-alias-label-secondary);font-size:11.5px;word-break:break-all}
+`
+
+/** Exception text for the inline source-mode error row. */
+function htmlTabErrorText(error) {
+  if (!error) return ''
+  const message = error && error.message != null ? error.message : error
+  const text = String(message == null ? '' : message).trim()
+  return text || '未知错误'
 }
 
-function ImageView() {
-  return null
+/** langForPath lives in 20-code.js; tolerate it being renamed while slices land. */
+function htmlTabLangOf(path) {
+  try {
+    if (typeof langForPath === 'function') return String(langForPath(path) || '')
+  } catch {
+    // fall through
+  }
+  return ''
+}
+
+/** highlightLineHtml lives in 20-code.js; fall back to escaped text if absent. */
+function htmlTabHighlightLine(text, lang) {
+  const value = String(text == null ? '' : text)
+  try {
+    if (typeof highlightLineHtml === 'function') {
+      const html = highlightLineHtml(value, lang)
+      if (typeof html === 'string' && html) return html
+    }
+  } catch {
+    // fall through to the safe fallback
+  }
+  return escapeHtml(value) || ' '
+}
+
+/**
+ * Line-numbered, highlighted HTML source. Virtualized above
+ * HTML_SRC_VIRTUAL_THRESHOLD rows; the jumped line keeps its .hit class for as
+ * long as tab.line points at it (no timer here — that is the whole point).
+ */
+function HtmlSourceView(props) {
+  const { content, lang, hitLine } = props || {}
+  const text = String(content == null ? '' : content)
+  const lines = React.useMemo(() => text.split('\n'), [text])
+  const total = lines.length
+  const virtual = total > HTML_SRC_VIRTUAL_THRESHOLD
+  const scrollerRef = React.useRef(null)
+  const [windowState, setWindowState] = React.useState({ first: 0, last: 0 })
+  const cacheRef = React.useRef({ lines, lang, map: new Map() })
+  if (cacheRef.current.lines !== lines || cacheRef.current.lang !== lang) {
+    cacheRef.current = { lines, lang, map: new Map() }
+  }
+
+  const htmlAt = (index) => {
+    const cache = cacheRef.current
+    if (!cache.map.has(index)) {
+      if (cache.map.size > HTML_SRC_HL_CACHE_LIMIT) cache.map.clear()
+      cache.map.set(index, htmlTabHighlightLine(lines[index] == null ? '' : String(lines[index]), lang))
+    }
+    return cache.map.get(index)
+  }
+
+  const paintWindow = () => {
+    const el = scrollerRef.current
+    if (!el || !virtual) return
+    const first = Math.max(0, Math.floor(el.scrollTop / HTML_SRC_LINE_H) - HTML_SRC_BUFFER)
+    const last = Math.min(total, Math.ceil((el.scrollTop + el.clientHeight) / HTML_SRC_LINE_H) + HTML_SRC_BUFFER)
+    setWindowState((previous) => (previous.first === first && previous.last === last ? previous : { first, last }))
+  }
+
+  // The jump target wins over everything and must stay highlighted; it is
+  // re-applied whenever a late /api/code response changes the row count.
+  React.useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const line = Number(hitLine) > 0 ? Math.min(Number(hitLine), total) : 0
+    if (line > 0) el.scrollTop = Math.max(0, (line - 1) * HTML_SRC_LINE_H - Math.floor(el.clientHeight * 0.3))
+    else el.scrollTop = 0
+    paintWindow()
+    // total/text changes when the lazily fetched source arrives.
+  }, [hitLine, total, virtual, text])
+
+  const virtualFrom = virtual ? windowState.first : 0
+  // First paint happens before the scroll container can be measured; fall back
+  // to a viewport-sized window instead of painting zero rows.
+  const virtualTo = virtual
+    ? windowState.last > windowState.first
+      ? windowState.last
+      : Math.min(total, HTML_SRC_BUFFER * 4 + 80)
+    : total
+  const rowNodes = []
+  for (let index = virtualFrom; index < virtualTo; index += 1) {
+    const lineNo = index + 1
+    rowNodes.push(
+      h(
+        'div',
+        {
+          key: index,
+          className: 'mdr-html-row' + (lineNo === Number(hitLine) ? ' hit' : ''),
+          'data-line': lineNo,
+          style: virtual ? { top: index * HTML_SRC_LINE_H } : undefined,
+        },
+        h('span', { className: 'mdr-html-no' }, lineNo),
+        h('span', { className: 'mdr-html-code', dangerouslySetInnerHTML: { __html: htmlAt(index) } }),
+      ),
+    )
+  }
+
+  return h(
+    'div',
+    {
+      className: 'mdr-html-source' + (virtual ? ' mdr-html-src-virtual' : ''),
+      ref: scrollerRef,
+      onScroll: paintWindow,
+    },
+    h(
+      'div',
+      { className: 'mdr-html-rows', style: virtual ? { height: total * HTML_SRC_LINE_H + 'px' } : undefined },
+      rowNodes,
+    ),
+  )
+}
+
+function HtmlTabView(props) {
+  const { tab, onToggleMode, onLocate } = props || {}
+  const path = String((tab && tab.path) || '')
+  const line = Number(tab && tab.line) || 0
+  const tabContent = tab ? tab.content : null
+  const tabError = tab && tab.error ? String(tab.error) : ''
+  const [fallbackMode, setFallbackMode] = React.useState('')
+  const [remote, setRemote] = React.useState({ status: 'idle', content: '', error: '' })
+  const [retryNonce, setRetryNonce] = React.useState(0)
+  const [frameLoaded, setFrameLoaded] = React.useState(false)
+
+  // htmlMode is owned/persisted by the App (50-app.js); keep a local fallback so
+  // the component still works if onToggleMode is not wired yet.
+  const mode = fallbackMode || (tab && tab.htmlMode === 'source' ? 'source' : 'render')
+  const frameSrc = path ? `${ROUTE}/api/html?path=${encodeURIComponent(path)}` : ''
+  const toggle = () => {
+    const next = mode === 'render' ? 'source' : 'render'
+    if (typeof onToggleMode === 'function') onToggleMode(next)
+    else setFallbackMode(next)
+  }
+  const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
+
+  React.useEffect(() => {
+    setFrameLoaded(false)
+  }, [path])
+
+  // Lazily pull the source text only when the user actually opens source mode
+  // and the App has not loaded it already. Never fetch in render mode.
+  React.useEffect(() => {
+    if (mode !== 'source') return undefined
+    if (tabContent != null) return undefined
+    if (!path) return undefined
+    let alive = true
+    setRemote({ status: 'loading', content: '', error: '' })
+    fetchJson('/api/code', { path })
+      .then((payload) => {
+        if (!alive) return
+        setRemote({
+          status: 'ready',
+          content: String(payload && payload.content != null ? payload.content : ''),
+          error: '',
+        })
+      })
+      .catch((error) => {
+        if (!alive) return
+        setRemote({ status: 'error', content: '', error: htmlTabErrorText(error) })
+      })
+    return () => {
+      alive = false
+    }
+  }, [mode, path, tabContent, retryNonce])
+
+  const sourceContent = tabContent != null ? String(tabContent) : remote.content
+  const sourceReady = tabContent != null || remote.status === 'ready'
+  const sourceError = tabContent != null ? '' : remote.status === 'error' ? remote.error : ''
+  const badge = mode === 'render' ? '渲染预览' : '源码视图'
+  const lang = (tab && typeof tab.lang === 'string' && tab.lang) || htmlTabLangOf(path)
+
+  const head = h(
+    'div',
+    { className: 'mdr-html-head' },
+    h('span', { className: 'mdr-html-icon' }, h(Icons.code, { size: 14 })),
+    h('span', { className: 'mdr-html-path', title: path }, path || '（未选择文件）'),
+    h('span', { className: 'mdr-html-badge' }, line > 0 ? `${badge} · 第 ${line} 行` : badge),
+    h('span', { className: 'mdr-spacer' }),
+    locate
+      ? h(
+          'button',
+          { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' },
+          '定位',
+        )
+      : null,
+    h(
+      'button',
+      { type: 'button', className: 'mdr-btn', onClick: toggle, title: '切换 渲染视图 / 源码视图' },
+      mode === 'render' ? '源码视图' : '渲染视图',
+    ),
+  )
+
+  // Keep the iframe mounted in source mode (hidden): toggling back must not
+  // reload the document and lose its scripts / scroll position.
+  const frameNode = h(
+    'div',
+    { className: 'mdr-html-render', style: mode === 'render' ? undefined : { display: 'none' } },
+    frameSrc
+      ? h('iframe', {
+          className: 'mdr-html-frame',
+          src: frameSrc,
+          sandbox: 'allow-scripts allow-modals allow-popups allow-top-navigation-by-user-activation',
+          title: 'HTML 渲染预览',
+          onLoad: () => setFrameLoaded(true),
+        })
+      : h('div', { className: 'mdr-html-state' }, '无法预览：缺少文件路径'),
+    mode === 'render' && !frameLoaded ? h('div', { className: 'mdr-html-frame-note' }, '正在渲染预览…') : null,
+  )
+
+  let sourceNode = null
+  if (mode === 'source') {
+    if (sourceError) {
+      sourceNode = h(
+        'div',
+        { className: 'mdr-html-state mdr-html-state-err' },
+        h('div', null, `读取 HTML 源码失败：${sourceError}`),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn', onClick: () => setRetryNonce((value) => value + 1) },
+          '重试',
+        ),
+      )
+    } else if (sourceReady) {
+      sourceNode = h(HtmlSourceView, { content: sourceContent, lang, hitLine: line })
+    } else {
+      sourceNode = h(
+        'div',
+        { className: 'mdr-html-state' },
+        remote.status === 'loading' ? '正在读取 HTML 源码…' : '正在准备源码视图…',
+      )
+    }
+  }
+
+  return h(
+    'div',
+    { className: 'mdr-html' },
+    h('style', { dangerouslySetInnerHTML: { __html: HTML_TAB_CSS } }),
+    head,
+    tabError ? h('div', { className: 'mdr-html-note' }, tabError) : null,
+    h('div', { className: 'mdr-html-body' }, frameNode, sourceNode),
+  )
+}
+
+function ImageView(props) {
+  const { tab, onLocate } = props || {}
+  const path = String((tab && tab.path) || '')
+  const name = path.split('/').pop() || path || '图片'
+  const [zoomed, setZoomed] = React.useState(false)
+  const [size, setSize] = React.useState(null)
+  const [error, setError] = React.useState('')
+  const [retry, setRetry] = React.useState(0)
+  const stageRef = React.useRef(null)
+  const srcBase = path ? `${ROUTE}/api/raw?path=${encodeURIComponent(path)}` : ''
+  const src = srcBase && retry > 0 ? `${srcBase}&_retry=${retry}` : srcBase
+  const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
+
+  React.useEffect(() => {
+    // A new file gets a clean fit / error state.
+    setZoomed(false)
+    setSize(null)
+    setError('')
+  }, [path])
+
+  React.useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    if (zoomed) {
+      stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2)
+      stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2)
+    } else {
+      stage.scrollLeft = 0
+      stage.scrollTop = 0
+    }
+  }, [zoomed])
+
+  const onImageLoad = (event) => {
+    setError('')
+    const image = event && event.target
+    if (!image) return
+    const width = Number(image.naturalWidth) || 0
+    const height = Number(image.naturalHeight) || 0
+    setSize(width && height ? [width, height] : null)
+    // SVG exported with width="100%" lays out at 0×0 inside an <img>: force the
+    // intrinsic size as a fallback (max-width/height still constrain it in fit mode).
+    if (width && height && (!image.clientWidth || !image.clientHeight)) {
+      image.style.width = `${width}px`
+      image.style.height = `${height}px`
+    }
+  }
+  const onImageError = () => {
+    setSize(null)
+    setError('图片加载失败：无法读取该文件（可能不是受支持的图片格式）')
+  }
+
+  const head = h(
+    'div',
+    { className: 'mdr-image-head' },
+    h('span', { className: 'mdr-image-icon' }, h(Icons.image, { size: 14 })),
+    h('span', { className: 'mdr-image-name', title: path }, path || '（未选择图片）'),
+    size ? h('span', { className: 'mdr-image-dims' }, `${size[0]}×${size[1]} px`) : null,
+    h('span', { className: 'mdr-spacer' }),
+    h('span', { className: 'mdr-image-hint' }, zoomed ? '点击图片还原为适应窗口' : '点击图片放大到 100%'),
+    locate
+      ? h('button', { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' }, '定位')
+      : null,
+  )
+
+  return h(
+    'div',
+    { className: 'mdr-image' },
+    h('style', { dangerouslySetInnerHTML: { __html: IMAGE_TAB_CSS } }),
+    head,
+    h(
+      'div',
+      { className: 'mdr-image-stage' + (zoomed ? ' mdr-image-zoomed' : ''), ref: stageRef },
+      h(
+        'div',
+        { className: 'mdr-image-wrap' },
+        src
+          ? h('img', {
+              key: retry,
+              className: 'mdr-image-img',
+              src,
+              alt: name,
+              title: '点击切换 适应窗口 / 100% 原尺寸',
+              draggable: false,
+              onLoad: onImageLoad,
+              onError: onImageError,
+              onClick: () => setZoomed((value) => !value),
+            })
+          : null,
+      ),
+      error
+        ? h(
+            'div',
+            { className: 'mdr-image-error' },
+            h('div', null, error),
+            h('div', { className: 'mdr-image-error-path' }, path),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'mdr-btn',
+                onClick: () => {
+                  setError('')
+                  setRetry((value) => value + 1)
+                },
+              },
+              '重试',
+            ),
+          )
+        : null,
+    ),
+  )
 }
 
 // ---- 40-tabs.js ----
 /** Tab strip: ordered list of open documents, click to switch, close button. */
+
+const TAB_KIND_LABELS = { code: 'code', html: 'html', image: 'img' }
 
 function TabBar(props) {
   const { tabs, activeId, onActivate, onClose } = props
@@ -3932,10 +5339,30 @@ function TabBar(props) {
         {
           key: tab.id,
           className: 'mdr-tab' + (tab.id === activeId ? ' on' : ''),
-          title: tab.path,
+          title:
+            tab.path +
+            (tab.branch ? ` @ ${tab.branch}` : '') +
+            (tab.commit ? ` @ ${String(tab.commit).slice(0, 7)}` : '') +
+            (tab.line ? ` · 跳转行 ${tab.line}` : ''),
           onClick: () => onActivate(tab.id),
         },
         h('span', { className: 'mdr-tab-name' }, tab.path.split('/').pop()),
+        TAB_KIND_LABELS[tab.kind]
+          ? h(
+              'span',
+              {
+                className: 'mdr-tip',
+                style: {
+                  fontSize: 10,
+                  lineHeight: 1.4,
+                  padding: '0 4px',
+                  border: '1px solid var(--dsw-alias-border-l1)',
+                  borderRadius: 8,
+                },
+              },
+              TAB_KIND_LABELS[tab.kind],
+            )
+          : null,
         h(
           'span',
           {
@@ -4279,53 +5706,129 @@ function JsonTool(props) {
 }
 
 // ---- 50-app.js ----
-/** App shell, workspace-roots menu and the Harness slot registrations. */
+/** App shell: 项目 → 任务 workbench, tab kinds, nav history, Harness slots. */
 
-function RootsMenu(props) {
-  const { meta, onAdd, onRemove, onClose } = props
+const NavBackIcon = svgIcon(['M15 18l-6-6 6-6'])
+const NavFwdIcon = svgIcon(['M9 18l6-6-6-6'])
+
+/**
+ * 项目管理 panel (topbar 项目 button, Alt+P). Every workspace root is a 项目;
+ * `currentProject` = null is the 全部 view whose tree top level lists the roots.
+ * Add/remove go through POST /api/roots { action: 'add' | 'remove', path }.
+ */
+function ProjectsPanel(props) {
+  const { meta, current, onSwitch, onAdd, onRemove, onClose } = props
   const [value, setValue] = React.useState('')
   const roots = (meta && meta.roots) || []
+  const single = !!(meta && meta.single)
   const submit = () => {
     const text = value.trim()
     if (!text) return
     onAdd(text)
     setValue('')
   }
+  const switchButton = (name, active) =>
+    h(
+      'button',
+      {
+        className: 'mdr-btn' + (active ? ' on' : ''),
+        disabled: active,
+        onClick: (event) => {
+          event.stopPropagation()
+          if (!active) onSwitch(name)
+        },
+      },
+      active ? '当前' : '切换',
+    )
   return h(
     'div',
-    { className: 'mdr-roots' },
-    h('div', { style: { display: 'flex', alignItems: 'center' } }, h('h3', { style: { flex: 1 } }, '工作区根'), h('span', { className: 'mdr-btn', onClick: onClose }, '✕')),
-    roots.length === 0
-      ? h('div', { className: 'mdr-tip' }, '还没有打开任何工作区，添加一个绝对路径。')
-      : roots.map((root) =>
-          h(
-            'div',
-            { className: 'mdr-root-row', key: root.path },
-            h('span', { className: 'mdr-root-path', title: root.path }, root.path),
-            h('button', { className: 'mdr-btn', onClick: () => onRemove(root.path) }, '移除'),
-          ),
+    { className: 'mdr-roots', style: { width: 430 } },
+    h(
+      'div',
+      { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
+      h('h3', { style: { margin: 0, flex: 1 } }, '项目管理'),
+      h('span', { className: 'mdr-tip' }, '添加 / 切换 / 移除项目'),
+      h('span', { className: 'mdr-btn', onClick: onClose }, '✕'),
+    ),
+    current
+      ? h(
+          'div',
+          { className: 'mdr-root-row', style: { cursor: 'pointer' }, onClick: () => onSwitch('') },
+          h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '全部项目'),
+          h('span', { className: 'mdr-root-path' }, '目录树顶层聚合显示所有项目'),
+          switchButton('', false),
+        )
+      : null,
+    roots.map((root) =>
+      h(
+        'div',
+        {
+          className: 'mdr-root-row',
+          key: root.path,
+          style: { cursor: current === root.name ? 'default' : 'pointer' },
+          onClick: () => onSwitch(root.name),
+        },
+        h(
+          'span',
+          { style: { flex: '0 0 auto', fontWeight: current === root.name ? 600 : 400, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+          root.name + (current === root.name ? ' ✓' : ''),
         ),
+        h('span', { className: 'mdr-root-path', title: root.path }, root.path),
+        switchButton(root.name, current === root.name),
+        h(
+          'button',
+          {
+            className: 'mdr-btn',
+            title: '从工作区移除该项目（不删除磁盘文件；其标签页关闭）',
+            disabled: single && roots.length <= 1,
+            onClick: (event) => {
+              event.stopPropagation()
+              onRemove(root.path)
+            },
+          },
+          '移除',
+        ),
+      ),
+    ),
     h('input', {
       value,
-      placeholder: '添加工作区绝对路径，回车确认',
+      placeholder: '添加项目：输入根目录绝对路径，回车确认',
       onChange: (event) => setValue(event.target.value),
       onKeyDown: (event) => {
-        if (event.key === 'Enter') submit()
+        if (event.key === 'Enter') {
+          event.preventDefault()
+          submit()
+        }
       },
     }),
-    h('div', { className: 'mdr-tip', style: { marginTop: 6 } }, '多个根时，路径以根目录名作前缀区分。'),
+    h(
+      'div',
+      { className: 'mdr-tip', style: { marginTop: 8, lineHeight: 1.6 } },
+      roots.length > 1
+        ? '目录树顶层跟随当前项目；「全部项目」模式下列表显示所有项目根。'
+        : '当前为单项目模式；添加第二个项目后可在项目管理里切换 / 聚合浏览。',
+    ),
   )
 }
 
 function EmptyState(props) {
-  const { meta } = props
+  const { meta, currentProject } = props
+  const roots = (meta && meta.roots) || []
   return h(
     'div',
     { className: 'mdr-empty' },
     h(Icons.doc, { size: 40 }),
     h('h2', null, 'Markdown Reader'),
     h('div', null, '左侧目录树选择文档，或在顶栏输入相对路径。'),
-    h('div', { className: 'mdr-tip' }, meta && meta.roots.length ? `工作区：${meta.roots.map((root) => root.name).join(' · ')}` : '尚未打开工作区'),
+    h(
+      'div',
+      { className: 'mdr-tip' },
+      roots.length
+        ? currentProject
+          ? `当前项目：${currentProject}`
+          : `全部项目：${roots.map((root) => root.name).join(' · ')}`
+        : '尚未打开项目',
+    ),
   )
 }
 
@@ -4354,130 +5857,209 @@ function GitGraphIcon(props) {
 }
 
 function App() {
+  // 「上一次会话的项目选择」在首帧就决定任务集 / 展开态，避免先渲染 全部 再闪切。
+  const initialProjectRef = React.useRef(loadProjectSelection())
+  const initialWorkbenchRef = React.useRef(null)
+  if (!initialWorkbenchRef.current) {
+    const restored = restoreWorkbench(initialProjectRef.current)
+    if (restored) initialWorkbenchRef.current = restored
+    else {
+      const task = newTaskRecord('默认')
+      initialWorkbenchRef.current = { tasks: [task], activeTaskId: task.id }
+    }
+  }
+
   const [meta, setMeta] = React.useState(null)
+  const [currentProject, setCurrentProject] = React.useState(initialProjectRef.current)
+  const [workbench, setWorkbench] = React.useState(initialWorkbenchRef.current)
   const [dirs, setDirs] = React.useState({})
-  const [expanded, setExpanded] = React.useState(() => new Set(treeStorage.load()))
-  const restoredRef = React.useRef(tabsStorage.load())
-  const [tabs, setTabs] = React.useState(() =>
-    restoredRef.current
-      ? restoredRef.current.tabs.map((tab) => ({
-          ...tab,
-          content: null,
-          lang: tab.kind === 'code' ? langForPath(tab.path) : '',
-          error: '',
-        }))
-      : [],
-  )
-  const [activeId, setActiveId] = React.useState(() => (restoredRef.current ? restoredRef.current.activeId : null))
+  const [expanded, setExpanded] = React.useState(() => new Set(loadTreeExpansion(initialProjectRef.current)))
   const [error, setError] = React.useState('')
   const [pathInput, setPathInput] = React.useState('')
-  const [rootsOpen, setRootsOpen] = React.useState(false)
+  const [projectsOpen, setProjectsOpen] = React.useState(false)
   const [overlay, setOverlay] = React.useState(null)
   const [modalRequest, setModalRequest] = React.useState(null)
   const [syncOpen, setSyncOpen] = React.useState(false)
   const [gitOpen, setGitOpen] = React.useState(false)
   const [failedDirs, setFailedDirs] = React.useState({})
   const [vendorReady, setVendorReady] = React.useState(false)
-  const loadedRef = React.useRef(new Set())
+  const [locateTarget, setLocateTarget] = React.useState('')
+  const [nav, setNav] = React.useState({ stack: [], idx: -1 })
+
   const inflightDirsRef = React.useRef(new Set())
+  const inflightTabsRef = React.useRef(new Set())
   const dirsRef = React.useRef(dirs)
   const expandedRef = React.useRef(expanded)
-  const tabsRef = React.useRef(tabs)
-  const activeIdRef = React.useRef(activeId)
+  const workbenchRef = React.useRef(workbench)
+  const metaRef = React.useRef(meta)
+  const currentProjectRef = React.useRef(currentProject)
   const contentRef = React.useRef(null)
-  const panelsRef = React.useRef({ modal: false, sync: false, git: false, roots: false })
+  const navRef = React.useRef(nav)
+  const panelsRef = React.useRef({ modal: false, sync: false, git: false, projects: false })
+  const switchProjectRef = React.useRef(null)
   dirsRef.current = dirs
   expandedRef.current = expanded
-  tabsRef.current = tabs
-  activeIdRef.current = activeId
-  panelsRef.current = { modal: !!modalRequest, sync: syncOpen, git: gitOpen, roots: rootsOpen }
+  workbenchRef.current = workbench
+  metaRef.current = meta
+  currentProjectRef.current = currentProject
+  navRef.current = nav
+  panelsRef.current = {
+    modal: !!modalRequest,
+    sync: syncOpen,
+    git: gitOpen,
+    projects: projectsOpen,
+  }
 
-  /**
-   * Save the active markdown tab's scroll offset NOW, before the DOM switches
-   * away from it. Saving in an unmount cleanup is wrong: the scroll container is
-   * already swapped (scrollTop 0), which overwrote the real position.
-   */
+  const activeTask = workbench.tasks.find((task) => task.id === workbench.activeTaskId) || workbench.tasks[0] || null
+  const tabs = activeTask ? activeTask.tabs : []
+  const activeId = activeTask ? activeTask.activeId : null
+  const activeTab = tabs.find((tab) => tab.id === activeId) || null
+  const multi = !!(meta && !meta.single)
+  const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
+  // 项目模式：目录树顶层 = 该项目根的下一层；全部模式（或单根）= 虚拟顶层 ''。
+  const rootKey = currentProject && multi ? currentProject : ''
+  const activeTabKey = activeTab
+    ? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
+    : ''
+
+  /** Save the active markdown tab scroll NOW, before the DOM switches away. */
   const saveActiveScroll = React.useCallback(() => {
     const scroller = contentRef.current
-    const active = activeIdRef.current
-    if (!scroller || !active) return
-    const tab = tabsRef.current.find((item) => item.id === active)
+    if (!scroller) return
+    const wb = workbenchRef.current
+    const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+    const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
     if (!tab || tab.kind !== 'md') return
     scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
+    rememberTabScroll(tab.id, scroller.scrollTop)
   }, [])
 
-  React.useEffect(() => {
-    const scroller = contentRef.current
-    if (!scroller) return undefined
-    const onScroll = () => {
-      const active = activeIdRef.current
-      const tab = tabsRef.current.find((item) => item.id === active)
-      if (!tab || tab.kind !== 'md') return
-      scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
-    }
-    const onBeforeUnload = () => {
-      const active = activeIdRef.current
-      const tab = tabsRef.current.find((item) => item.id === active)
-      if (tab && tab.kind === 'md' && contentRef.current) {
-        scrollStorage.set(`md:${tab.path}`, contentRef.current.scrollTop)
+  /** Patch one tab wherever it lives (tab ids are unique per kind:path). */
+  const patchTab = React.useCallback((id, patch) => {
+    setWorkbench((prev) => {
+      let changed = false
+      const tasks = prev.tasks.map((task) => {
+        if (!task.tabs.some((tab) => tab.id === id)) return task
+        const tabs = task.tabs.map((tab) => {
+          if (tab.id !== id) return tab
+          changed = true
+          return { ...tab, ...patch }
+        })
+        return { ...task, tabs }
+      })
+      return changed ? { ...prev, tasks } : prev
+    })
+  }, [])
+
+  const saveWorkbenchNow = React.useCallback(() => {
+    saveWorkbench(currentProjectRef.current, workbenchRef.current)
+  }, [])
+
+  /* ------------------------------------------------------------ navigation */
+
+  const pushNav = React.useCallback((entry) => {
+    if (!entry || !entry.path) return
+    setNav((prev) => {
+      const current = prev.stack[prev.idx]
+      if (current && current.path === entry.path && (current.line || 0) === (entry.line || 0)) return prev
+      const stack = prev.stack.slice(0, prev.idx + 1)
+      stack.push({
+        path: entry.path,
+        line: entry.line || 0,
+        branch: entry.branch || '',
+        commit: entry.commit || '',
+        taskId: entry.taskId || '',
+      })
+      if (stack.length > 200) stack.shift()
+      return { stack, idx: stack.length - 1 }
+    })
+  }, [])
+
+  /**
+   * Re-open a history entry: switch to the task that owns the tab when possible,
+   * (re)open the tab, apply the line / git version. Markdown scroll comes back
+   * from the per-file scroll store (saveActiveScroll ran before we left).
+   */
+  const applyNavEntry = React.useCallback((entry) => {
+    if (!entry || !entry.path) return
+    const kind = kindForPath(entry.path)
+    const id = `${kind}:${entry.path}`
+    const wb = workbenchRef.current
+    const candidates = wb.tasks.filter((task) => task.tabs.some((tab) => tab.id === id))
+    const targetTask =
+      candidates.find((task) => task.id === entry.taskId) ||
+      candidates.find((task) => task.id === wb.activeTaskId) ||
+      candidates[0] ||
+      wb.tasks.find((task) => task.id === wb.activeTaskId) ||
+      wb.tasks[0]
+    if (!targetTask) return
+    setWorkbench((prev) => {
+      const tasks = prev.tasks.map((task) => {
+        if (task.id !== targetTask.id) return task
+        const index = task.tabs.findIndex((tab) => tab.id === id)
+        let tabs
+        if (index >= 0) {
+          tabs = task.tabs.map((tab) =>
+            tab.id === id
+              ? {
+                  ...tab,
+                  line: entry.line || 0,
+                  branch: entry.branch || tab.branch || '',
+                  commit: entry.commit || tab.commit || '',
+                  navFrom: true,
+                }
+              : tab,
+          )
+        } else {
+          tabs = task.tabs.concat([
+            {
+              id,
+              kind,
+              path: entry.path,
+              content: null,
+              lang: kind === 'code' ? langForPath(entry.path) : kind === 'html' ? 'xml' : '',
+              line: entry.line || 0,
+              branch: entry.branch || '',
+              commit: entry.commit || '',
+              htmlMode: 'render',
+              navFrom: true,
+              error: '',
+              scroll: recallTabScroll(id),
+            },
+          ])
+        }
+        return { ...task, tabs, activeId: id }
+      })
+      return { ...prev, tasks, activeTaskId: targetTask.id }
+    })
+    if (kind === 'md') {
+      const top = recallTabScroll(id)
+      if (top > 0) {
+        scrollStorage.set(`md:${entry.path}`, top)
+        const apply = () => {
+          const scroller = contentRef.current
+          if (scroller && Math.abs(scroller.scrollTop - top) > 2) scroller.scrollTop = top
+        }
+        setTimeout(apply, 0)
+        setTimeout(apply, 180)
       }
-      scrollStorage.flushNow()
-    }
-    scroller.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => {
-      scroller.removeEventListener('scroll', onScroll)
-      window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [])
 
-  // 稳定引用：子分片把这些回调放进 effect 依赖（如代码弹窗的 Esc 监听），
-  // 每次渲染都换新函数会让它们反复解绑/重绑。
-  const closeModal = React.useCallback(() => setModalRequest(null), [])
-  const closeSync = React.useCallback(() => setSyncOpen(false), [])
-  const closeGit = React.useCallback(() => setGitOpen(false), [])
+  const goNav = React.useCallback(
+    (delta) => {
+      const state = navRef.current
+      const next = state.idx + delta
+      if (next < 0 || next >= state.stack.length) return
+      const entry = state.stack[next]
+      saveActiveScroll()
+      setNav({ stack: state.stack, idx: next })
+      applyNavEntry(entry)
+    },
+    [saveActiveScroll, applyNavEntry],
+  )
 
-  React.useEffect(() => {
-    ensureVendor()
-      .then(() => setVendorReady(true))
-      .catch((err) => setError(String((err && err.message) || err)))
-  }, [])
-
-  React.useEffect(() => {
-    if (!error) return undefined
-    const timer = setTimeout(() => setError(''), 6000)
-    return () => clearTimeout(timer)
-  }, [error])
-
-  React.useEffect(() => {
-    const onKeyDown = (event) => {
-      const mod = event.ctrlKey || event.metaKey
-      if (mod && event.shiftKey && event.key.toLowerCase() === 'f') {
-        event.preventDefault()
-        setOverlay('search')
-      } else if (mod && !event.shiftKey && event.key.toLowerCase() === 'p') {
-        event.preventDefault()
-        setOverlay('files')
-      } else if (event.key === 'Escape') {
-        // Esc 逐层关闭：代码弹窗 → 版本树 → 同步面板 → 工作区菜单 → 其它遮罩。
-        const panels = panelsRef.current
-        if (panels.modal) {
-          // 代码弹窗自己也有 Esc 监听（定义候选列表打开时只关候选列表，并用
-          // preventDefault 表明「已处理」）。App 的监听器注册更早、会先跑，所以
-          // 延到微任务里再判断：弹窗已处理就什么都不做，否则由 App 关掉弹窗。
-          const current = event
-          Promise.resolve().then(() => {
-            if (!current.defaultPrevented) closeModal()
-          })
-        } else if (panels.git) closeGit()
-        else if (panels.sync) closeSync()
-        else if (panels.roots) setRootsOpen(false)
-        else setOverlay((current) => (current ? null : current))
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  /* --------------------------------------------------------------- loading */
 
   const loadDir = React.useCallback((rel) => {
     const key = String(rel == null ? '' : rel)
@@ -4496,7 +6078,6 @@ function App() {
         setDirs((prev) => ({ ...prev, [key]: entries }))
       })
       .catch((err) => {
-        // 标记失败，目录树显示「加载失败，点刷新重试」而不是永远「加载中…」。
         setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
         setError(String((err && err.message) || err))
       })
@@ -4505,11 +6086,497 @@ function App() {
       })
   }, [])
 
+  const loadTab = React.useCallback(
+    (id, kind, rel) => {
+      if (!id || inflightTabsRef.current.has(id)) return
+      inflightTabsRef.current.add(id)
+      const endpoint = kind === 'md' ? '/api/markdown' : '/api/code'
+      fetchJson(endpoint, { path: rel })
+        .then((payload) => {
+          patchTab(id, {
+            content: payload.content,
+            lang: payload.lang || langForPath(rel) || (kind === 'html' ? 'xml' : ''),
+            error: '',
+          })
+        })
+        .catch((err) => {
+          const message = String((err && err.message) || err)
+          setError(message)
+          patchTab(id, { error: message })
+        })
+        .finally(() => {
+          inflightTabsRef.current.delete(id)
+        })
+    },
+    [patchTab],
+  )
+
+  /* --------------------------------------------------------- open / close */
+
+  const openPath = React.useCallback(
+    (rel, line, opts) => {
+      const options = opts || {}
+      const value = String(rel || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+        .trim()
+      if (!value) return
+      const kind = kindForPath(value)
+      const id = `${kind}:${value}`
+      const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
+      saveActiveScroll()
+      setWorkbench((prev) => {
+        const tasks = prev.tasks.map((task) => {
+          if (task.id !== prev.activeTaskId) return task
+          const index = task.tabs.findIndex((tab) => tab.id === id)
+          if (index >= 0) {
+            const tabs = task.tabs.map((tab) =>
+              tab.id === id
+                ? {
+                    ...tab,
+                    line: line == null ? tab.line : targetLine,
+                    branch: options.branch || tab.branch || '',
+                    commit: options.commit || tab.commit || '',
+                    navFrom: options.jump ? true : !!tab.navFrom,
+                  }
+                : tab,
+            )
+            return { ...task, tabs, activeId: id }
+          }
+          const tab = {
+            id,
+            kind,
+            path: value,
+            content: null,
+            lang: kind === 'code' ? langForPath(value) : kind === 'html' ? 'xml' : '',
+            line: targetLine,
+            branch: options.branch || '',
+            commit: options.commit || '',
+            htmlMode: 'render',
+            navFrom: !!options.jump,
+            error: '',
+            scroll: 0,
+          }
+          // Open next to the tab that started the jump (reference behaviour),
+          // not always at the far right.
+          const anchorIndex = task.tabs.findIndex((tabItem) => tabItem.id === task.activeId)
+          const tabs = task.tabs.slice()
+          if (anchorIndex >= 0) tabs.splice(anchorIndex + 1, 0, tab)
+          else tabs.push(tab)
+          return { ...task, tabs, activeId: id }
+        })
+        return { ...prev, tasks }
+      })
+      pushNav({
+        path: value,
+        line: targetLine,
+        branch: options.branch || '',
+        commit: options.commit || '',
+        taskId: workbenchRef.current.activeTaskId,
+      })
+    },
+    [saveActiveScroll, pushNav],
+  )
+
+  const activateTab = React.useCallback(
+    (id) => {
+      const wb = workbenchRef.current
+      const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+      if (!task || task.activeId === id || !task.tabs.some((tab) => tab.id === id)) return
+      saveActiveScroll()
+      setWorkbench((prev) => ({
+        ...prev,
+        tasks: prev.tasks.map((item) => (item.id === prev.activeTaskId ? { ...item, activeId: id } : item)),
+      }))
+    },
+    [saveActiveScroll],
+  )
+
+  const closeTab = React.useCallback(
+    (id) => {
+      saveActiveScroll()
+      inflightTabsRef.current.delete(id)
+      const closingPath = id.slice(id.indexOf(':') + 1)
+      setModalRequest((current) => (current && current.path === closingPath ? null : current))
+      setWorkbench((prev) => {
+        const owner = prev.tasks.find((task) => task.tabs.some((tab) => tab.id === id))
+        if (!owner) return prev
+        const tasks = prev.tasks.map((task) => {
+          if (task.id !== owner.id) return task
+          const index = task.tabs.findIndex((tab) => tab.id === id)
+          const nextTabs = task.tabs.filter((tab) => tab.id !== id)
+          let activeId = task.activeId
+          if (activeId === id) activeId = nextTabs.length ? nextTabs[Math.min(Math.max(index, 0), nextTabs.length - 1)].id : null
+          return { ...task, tabs: nextTabs, activeId }
+        })
+        return { ...prev, tasks }
+      })
+    },
+    [saveActiveScroll],
+  )
+
+  /* --------------------------------------------------------------- tasks */
+
+  const switchTask = React.useCallback(
+    (id) => {
+      if (id === workbenchRef.current.activeTaskId) return
+      if (!workbenchRef.current.tasks.some((task) => task.id === id)) return
+      saveActiveScroll()
+      setWorkbench((prev) => ({ ...prev, activeTaskId: id }))
+    },
+    [saveActiveScroll],
+  )
+
+  const newTask = React.useCallback(() => {
+    saveActiveScroll()
+    const task = newTaskRecord(`任务${taskSeq + 1}`)
+    setWorkbench((prev) => ({ tasks: prev.tasks.concat([task]), activeTaskId: task.id }))
+  }, [saveActiveScroll])
+
+  const renameTask = React.useCallback((id, name) => {
+    const value = String(name || '').trim()
+    if (!value) return
+    setWorkbench((prev) => ({
+      ...prev,
+      tasks: prev.tasks.map((task) => (task.id === id ? { ...task, name: value } : task)),
+    }))
+  }, [])
+
+  const deleteTask = React.useCallback(
+    (id) => {
+      saveActiveScroll()
+      setWorkbench((prev) => {
+        if (!prev.tasks.some((task) => task.id === id)) return prev
+        if (prev.tasks.length <= 1) {
+          // Never leave the workbench without a task: the last × clears it.
+          return {
+            ...prev,
+            tasks: prev.tasks.map((task) => (task.id === id ? { ...task, tabs: [], activeId: null } : task)),
+          }
+        }
+        const index = prev.tasks.findIndex((task) => task.id === id)
+        const tasks = prev.tasks.filter((task) => task.id !== id)
+        const activeTaskId =
+          prev.activeTaskId === id ? tasks[Math.min(Math.max(index, 0), tasks.length - 1)].id : prev.activeTaskId
+        return { tasks, activeTaskId }
+      })
+    },
+    [saveActiveScroll],
+  )
+
+  const reorderTasks = React.useCallback((dragId, targetId, before) => {
+    if (!dragId || !targetId || dragId === targetId) return
+    setWorkbench((prev) => {
+      const from = prev.tasks.findIndex((task) => task.id === dragId)
+      if (from < 0) return prev
+      const tasks = prev.tasks.slice()
+      const [moved] = tasks.splice(from, 1)
+      const targetIndex = tasks.findIndex((task) => task.id === targetId)
+      if (targetIndex < 0) return prev
+      tasks.splice(before ? targetIndex : targetIndex + 1, 0, moved)
+      return { ...prev, tasks }
+    })
+  }, [])
+
+  /* ----------------------------------------------------------------- tree */
+
+  const toggleDir = React.useCallback(
+    (rel) => {
+      const willOpen = !expandedRef.current.has(rel)
+      const next = new Set(expandedRef.current)
+      if (willOpen) next.add(rel)
+      else next.delete(rel)
+      setExpanded(next)
+      expandedRef.current = next
+      saveTreeExpansion(currentProjectRef.current, next)
+      if (willOpen && !dirsRef.current[rel]) loadDir(rel)
+    },
+    [loadDir],
+  )
+
+  const refreshTree = React.useCallback(() => {
+    const current = currentProjectRef.current
+    const metaNow = metaRef.current
+    const root = current && metaNow && !metaNow.single ? current : ''
+    const active = expandedRef.current
+    const paths = [root, ...[...active].filter((rel) => rel && rel !== root)]
+    paths.forEach((rel) => loadDir(rel))
+    setFailedDirs((prev) => (Object.keys(prev).length ? {} : prev))
+    setDirs((prev) => {
+      const next = { ...prev }
+      for (const rel of Object.keys(next)) {
+        if (rel !== root && !active.has(rel)) delete next[rel]
+      }
+      return next
+    })
+  }, [loadDir])
+
+  /** Expand the file's ancestors (respecting project prefixes) and highlight it. */
+  const locateInTree = React.useCallback(
+    (filePath) => {
+      const path = String(filePath || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+      if (!path) return
+      const metaNow = metaRef.current
+      const roots = metaNow ? metaNow.roots.map((root) => root.name) : []
+      const multiNow = !!(metaNow && !metaNow.single)
+      const segs = path.split('/').filter(Boolean)
+      const current = currentProjectRef.current
+      const root = current && multiNow ? current : ''
+      const prefixes = multiNow
+        ? roots.includes(segs[0])
+          ? [segs[0]]
+          : current
+            ? [current]
+            : roots
+        : ['']
+      const next = new Set(expandedRef.current)
+      if (root) next.add(root)
+      for (const prefix of prefixes) {
+        const full = prefix ? `${prefix}/${segs.join('/')}` : segs.join('/')
+        const parts = full.split('/')
+        for (let index = 1; index < parts.length; index += 1) next.add(parts.slice(0, index).join('/'))
+      }
+      setExpanded(next)
+      expandedRef.current = next
+      saveTreeExpansion(current, next)
+      for (const rel of next) {
+        if (!dirsRef.current[rel]) loadDir(rel)
+      }
+      setLocateTarget(path)
+      setTimeout(() => setLocateTarget(''), 2600)
+    },
+    [loadDir],
+  )
+
+  /* -------------------------------------------------------------- project */
+
+  const switchProject = React.useCallback(
+    (name) => {
+      const next = name || null
+      if (next === currentProjectRef.current) {
+        setProjectsOpen(false)
+        return
+      }
+      saveActiveScroll()
+      saveWorkbench(currentProjectRef.current, workbenchRef.current)
+      const restored = restoreWorkbench(next)
+      let nextWorkbench
+      if (restored) nextWorkbench = restored
+      else {
+        const task = newTaskRecord('默认')
+        nextWorkbench = { tasks: [task], activeTaskId: task.id }
+      }
+      setProjectsOpen(false)
+      setCurrentProject(next)
+      currentProjectRef.current = next
+      setProjectScope(next)
+      saveProjectSelection(next)
+      setWorkbench(nextWorkbench)
+      workbenchRef.current = nextWorkbench
+      const nextExpanded = new Set(loadTreeExpansion(next))
+      setExpanded(nextExpanded)
+      expandedRef.current = nextExpanded
+      setDirs({})
+      dirsRef.current = {}
+      setFailedDirs({})
+      setLocateTarget('')
+      setOverlay(null)
+      setModalRequest(null)
+    },
+    [saveActiveScroll],
+  )
+  switchProjectRef.current = switchProject
+
+  /** Close tabs belonging to a removed project (across every task). */
+  const pruneProjectTabs = React.useCallback((name) => {
+    if (!name) return
+    const prefix = `${name}/`
+    setWorkbench((prev) => {
+      let changed = false
+      const tasks = prev.tasks.map((task) => {
+        if (!task.tabs.some((tab) => tab.path === name || tab.path.startsWith(prefix))) return task
+        changed = true
+        const nextTabs = task.tabs.filter((tab) => !(tab.path === name || tab.path.startsWith(prefix)))
+        let activeId = task.activeId
+        if (!nextTabs.some((tab) => tab.id === activeId)) activeId = nextTabs.length ? nextTabs[nextTabs.length - 1].id : null
+        return { ...task, tabs: nextTabs, activeId }
+      })
+      return changed ? { ...prev, tasks } : prev
+    })
+  }, [])
+
+  const changeRoots = React.useCallback(
+    (action, pathValue) => {
+      const previousRoots = (metaRef.current && metaRef.current.roots) || []
+      const removed = action === 'remove' ? previousRoots.find((root) => root.path === pathValue) : null
+      postJson('/api/roots', { action, path: pathValue })
+        .then((payload) => {
+          const roots = Array.isArray(payload.roots) ? payload.roots : []
+          setMeta({ ok: true, roots, single: !!payload.single })
+          setDirs({})
+          dirsRef.current = {}
+          setFailedDirs({})
+          if (removed) {
+            pruneProjectTabs(removed.name)
+            const prefix = `${removed.name}/`
+            const next = new Set([...expandedRef.current].filter((rel) => rel !== removed.name && !rel.startsWith(prefix)))
+            setExpanded(next)
+            expandedRef.current = next
+            saveTreeExpansion(currentProjectRef.current, next)
+          }
+          const current = currentProjectRef.current
+          if (current && !roots.some((root) => root.name === current)) {
+            // 当前项目被移除（或根列表被整体重置）→ 回到「全部」
+            if (switchProjectRef.current) switchProjectRef.current(null)
+          }
+        })
+        .catch((err) => setError(String((err && err.message) || err)))
+    },
+    [pruneProjectTabs],
+  )
+
+  const refreshActive = React.useCallback(() => {
+    const wb = workbenchRef.current
+    const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+    const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
+    if (!tab || tab.kind === 'image') return
+    patchTab(tab.id, { error: '' })
+    loadTab(tab.id, tab.kind, tab.path)
+  }, [patchTab, loadTab])
+
+  /* -------------------------------------------------------------- effects */
+
+  React.useEffect(() => {
+    ensureVendor()
+      .then(() => setVendorReady(true))
+      .catch((err) => setError(String((err && err.message) || err)))
+  }, [])
+
+  React.useEffect(() => {
+    if (!error) return undefined
+    const timer = setTimeout(() => setError(''), 6000)
+    return () => clearTimeout(timer)
+  }, [error])
+
+  const closeModal = React.useCallback(() => setModalRequest(null), [])
+  const closeSync = React.useCallback(() => setSyncOpen(false), [])
+  const closeGit = React.useCallback(() => setGitOpen(false), [])
+
+  React.useEffect(() => {
+    const onKeyDown = (event) => {
+      const target = event.target
+      const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
+      const inField = tag === 'INPUT' || tag === 'TEXTAREA'
+      const mod = event.ctrlKey || event.metaKey
+      if (mod && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault()
+        setOverlay('search')
+        return
+      }
+      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
+        event.preventDefault()
+        setOverlay('files')
+        return
+      }
+      if (event.altKey && !mod && !inField) {
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault()
+          goNav(-1)
+        } else if (event.key === 'ArrowRight') {
+          event.preventDefault()
+          goNav(1)
+        } else if (event.key.toLowerCase() === 'p') {
+          event.preventDefault()
+          setProjectsOpen((value) => !value)
+        }
+        return
+      }
+      if (event.key !== 'Escape') return
+      // Esc 逐层关闭：代码弹窗 → 版本树 → 同步面板 → 项目管理 → 其它遮罩。
+      const panels = panelsRef.current
+      if (panels.modal) {
+        // 代码弹窗自己也有 Esc 监听（定义候选列表打开时只关候选列表，并用
+        // preventDefault 表明「已处理」）。App 的监听器注册更早、会先跑，所以
+        // 延到微任务里再判断：弹窗已处理就什么都不做，否则由 App 关掉弹窗。
+        const current = event
+        Promise.resolve().then(() => {
+          if (!current.defaultPrevented) closeModal()
+        })
+      } else if (panels.git) closeGit()
+      else if (panels.sync) closeSync()
+      else if (panels.projects) setProjectsOpen(false)
+      else setOverlay((current) => (current ? null : current))
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [goNav, closeModal, closeSync, closeGit])
+
+  // Panel switch unmounts/remounts Page: `dirs` starts empty while `expanded`
+  // came from storage. Once meta (and the project-scoped root) is known, load
+  // every expanded dir that has no data yet, not only the root.
+  React.useEffect(() => {
+    if (!meta) return
+    const targets = new Set([rootKey])
+    for (const rel of expandedRef.current) {
+      if (rel && !dirsRef.current[rel]) targets.add(rel)
+    }
+    for (const rel of targets) loadDir(rel)
+  }, [meta, currentProject, rootKey, loadDir])
+
+  // Persist the workbench of the current project, and the project selection /
+  // search scope. Switching projects saves the old set explicitly first.
+  React.useEffect(() => {
+    saveWorkbench(currentProject, workbench)
+  }, [currentProject, workbench])
+
+  React.useEffect(() => {
+    setProjectScope(currentProject)
+    saveProjectSelection(currentProject)
+  }, [currentProject])
+
+  // Activation-time lazy load: md/code/html content is fetched when a tab
+  // becomes active (image tabs need no text).
+  React.useEffect(() => {
+    if (!activeTab) return
+    if (activeTab.kind === 'image' || activeTab.content != null || activeTab.error) return
+    loadTab(activeTab.id, activeTab.kind, activeTab.path)
+  }, [workbench.activeTaskId, activeTabKey, loadTab])
+
+  React.useEffect(() => {
+    const scroller = contentRef.current
+    if (!scroller) return undefined
+    const onScroll = () => {
+      const wb = workbenchRef.current
+      const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+      const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
+      if (!tab || tab.kind !== 'md') return
+      scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
+      rememberTabScroll(tab.id, scroller.scrollTop)
+    }
+    const onBeforeUnload = () => {
+      onScroll()
+      saveWorkbenchNow()
+      scrollStorage.flushNow()
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      scroller.removeEventListener('scroll', onScroll)
+      window.removeEventListener('beforeunload', onBeforeUnload)
+    }
+  }, [saveWorkbenchNow])
+
   React.useEffect(() => {
     let cancelled = false
     fetchJson('/api/meta')
       .then((payload) => {
-        if (!cancelled) setMeta(payload)
+        if (cancelled) return
+        setMeta(payload)
+        const names = (payload.roots || []).map((root) => root.name)
+        const project = currentProjectRef.current
+        if (project && !names.includes(project) && switchProjectRef.current) switchProjectRef.current(null)
       })
       .catch((err) => {
         if (!cancelled) setError(String((err && err.message) || err))
@@ -4519,163 +6586,48 @@ function App() {
     }
   }, [])
 
-  // 面板切换会让 Page 卸载重挂：`dirs` 从空开始，但 `expanded` 从 localStorage 恢复。
-  // meta（含根列表）到位后，把「已展开但还没有数据」的目录按绝对相对路径逐个加载：
-  // 不能只加载根 ''，否则恢复出来的展开目录会永远停在「加载中…」。
-  // 依赖只看 meta：loadDir 内部会 setDirs，若把 dirs 放进依赖会反复触发加载。
-  React.useEffect(() => {
-    if (!meta) return
-    const targets = new Set([''])
-    for (const rel of expandedRef.current) {
-      if (rel && !dirsRef.current[rel]) targets.add(rel)
-    }
-    for (const rel of targets) loadDir(rel)
-  }, [meta, loadDir])
+  /* ------------------------------------------------------------- handlers */
 
-  const loadTab = React.useCallback((id, kind, rel) => {
-    fetchJson(kind === 'md' ? '/api/markdown' : '/api/code', { path: rel })
-      .then((payload) => {
-        setTabs((prev) =>
-          prev.map((tab) =>
-            tab.id === id ? { ...tab, content: payload.content, lang: payload.lang || tab.lang, error: '' } : tab,
-          ),
-        )
-      })
-      .catch((err) => {
-        const message = String((err && err.message) || err)
-        setError(message)
-        setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, error: message } : tab)))
-      })
-  }, [])
-
-  React.useEffect(() => {
-    if (!activeId) return
-    const tab = tabs.find((item) => item.id === activeId)
-    if (!tab || tab.content != null || loadedRef.current.has(tab.id)) return
-    loadedRef.current.add(tab.id)
-    loadTab(tab.id, tab.kind, tab.path)
-  }, [activeId, tabs, loadTab])
-
-  React.useEffect(() => {
-    tabsStorage.save(tabs, activeId)
-  }, [tabs, activeId])
-
-  const openPath = React.useCallback(
-    (rel, line) => {
-      const value = String(rel || '').trim()
-      if (!value) return
-      saveActiveScroll()
-      const kind = isMdFile(value) ? 'md' : isCodeFile(value) ? 'code' : ''
-      if (!kind) {
-        setError(`暂不支持的文件类型：${value}`)
-        return
-      }
-      const id = `${kind}:${value}`
-      const first = !loadedRef.current.has(id)
-      if (first) loadedRef.current.add(id)
-      setTabs((prev) => {
-        if (prev.some((tab) => tab.id === id)) {
-          return prev.map((tab) => (tab.id === id && line != null ? { ...tab, line } : tab))
-        }
-        return [...prev, { id, kind, path: value, content: null, lang: kind === 'code' ? langForPath(value) : '', line: line || 0, error: '' }]
-      })
-      setActiveId(id)
-      if (first) loadTab(id, kind, value)
-    },
-    [loadTab],
-  )
-
-  const closeTab = React.useCallback(
-    (id) => {
-      saveActiveScroll()
-      loadedRef.current.delete(id)
-      const closing = tabsRef.current.find((tab) => tab.id === id) || null
-      setTabs((prev) => {
-        const index = prev.findIndex((tab) => tab.id === id)
-        const next = prev.filter((tab) => tab.id !== id)
-        if (index >= 0) {
-          setActiveId((current) => {
-            if (current !== id) return current
-            if (!next.length) return null
-            return next[Math.min(index, next.length - 1)].id
-          })
-        }
-        return next
-      })
-      // 关掉标签页后不要在弹窗里留一个指向已关闭文件（可能已被移除/改路径）的陈旧请求。
-      if (closing) {
-        setModalRequest((current) => (current && current.path === closing.path ? null : current))
-      }
-    },
-    [],
-  )
-
-  const toggleDir = React.useCallback(
-    (rel) => {
-      const willOpen = !expanded.has(rel)
-      const next = new Set(expanded)
-      if (willOpen) next.add(rel)
-      else next.delete(rel)
-      setExpanded(next)
-      treeStorage.save(next)
-      if (willOpen && !dirs[rel]) loadDir(rel)
-    },
-    [expanded, dirs, loadDir],
-  )
-
-  const refreshTree = React.useCallback(() => {
-    // 已展开的目录全部重载（含之前加载失败、`dirs` 里还没有的），再清掉已折叠目录的缓存。
-    const paths = ['', ...[...expanded].filter((rel) => rel !== '')]
-    paths.forEach((rel) => loadDir(rel))
-    setFailedDirs((prev) => (Object.keys(prev).length ? {} : prev))
-    setDirs((prev) => {
-      const next = { ...prev }
-      for (const rel of Object.keys(next)) {
-        if (rel !== '' && !expanded.has(rel)) delete next[rel]
-      }
-      return next
-    })
-  }, [expanded, loadDir])
-
-  const refreshActive = React.useCallback(() => {
-    const tab = tabs.find((item) => item.id === activeId)
-    if (tab) loadTab(tab.id, tab.kind, tab.path)
-  }, [tabs, activeId, loadTab])
-
-  const changeRoots = React.useCallback((action, pathValue) => {
-    postJson('/api/roots', { action, path: pathValue })
-      .then((payload) => {
-        setMeta({ ok: true, roots: payload.roots, single: payload.single })
-        setDirs({})
-        setExpanded(new Set())
-        setFailedDirs({})
-        treeStorage.save(new Set())
-        // 根列表变了 → meta 变化会触发上面的恢复 effect，由它统一加载根目录。
-      })
-      .catch((err) => setError(String((err && err.message) || err)))
-  }, [])
-
-  const activeTab = tabs.find((tab) => tab.id === activeId) || null
-  const multi = !!(meta && !meta.single)
-  const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
-
+  /**
+   * Markdown link routing (attributes written by 10-markdown.js):
+   *   data-path / data-kind / data-line / data-branch / data-commit.
+   * code + plain click → modal; code + Ctrl/Cmd → tab; md/html/image → tab.
+   * Resolved repository links keep their href: Shift+click / right-click stay
+   * native so the remote repo page is still reachable.
+   */
   const onContentClick = (event) => {
     const target = event.target
     const anchor = target && target.closest ? target.closest('a[data-path]') : null
     if (!anchor) return
-    event.preventDefault()
-    const rel = anchor.dataset.path
+    const rel = (anchor.dataset.path || '').trim()
     if (!rel) return
+    if (event.shiftKey && anchor.hasAttribute('href')) return
+    event.preventDefault()
+    const kind = anchor.dataset.kind || kindForPath(rel)
     const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
-    // 文档里的代码链接：普通点击 → 代码弹窗；Ctrl/Cmd+点击 → 开为标签页。
-    // 注意 isCodeFile 也包含 .md，所以 md 链接必须先按 isMdFile 放行，仍开标签页。
-    // md 链接 / 树点击 / 快速打开 / 搜索仍由 openPath 开标签页。
-    if (event.ctrlKey || event.metaKey || isMdFile(rel) || !isCodeFile(rel)) {
-      openPath(rel, line)
+    const branch = anchor.dataset.branch || ''
+    const commit = anchor.dataset.commit || ''
+    const modifier = event.ctrlKey || event.metaKey
+    if (kind === 'code') {
+      if (modifier) openPath(rel, line, { branch, commit, jump: true })
+      else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit })
       return
     }
-    setModalRequest({ path: rel, line: line == null ? null : line })
+    openPath(rel, line, { branch, commit })
   }
+
+  const projectLabel = currentProject || (meta && meta.roots.length > 1 ? '全部项目' : '项目')
+  const projectsTitle = currentProject
+    ? `当前项目 ${currentProject}（Alt+P 项目管理）`
+    : meta && meta.roots.length > 1
+      ? '全部项目（Alt+P 项目管理）'
+      : '项目管理（Alt+P）'
+  const treeLabel = currentProject
+    ? currentProject
+    : meta && meta.roots.length > 1
+      ? `全部项目（${rootNames.length}）`
+      : rootNames[0] || '项目'
+  const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
 
   return h(
     React.Fragment,
@@ -4684,6 +6636,26 @@ function App() {
       'div',
       { className: 'mdr-topbar' },
       h('span', { className: 'mdr-brand' }, h(Icons.doc, { size: 16 }), 'Markdown Reader'),
+      h(
+        'button',
+        {
+          className: 'mdr-btn',
+          disabled: nav.idx <= 0,
+          title: '后退（Alt+←）',
+          onClick: () => goNav(-1),
+        },
+        h(NavBackIcon, { size: 14 }),
+      ),
+      h(
+        'button',
+        {
+          className: 'mdr-btn',
+          disabled: nav.idx >= nav.stack.length - 1,
+          title: '前进（Alt+→）',
+          onClick: () => goNav(1),
+        },
+        h(NavFwdIcon, { size: 14 }),
+      ),
       h('input', {
         className: 'mdr-path',
         value: pathInput,
@@ -4698,9 +6670,13 @@ function App() {
       h('span', { className: 'mdr-spacer' }),
       h(
         'button',
-        { className: 'mdr-btn' + (rootsOpen ? ' on' : ''), onClick: () => setRootsOpen((value) => !value), title: '工作区根' },
+        {
+          className: 'mdr-btn' + (projectsOpen ? ' on' : ''),
+          onClick: () => setProjectsOpen((value) => !value),
+          title: projectsTitle,
+        },
         h(Icons.layers, { size: 14 }),
-        '工作区',
+        projectLabel,
       ),
       h('button', { className: 'mdr-btn', onClick: () => setOverlay('json'), title: 'JSON 格式化工具' }, 'JSON'),
       h(
@@ -4729,9 +6705,32 @@ function App() {
         h(GitGraphIcon, { size: 14 }),
         'Git 图',
       ),
-      h('button', { className: 'mdr-btn', onClick: refreshActive, disabled: !activeTab, title: '重新读取当前文件' }, h(Icons.refresh, { size: 14 }), '刷新'),
+      h(
+        'button',
+        { className: 'mdr-btn', onClick: refreshActive, disabled: !activeTab, title: '重新读取当前文件' },
+        h(Icons.refresh, { size: 14 }),
+        '刷新',
+      ),
     ),
-    rootsOpen ? h(RootsMenu, { meta, onAdd: (value) => changeRoots('add', value), onRemove: (value) => changeRoots('remove', value), onClose: () => setRootsOpen(false) }) : null,
+    projectsOpen
+      ? h(ProjectsPanel, {
+          meta,
+          current: currentProject,
+          onSwitch: switchProject,
+          onAdd: (value) => changeRoots('add', value),
+          onRemove: (value) => changeRoots('remove', value),
+          onClose: () => setProjectsOpen(false),
+        })
+      : null,
+    h(WorkbenchBar, {
+      tasks: workbench.tasks,
+      activeTaskId: workbench.activeTaskId,
+      onSwitch: switchTask,
+      onNew: newTask,
+      onRename: renameTask,
+      onDelete: deleteTask,
+      onReorder: reorderTasks,
+    }),
     h(
       'div',
       { className: 'mdr-body' },
@@ -4741,16 +6740,18 @@ function App() {
         h(
           'div',
           { className: 'mdr-tree-toolbar' },
-          h('span', { className: 'mdr-tree-tip', title: meta ? meta.roots.map((root) => root.path).join('\n') : '' }, meta ? meta.roots.map((root) => root.name).join(' · ') : '工作区'),
+          h('span', { className: 'mdr-tree-tip', title: treeTitle }, treeLabel),
           h('span', { className: 'mdr-spacer' }),
           h('button', { className: 'mdr-btn', onClick: refreshTree, title: '刷新目录树' }, h(Icons.refresh, { size: 13 })),
         ),
         h(Tree, {
-          rootEntries: dirs[''],
+          rootEntries: dirs[rootKey],
+          rootPath: rootKey,
           expanded,
           dirs,
           failed: failedDirs,
           activePath: activeTab ? activeTab.path : '',
+          locatedPath: locateTarget,
           onToggle: toggleDir,
           onOpen: (rel) => openPath(rel, null),
         }),
@@ -4758,32 +6759,55 @@ function App() {
       h(
         'div',
         { className: 'mdr-right' },
-        h(TabBar, {
-          tabs,
-          activeId,
-          onActivate: (id) => {
-            if (id === activeIdRef.current) return
-            saveActiveScroll()
-            setActiveId(id)
-          },
-          onClose: closeTab,
-        }),
+        h(TabBar, { tabs, activeId, onActivate: activateTab, onClose: closeTab }),
         h(
           'div',
-          { className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''), ref: contentRef, onClick: onContentClick },
+          {
+            className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''),
+            ref: contentRef,
+            onClick: onContentClick,
+          },
           activeTab == null
-            ? h(EmptyState, { meta })
+            ? h(EmptyState, { meta, currentProject })
             : activeTab.kind === 'md'
               ? vendorReady
                 ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames })
                 : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
-              : h(CodeView, { key: activeTab.id, tab: activeTab, onOpen: openPath }),
+              : activeTab.kind === 'code'
+                ? h(CodeView, {
+                    key: activeTab.id,
+                    tab: activeTab,
+                    onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+                    onBack: () => goNav(-1),
+                  })
+                : activeTab.kind === 'html'
+                  ? typeof HtmlTabView === 'function'
+                    ? h(HtmlTabView, {
+                        key: activeTab.id,
+                        tab: activeTab,
+                        onToggleMode: (mode) => patchTab(activeTab.id, { htmlMode: mode === 'source' ? 'source' : 'render' }),
+                        onLocate: () => locateInTree(activeTab.path),
+                      })
+                    : h('div', { className: 'mdr-empty' }, 'HTML 视图未就绪')
+                  : activeTab.kind === 'image'
+                    ? typeof ImageView === 'function'
+                      ? h(ImageView, {
+                          key: activeTab.id,
+                          tab: activeTab,
+                          onLocate: () => locateInTree(activeTab.path),
+                        })
+                      : h('div', { className: 'mdr-empty' }, '图片视图未就绪')
+                    : h('div', { className: 'mdr-empty' }, '不支持的文件类型'),
         ),
       ),
     ),
     error ? h('div', { className: 'mdr-err' }, error) : null,
-    overlay === 'search' ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: openPath }) : null,
-    overlay === 'files' ? h(SearchPanel, { mode: 'files', onClose: () => setOverlay(null), onOpen: openPath }) : null,
+    overlay === 'search'
+      ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
+      : null,
+    overlay === 'files'
+      ? h(SearchPanel, { mode: 'files', onClose: () => setOverlay(null), onOpen: (rel) => openPath(rel, null) })
+      : null,
     overlay === 'json' ? h(JsonTool, { onClose: () => setOverlay(null) }) : null,
     // 代码弹窗（24-modal.js 分片实现；分片未落地前 typeof 守卫保证不炸）。
     typeof CodeModal === 'function' && modalRequest
@@ -4794,9 +6818,9 @@ function App() {
           onOpenTab: (target) => {
             const request = target && target.path ? target : modalRequest
             closeModal()
-            if (request) openPath(request.path, request.line)
+            if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
           },
-          onOpen: openPath,
+          onOpen: (rel, line) => openPath(rel, line, { jump: true }),
         })
       : null,
     typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,
