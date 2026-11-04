@@ -1461,6 +1461,68 @@ function highlightLineHtml(text, lang) {
   }
 }
 
+/* -------------------------------------------------------------- code scroll */
+
+/**
+ * Per-file scroll positions of the code viewport, shared by all mounted code
+ * views (code tab + modal would normally fight over one memory; the modal keeps
+ * its own stack instead and passes no key). The reported bug was "switch tab and
+ * the code scroll jumps back to the top / to the link line", so the position is
+ * persisted per file and restored on remount — a *fresh* jump request (open a
+ * link with a line number) still wins over the memory.
+ */
+const CODE_SCROLL_KEY = 'mdreader.plugin.codescroll.v1'
+
+/** file key -> line that was explicitly jumped to this session (restore vs jump). */
+const codeJumpSeen = new Map()
+
+const codeScrollStore = (() => {
+  const MAX_ENTRIES = 400
+  let data = null
+  let timer = 0
+  const read = () => {
+    if (data) return data
+    data = {}
+    try {
+      const value = JSON.parse(localStorage.getItem(CODE_SCROLL_KEY) || '{}')
+      if (value && typeof value === 'object') {
+        for (const key of Object.keys(value)) {
+          const top = Number(value[key])
+          if (Number.isFinite(top) && top > 0) data[key] = Math.round(top)
+        }
+      }
+    } catch {
+      data = {}
+    }
+    return data
+  }
+  const flush = () => {
+    timer = 0
+    try {
+      const keys = Object.keys(data || {})
+      // Bounded store: drop the oldest inserted entries first.
+      for (let index = 0; index < keys.length - MAX_ENTRIES; index += 1) delete data[keys[index]]
+      localStorage.setItem(CODE_SCROLL_KEY, JSON.stringify(data || {}))
+    } catch {
+      // quota / private mode: the in-memory map still works for this session
+    }
+  }
+  return {
+    get(key) {
+      const top = read()[String(key)]
+      return typeof top === 'number' ? top : 0
+    },
+    save(key, top) {
+      const value = Number(top)
+      const name = String(key)
+      const map = read()
+      if (!Number.isFinite(value) || value <= 0) delete map[name]
+      else map[name] = Math.round(value)
+      if (!timer) timer = setTimeout(flush, 250)
+    },
+  }
+})()
+
 /** One row's HTML. diffMode adds the +/-/space gutter sign and diff row classes. */
 function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
   const classes = ['mdr-cl']
@@ -1474,11 +1536,39 @@ function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
 }
 
 /**
+ * Rows + diff flag for the current git view of a file. Shared by the code tab
+ * and the code modal so branch/commit rendering can never drift apart.
+ */
+function useCodeRows(view, workspaceContent) {
+  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
+  // (branch switches), otherwise the workspace content the App loaded.
+  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
+  const diffRows = React.useMemo(
+    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
+    [view.commit, view.hunks, view.fileLines],
+  )
+  const rows = React.useMemo(() => {
+    if (diffRows) return diffRows
+    return String(baseContent == null ? '' : baseContent)
+      .split('\n')
+      .map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+  }, [diffRows, baseContent])
+  return { rows, diffMode: !!diffRows, baseContent }
+}
+
+/**
  * Rows viewport. Files over GIT_V_THRESHOLD rows keep full highlighting but only
  * paint the viewport +/- GIT_BUFFER rows (20px absolute rows inside a spacer).
+ *
+ * Optional props (code tab + modal):
+ *   scrollKey      file key for the persisted scroll memory (omit = no persistence)
+ *   contentReady   false while the file text is still loading: defer the
+ *                  jump/restore decision instead of deciding against 1 empty row
+ *   restoreScroll  { top } — exactly restore this position (modal ← 返回), takes
+ *                  precedence over the line jump and the scroll memory
  */
 function CodeBody(props) {
-  const { rows, lang, diffMode, targetLine, viewKey } = props
+  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll } = props
   const total = rows.length
   const virtual = total > GIT_V_THRESHOLD
   const scrollerRef = React.useRef(null)
@@ -1487,6 +1577,15 @@ function CodeBody(props) {
   const rafRef = React.useRef(0)
   const rowsRef = React.useRef(rows)
   rowsRef.current = rows
+  const firstPaintRef = React.useRef(true)
+  const lastTopRef = React.useRef(0)
+  const saveTimerRef = React.useRef(0)
+  const scrollMetaRef = React.useRef({ key: '', diff: false, ready: true })
+  scrollMetaRef.current = {
+    key: scrollKey == null ? '' : String(scrollKey),
+    diff: !!diffMode,
+    ready: contentReady !== false,
+  }
   const hlRef = React.useRef(null)
   if (!hlRef.current || hlRef.current.rows !== rows || hlRef.current.lang !== lang) {
     hlRef.current = { rows, lang, map: new Map() }
@@ -1511,36 +1610,84 @@ function CodeBody(props) {
     setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
   }
 
+  const flushScroll = () => {
+    const meta = scrollMetaRef.current
+    if (!meta.key || meta.diff || !meta.ready) return
+    codeScrollStore.save(meta.key, lastTopRef.current)
+  }
+
+  const scheduleScrollSave = () => {
+    if (saveTimerRef.current) return
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = 0
+      flushScroll()
+    }, 220)
+  }
+
   React.useEffect(() => {
+    // The file text has not arrived yet: the placeholder rows would make every
+    // restore decision look like "scroll to top", so wait for the real content.
+    if (contentReady === false) return undefined
     const el = scrollerRef.current
     if (!el) return undefined
+    const firstPaint = firstPaintRef.current
+    firstPaintRef.current = false
     setHitLine(0)
-    // Base view: honor tab.line (transient .mdr-cl.hit at the target line). Diff
-    // view: start at the top; deleted rows have no meaningful workspace line no.
+    const storeKey = scrollKey == null ? '' : String(scrollKey)
+    const savedTop = !diffMode && storeKey ? codeScrollStore.get(storeKey) : 0
+    const restoreTop =
+      restoreScroll && Number.isFinite(restoreScroll.top) ? Math.max(0, Math.round(restoreScroll.top)) : null
+    // Base view: honor the requested line, the scroll memory or the explicit
+    // restore. Diff view: start at the top (deleted rows have no workspace line).
     let rowIndex = -1
     if (!diffMode && targetLine > 0) {
       rowIndex = rows.findIndex((row) => row.no === targetLine)
       if (rowIndex < 0) rowIndex = Math.min(targetLine - 1, Math.max(0, total - 1))
     }
-    el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
+    let mode = 'top'
+    if (diffMode) mode = 'top'
+    else if (restoreTop != null) mode = 'restore'
+    else if (rowIndex >= 0) {
+      // A remount (switch away and back) keeps the scroll position; an explicit
+      // jump request for this line wins over the remembered position.
+      const seen = !!storeKey && codeJumpSeen.get(storeKey) === targetLine
+      mode = firstPaint && seen && savedTop > 0 ? 'saved' : 'jump'
+    } else if (firstPaint && savedTop > 0) {
+      mode = 'saved'
+    }
+    if (mode === 'restore') el.scrollTop = restoreTop
+    else if (mode === 'saved') el.scrollTop = savedTop
+    else if (mode === 'jump') el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
+    else el.scrollTop = 0
+    lastTopRef.current = el.scrollTop
     paintWindow()
-    if (rowIndex >= 0) {
+    if (mode === 'jump' && storeKey) codeJumpSeen.set(storeKey, targetLine)
+    const markHit = targetLine > 0 && rowIndex >= 0 && (mode === 'jump' || mode === 'restore')
+    if (markHit) {
       setHitLine(targetLine)
       const timer = setTimeout(() => setHitLine(0), 2400)
       return () => clearTimeout(timer)
     }
     return undefined
     // rows identity changes whenever the rendered content (commit/branch/file) changes.
-  }, [viewKey, targetLine, diffMode, rows, total])
+  }, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll])
 
   React.useEffect(
     () => () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      flushScroll()
     },
     [],
   )
 
   const onScroll = () => {
+    const el = scrollerRef.current
+    if (el) {
+      lastTopRef.current = el.scrollTop
+      scheduleScrollSave()
+    }
+    paintWindow()
     if (!virtual) return
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
@@ -1631,20 +1778,13 @@ function CodeView(props) {
     })
     return dispose
   }, [tab.id, tab.path, onOpen])
-  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
-  // (branch switches), otherwise the workspace content the App loaded.
-  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
-  const diffRows = React.useMemo(
-    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
-    [view.commit, view.hunks, view.fileLines],
-  )
-  const rows = React.useMemo(() => {
-    if (diffRows) return diffRows
-    return baseContent.split('\n').map((text, index) => ({ no: index + 1, kind: 'plain', text }))
-  }, [diffRows, baseContent])
-  const diffMode = !!diffRows
+  const { rows, diffMode } = useCodeRows(view, workspaceContent)
   const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}`
   const showInfo = !!view.commit || !!view.hint || !!view.loading
+  // Scroll memory is per file; the commit view gets its own slot so switching
+  // back from a diff does not restore a diff scroll position into the file view.
+  const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
+  const contentReady = tab.content != null || view.branchContent != null
 
   return h(
     'div',
@@ -1669,6 +1809,8 @@ function CodeView(props) {
         diffMode,
         targetLine: tab.line || 0,
         viewKey,
+        scrollKey,
+        contentReady,
       }),
     ),
     defState
@@ -1831,7 +1973,7 @@ function DefinitionChooser(props) {
 
 // ---- 24-modal.js ----
 /**
- * Code modal (弹窗) — owned by the modal slice.
+ * Code modal (弹窗) — the standalone reader's code popup, rebuilt for the plugin.
  *
  * Contract (wired by 50-app.js):
  *   h(CodeModal, {
@@ -1840,9 +1982,306 @@ function DefinitionChooser(props) {
  *     onOpenTab,        // open the same file at the same line as a tab
  *     onOpen,           // open another file (Ctrl+click navigation) in a tab
  *   })
+ *
+ * Behaviour (ported from input/reference/index.html #modal-mask):
+ *   - renders the file with the shared CodeBody (same line numbers/hljs colors as
+ *     the code tab) and jumps to request.line with a transient .mdr-cl.hit;
+ *   - header has the path, the git bar (branch/commit view, shared useGitView)
+ *     and the ← 返回 / 开成标签页 / ✕ buttons;
+ *   - Ctrl/Cmd+click navigates IN PLACE with a back stack (single candidate auto
+ *     navigates, several reuse DefinitionChooser, none keeps the view + a note);
+ *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
+ *     not; Esc with the definition chooser open closes only the chooser.
  */
-function CodeModal() {
-  return null
+
+const CMODAL_CSS = `
+.mdr-cmodal-mask{position:absolute;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:12px}
+.mdr-cmodal{position:relative;display:flex;flex-direction:column;width:min(1400px,96%);height:min(88vh,860px);max-height:100%;min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-overlay);box-shadow:0 18px 60px rgba(0,0,0,.5)}
+.mdr-cmodal.mdr-code{height:min(88vh,860px)}
+.mdr-cmodal-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:4px;flex:0 0 auto;padding:7px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
+.mdr-cmodal-path{flex:0 1 auto;min-width:70px;max-width:42%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;color:#79c0ff}
+.mdr-cmodal-badge{flex:0 0 auto;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap}
+.mdr-cmodal-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.mdr-cmodal-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.mdr-cmodal-body{flex:1;min-height:0;display:flex;flex-direction:column}
+.mdr-cmodal-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
+.mdr-cmodal-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(226,192,141,.08);color:#e2c08d;font-size:12px;white-space:pre-wrap;word-break:break-all}
+`
+
+/** Read the current scroll offset of the modal's code viewport (for the back stack). */
+function readModalScroll(card) {
+  const body = card && card.querySelector ? card.querySelector('.mdr-code-body') : null
+  return body ? body.scrollTop : 0
+}
+
+/**
+ * Inner modal: mounted only while a request exists (the outer CodeModal returns
+ * null otherwise), so every mount is a fresh session with an empty back stack.
+ */
+function CodeModalInner(props) {
+  const { request, onClose, onOpenTab, onOpen } = props
+  const requestPath = String((request && request.path) || '')
+  const requestLine = Math.max(0, Number(request && request.line) || 0)
+  const reqKey = `${requestPath}\u0000${requestLine}`
+
+  const [view, setView] = React.useState(() => ({
+    path: requestPath,
+    line: requestLine,
+    content: null,
+    lang: langForPath(requestPath),
+    lineCount: 0,
+    loading: true,
+    error: '',
+  }))
+  const [history, setHistory] = React.useState([])
+  const [restoreScroll, setRestoreScroll] = React.useState(null)
+  const [note, setNote] = React.useState('')
+  const [chooser, setChooser] = React.useState(null)
+  const cardRef = React.useRef(null)
+  const seqRef = React.useRef(0)
+  const handledReqRef = React.useRef('')
+  const currentRef = React.useRef({ path: requestPath, line: requestLine })
+  const chooserRef = React.useRef(null)
+  chooserRef.current = chooser
+  const maskDownRef = React.useRef(false)
+
+  const loadFile = React.useCallback((path, line) => {
+    const seq = (seqRef.current += 1)
+    const targetLine = Math.max(0, Number(line) || 0)
+    setView({
+      path,
+      line: targetLine,
+      content: null,
+      lang: langForPath(path),
+      lineCount: 0,
+      loading: true,
+      error: '',
+    })
+    fetchJson('/api/code', { path })
+      .then((payload) => {
+        if (seqRef.current !== seq) return
+        const realPath = payload && payload.path ? String(payload.path) : path
+        setView({
+          path: realPath,
+          line: targetLine,
+          content: String(payload && payload.content != null ? payload.content : ''),
+          lang: langForPath(realPath) || (payload && payload.lang) || langForPath(path),
+          lineCount: Number(payload && payload.lineCount) || 0,
+          loading: false,
+          error: '',
+        })
+      })
+      .catch((err) => {
+        if (seqRef.current !== seq) return
+        const message = String((err && err.message) || err)
+        setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+      })
+  }, [])
+
+  // Initial load + a new request that arrives while the modal is already open.
+  React.useEffect(() => {
+    if (handledReqRef.current === reqKey) return
+    handledReqRef.current = reqKey
+    setHistory([])
+    setRestoreScroll(null)
+    setNote('')
+    setChooser(null)
+    loadFile(requestPath, requestLine)
+  }, [reqKey, requestPath, requestLine, loadFile])
+
+  if (view) currentRef.current = { path: view.path, line: view.line }
+
+  const navigateInPlace = React.useCallback(
+    (path, line) => {
+      const nextPath = String(path || '')
+      const nextLine = Math.max(0, Number(line) || 0)
+      if (!nextPath) return
+      const current = currentRef.current
+      if (nextPath === current.path && nextLine === current.line) return
+      const snapshot = { path: current.path, line: current.line, scrollTop: readModalScroll(cardRef.current) }
+      setHistory((prev) => [...prev, snapshot])
+      setRestoreScroll(null)
+      setNote('')
+      setChooser(null)
+      if (nextPath === current.path) {
+        // Same file, another line: no refetch, just move the jump target.
+        setView((prev) => (prev ? { ...prev, line: nextLine } : prev))
+        return
+      }
+      loadFile(nextPath, nextLine)
+    },
+    [loadFile],
+  )
+
+  const goBack = React.useCallback(() => {
+    if (!history.length) return
+    const snapshot = history[history.length - 1]
+    setHistory(history.slice(0, -1))
+    setChooser(null)
+    setNote('')
+    setRestoreScroll({ top: snapshot.scrollTop })
+    if (snapshot.path === currentRef.current.path) {
+      setView((prev) => (prev ? { ...prev, line: snapshot.line } : prev))
+      return
+    }
+    loadFile(snapshot.path, snapshot.line)
+  }, [history, loadFile])
+
+  // Ctrl/Cmd+click inside the modal navigates in place instead of opening a tab.
+  const displayPath = view ? view.path : requestPath
+  const displayContent = view && view.content != null ? view.content : null
+  React.useEffect(() => {
+    const root = cardRef.current
+    if (!root || !displayPath || displayContent == null) return undefined
+    const tab = { id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }
+    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
+      if (!candidates || !candidates.length) {
+        setNote(error ? `未找到定义：${symbol} · ${error}` : `未找到定义：${symbol}`)
+        return
+      }
+      if (candidates.length === 1) {
+        const only = candidates[0]
+        const current = currentRef.current
+        if (only && only.path === current.path && (Number(only.line) || 0) === current.line) {
+          setNote(`已在当前位置：${symbol}`)
+          return
+        }
+        navigateInPlace(only.path, only.line)
+        return
+      }
+      setChooser({ symbol, candidates, error: '' })
+    })
+    return dispose
+  }, [displayPath, displayContent, navigateInPlace])
+
+  // Esc closes the modal; with the definition chooser open it closes the chooser
+  // only (stop immediate propagation keeps the App's global Esc handler out).
+  React.useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (chooserRef.current) {
+        setChooser(null)
+        return
+      }
+      if (typeof onClose === 'function') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  const gitTab = React.useMemo(
+    () => ({ id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }),
+    [displayPath, displayContent],
+  )
+  const { view: gitView, actions: gitActions } = useGitView(gitTab)
+  const workspaceContent = view && view.content != null ? view.content : ''
+  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
+  const lang = (view && view.lang) || langForPath(displayPath)
+  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}`
+  const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
+  const ready = !!(view && view.content != null) && !view.loading
+  const openAsTab = () => {
+    if (!view || !view.path) return
+    if (typeof onOpenTab === 'function') onOpenTab({ path: view.path, line: view.line })
+    if (typeof onClose === 'function') onClose()
+  }
+  const openFallbackTab = () => {
+    if (!view || typeof onOpen !== 'function') return
+    onOpen(view.path, view.line)
+    if (typeof onClose === 'function') onClose()
+  }
+
+  const headChildren = [
+    h(Icons.code, { key: 'icon', size: 14 }),
+    h('span', { key: 'path', className: 'mdr-cmodal-path', title: displayPath }, displayPath),
+    view && view.line > 0
+      ? h('span', { key: 'line', className: 'mdr-cmodal-badge' }, `跳转行 ${view.line}`)
+      : null,
+    view && view.lineCount > 0 ? h('span', { key: 'size', className: 'mdr-cmodal-badge' }, `${view.lineCount} 行`) : null,
+    gitView.git ? h(GitBar, { key: 'git', view: gitView, actions: gitActions }) : null,
+    h('span', { key: 'spacer', className: 'mdr-spacer' }),
+    history.length
+      ? h(
+          'button',
+          { key: 'back', type: 'button', className: 'mdr-cmodal-btn', title: '返回上一次跳转位置', onClick: goBack },
+          '← 返回',
+        )
+      : null,
+    h(
+      'button',
+      { key: 'tab', type: 'button', className: 'mdr-cmodal-btn', title: '把这一个文件按当前行开成标签页', onClick: openAsTab },
+      '开成标签页',
+    ),
+    h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
+  ]
+
+  let body = null
+  if (view && view.loading) {
+    body = h('div', { className: 'mdr-cmodal-state' }, '加载中…')
+  } else if (!view || view.error) {
+    body = h(
+      'div',
+      { className: 'mdr-cmodal-state' },
+      h('div', { className: 'mdr-cmodal-note', style: { border: 'none', background: 'transparent', padding: 0 } }, `打开失败：${(view && view.error) || '未知错误'}`),
+      h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
+    )
+  } else {
+    body = h(
+      'div',
+      { className: 'mdr-cmodal-body' },
+      h(CodeBody, {
+        rows,
+        lang,
+        diffMode,
+        targetLine: view.line || 0,
+        viewKey,
+        restoreScroll,
+      }),
+    )
+  }
+
+  return h(
+    'div',
+    {
+      className: 'mdr-cmodal-mask',
+      onMouseDown: (event) => {
+        maskDownRef.current = event.target === event.currentTarget
+      },
+      onClick: (event) => {
+        if (event.target !== event.currentTarget) return
+        if (!maskDownRef.current) return
+        if (typeof onClose === 'function') onClose()
+      },
+    },
+    h(
+      'div',
+      {
+        className: 'mdr-cmodal mdr-code',
+        ref: cardRef,
+        onClick: (event) => event.stopPropagation(),
+      },
+      h('div', { className: 'mdr-cmodal-head' }, headChildren),
+      showInfo ? h(CodeGitInfo, { view: gitView }) : null,
+      note ? h('div', { className: 'mdr-cmodal-note' }, note) : null,
+      body,
+      chooser
+        ? h(DefinitionChooser, {
+            state: chooser,
+            onPick: (candidate) => navigateInPlace(candidate.path, candidate.line),
+            onClose: () => setChooser(null),
+          })
+        : null,
+      h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
+    ),
+  )
+}
+
+function CodeModal(props) {
+  const { request } = props || {}
+  if (!request || !request.path) return null
+  return h(CodeModalInner, props)
 }
 
 // ---- 25-search.js ----
@@ -2128,14 +2567,336 @@ function SearchPanel(props) {
  * 同步 / 检查更新 panel — owned by the panels slice.
  *
  * Contract (wired by 50-app.js): h(SyncPanel, { onClose })
- * Host: GET /markdown-reader/api/sync/status?fetch=1, POST /markdown-reader/api/sync/pull
+ * Host: GET /markdown-reader/api/sync/status[?fetch=1], POST /markdown-reader/api/sync/pull
+ *
+ * 场景：插件本身也是一个 git 仓库，用一台机器开发、另一台机器点一下拿到最新代码。
+ * 两步走：先「检查更新」（只 fetch，只读，显示新提交数量与清单），再由人点
+ * 「拉取更新」（会改工作区文件）——破坏性操作永远由人确认。
+ * 后端在未配置远程 / 有本地改动 / 非 git 目录时都会返回可读的 reason/error，
+ * 这里只负责展示，不做任何猜测或自动重试。
  */
+
+/** Host 侧最多返回 20 条待拉取提交，这里再兜一层。 */
+const SYNC_COMMIT_LIMIT = 20
+
+const SYNC_CSS = `
+.mdr-sync-panel{width:min(640px,92vw);height:min(80vh,720px);max-height:80vh}
+.mdr-sync-head{flex-wrap:wrap;row-gap:6px}
+.mdr-sync-title{flex:0 0 auto}
+.mdr-sync-sub{font-size:11.5px;font-weight:400;color:var(--dsw-alias-label-secondary)}
+.mdr-sync-body{display:flex;flex-direction:column;gap:10px;padding:12px;overflow:auto;flex:1;min-height:0}
+.mdr-sync-meta{display:flex;flex-direction:column;gap:5px;font-size:12.5px}
+.mdr-sync-meta-row{display:flex;gap:8px;align-items:baseline}
+.mdr-sync-meta-k{flex:0 0 68px;color:var(--dsw-alias-label-secondary)}
+.mdr-sync-meta-v{flex:1;min-width:0;color:var(--dsw-alias-label-primary);font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12px;word-break:break-all}
+.mdr-sync-meta-v.dim{color:var(--dsw-alias-label-secondary)}
+.mdr-sync-status{padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12.5px}
+.mdr-sync-status.busy{color:var(--dsw-alias-label-secondary)}
+.mdr-sync-status.ok{color:#3fb950;border-color:rgba(63,185,80,.38);background:rgba(63,185,80,.08)}
+.mdr-sync-status.upd{color:#4a9eff;border-color:rgba(74,158,255,.42);background:rgba(74,158,255,.09)}
+.mdr-sync-status.warn{color:#d29922;border-color:rgba(210,153,34,.42);background:rgba(210,153,34,.09)}
+.mdr-sync-status.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);background:rgba(248,81,73,.08)}
+.mdr-sync-counts{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.mdr-sync-pill{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px}
+.mdr-sync-pill.upd{color:#4a9eff;border-color:rgba(74,158,255,.42)}
+.mdr-sync-pill.warn{color:#d29922;border-color:rgba(210,153,34,.42)}
+.mdr-sync-tip{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.mdr-sync-note{padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:12px;white-space:pre-wrap;word-break:break-word}
+.mdr-sync-note.ok{color:#3fb950;border-color:rgba(63,185,80,.38);background:rgba(63,185,80,.08)}
+.mdr-sync-note.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary);background:rgba(248,81,73,.08)}
+.mdr-sync-help{padding:8px 10px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word;line-height:1.65}
+.mdr-sync-help code{font-family:"Cascadia Code",Consolas,monospace;font-size:11.5px;padding:0 4px;border-radius:4px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}
+.mdr-sync-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;overflow:hidden;flex:0 0 auto}
+.mdr-sync-list-head{padding:6px 10px;font-size:11.5px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l1)}
+.mdr-sync-commit{display:flex;align-items:baseline;gap:8px;padding:5px 10px;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.mdr-sync-commit:last-child{border-bottom:none}
+.mdr-sync-sha{flex:0 0 auto;font-family:"Cascadia Code",Consolas,monospace;font-size:11.5px;color:#4a9eff}
+.mdr-sync-msg{flex:1;min-width:0;word-break:break-word;color:var(--dsw-alias-label-primary)}
+.mdr-sync-commit-meta{flex:0 0 auto;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;max-width:44%;overflow:hidden;text-overflow:ellipsis}
+.mdr-sync-foot{display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1);flex:0 0 auto}
+.mdr-sync-foot .mdr-spacer{flex:1}
+.mdr-sync-btn-primary{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);font-weight:600}
+.mdr-sync-btn-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-overlay)}
+.mdr-sync-btn:disabled,.mdr-sync-panel .mdr-btn:disabled{opacity:.45;cursor:default}
+`
+
+/** Human text for an exception thrown by fetchJson / anything else in an async path. */
+function syncErrorText(error) {
+  if (!error) return ''
+  const message = error && error.message != null ? error.message : error
+  const text = String(message == null ? '' : message).trim()
+  return text || '未知错误'
+}
+
+/** Metadata value with an explicit dash for the unknown case. */
+function syncMetaValue(value) {
+  if (value == null || value === '') return '—'
+  return String(value)
+}
+
 function SyncPanel(props) {
-  const { onClose } = props
+  const { onClose } = props || {}
+  const [data, setData] = React.useState(null)
+  const [phase, setPhase] = React.useState('loading') // loading | checking | pulling | ready
+  const [error, setError] = React.useState('')
+  const [note, setNote] = React.useState('')
+  const [noteKind, setNoteKind] = React.useState('info') // info | ok
+  const seqRef = React.useRef(0)
+
+  const close = () => {
+    if (typeof onClose === 'function') onClose()
+  }
+
+  // 打开面板先读「不联网」的本地状态，再让用户主动点「检查更新」——与独立版一致。
+  const loadStatus = React.useCallback((withFetch) => {
+    const seq = (seqRef.current += 1)
+    setPhase(withFetch ? 'checking' : 'loading')
+    setError('')
+    setNote('')
+    fetchJson('/api/sync/status', withFetch ? { fetch: 1 } : null)
+      .then((payload) => {
+        if (seq !== seqRef.current) return
+        setData(payload && typeof payload === 'object' ? payload : null)
+        setPhase('ready')
+      })
+      .catch((err) => {
+        if (seq !== seqRef.current) return
+        setData(null)
+        setError(`读取同步状态失败：${syncErrorText(err)}`)
+        setPhase('ready')
+      })
+  }, [])
+
+  React.useEffect(() => {
+    loadStatus(false)
+    return () => {
+      seqRef.current += 1
+    }
+  }, [loadStatus])
+
+  const pull = () => {
+    const seq = (seqRef.current += 1)
+    setPhase('pulling')
+    setError('')
+    setNote('')
+    postJson('/api/sync/pull', {})
+      .then((payload) => {
+        if (seq !== seqRef.current) return
+        if (payload && payload.status && typeof payload.status === 'object') setData(payload.status)
+        const changed = !!(payload && payload.changed)
+        const base = (payload && payload.note) || (changed ? '已更新' : '已是最新，无需更新')
+        if (changed) {
+          setNoteKind('ok')
+          setNote(
+            `${base}\n\n提示：Client 代码需要刷新页面才会加载新版本；Host 代码需要在插件管理器里把本 bundle 禁用再启用，重新加载 Host 模块。`,
+          )
+        } else {
+          setNoteKind('info')
+          setNote(base)
+        }
+        setPhase('ready')
+      })
+      .catch((err) => {
+        if (seq !== seqRef.current) return
+        setError(`拉取更新失败：${syncErrorText(err)}`)
+        setPhase('ready')
+      })
+  }
+
+  const busy = phase === 'loading' || phase === 'checking' || phase === 'pulling'
+  const status = data && typeof data === 'object' ? data : null
+  const configured = !!(status && status.configured)
+  const fetched = !!(status && status.fetched)
+  const dirty = !!(status && status.dirty)
+  const behind = status ? Number(status.behind) || 0 : 0
+  const ahead = status ? Number(status.ahead) || 0 : 0
+  const commits = status && Array.isArray(status.commits) ? status.commits.slice(0, SYNC_COMMIT_LIMIT) : []
+  const reason = status && typeof status.reason === 'string' ? status.reason : ''
+  // configured=true 但 fetched=false 且带 reason，只可能是 Host 执行 fetch 失败
+  // （未配置远程时走 !configured 分支），必须显式说“检查失败”，不能显示“已是最新”。
+  const fetchFailed = configured && !fetched && !!reason
+  const canPull = configured && fetched && behind > 0 && !busy
+
+  let lineText = ''
+  let lineKind = 'busy'
+  if (phase === 'loading') {
+    lineText = '正在读取本地同步状态…'
+  } else if (phase === 'checking') {
+    lineText = '正在连接远程仓库检查更新…'
+  } else if (phase === 'pulling') {
+    lineText = '正在拉取更新，请稍候…'
+  } else if (error) {
+    lineText = '操作失败'
+    lineKind = 'err'
+  } else if (!status) {
+    lineText = '尚未读取到同步状态'
+  } else if (!configured) {
+    lineText = '未配置同步远程仓库'
+    lineKind = 'warn'
+  } else if (fetchFailed) {
+    lineText = '检查更新失败'
+    lineKind = 'err'
+  } else if (fetched && behind > 0) {
+    lineText = `有 ${behind} 个新提交可拉取`
+    lineKind = 'upd'
+  } else if (fetched) {
+    lineText = '已是最新'
+    lineKind = 'ok'
+  } else {
+    lineText = '已读取本地状态，点「检查更新」联网查询远端最新提交'
+  }
+
+  const metaRows = [
+    ['仓库', status && status.repo],
+    ['当前分支', status && status.current],
+    ['同步分支', status && status.branch],
+    ['远程', status && status.remote],
+    ['本地改动', status ? (dirty ? '有未提交改动' : '无') : null],
+  ]
+
+  const commitRows = commits.map((commit, index) => {
+    const item = commit && typeof commit === 'object' ? commit : {}
+    const hash = String(item.short || item.hash || '')
+    const subject = String(item.subject || '(无提交说明)')
+    const meta = [item.author, item.date].filter((part) => part != null && part !== '').join(' · ')
+    return h(
+      'div',
+      { className: 'mdr-sync-commit', key: hash || `commit-${index}` },
+      h('span', { className: 'mdr-sync-sha', title: String(item.hash || hash) }, hash || '—'),
+      h('span', { className: 'mdr-sync-msg', title: subject }, subject),
+      meta ? h('span', { className: 'mdr-sync-commit-meta', title: meta }, meta) : null,
+    )
+  })
+
+  const counts = configured
+    ? h(
+        'div',
+        { className: 'mdr-sync-counts' },
+        h(
+          'span',
+          { className: 'mdr-sync-pill' + (fetched && behind > 0 ? ' upd' : '') },
+          `落后 ${fetched ? behind : '—'} 条`,
+        ),
+        h(
+          'span',
+          { className: 'mdr-sync-pill' + (fetched && ahead > 0 ? ' warn' : '') },
+          `领先 ${fetched ? ahead : '—'} 条`,
+        ),
+        fetched && dirty ? h('span', { className: 'mdr-sync-tip' }, '本地有未提交改动，拉取会被拒绝') : null,
+        fetched && ahead > 0 ? h('span', { className: 'mdr-sync-tip' }, '本地提交不会被覆盖') : null,
+      )
+    : null
+
+  const help = status && !configured
+    ? h(
+        'div',
+        { className: 'mdr-sync-help' },
+        `未配置同步远程仓库：${reason || '插件所在 git 仓库没有 origin 远程'}\n` +
+          '可以在插件 config（cordis.patch.yml）里设置 syncRepo（远程 URL）与 syncBranch（分支名），' +
+          '或为插件所在 git 仓库添加 origin 远程，例如：git remote add origin <url>',
+      )
+    : null
+
   return h(
     'div',
-    { className: 'mdr-overlay', onClick: onClose },
-    h('div', { className: 'mdr-panel', onClick: (event) => event.stopPropagation() }, '同步面板由 panels 分片实现'),
+    {
+      className: 'mdr-overlay',
+      onClick: close,
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': '检查更新',
+    },
+    h(
+      'div',
+      { className: 'mdr-panel mdr-sync-panel', onClick: (event) => event.stopPropagation() },
+      h('style', { dangerouslySetInnerHTML: { __html: SYNC_CSS } }),
+      h(
+        'div',
+        { className: 'mdr-panel-head mdr-sync-head' },
+        h('span', { className: 'mdr-sync-title' }, '检查更新'),
+        h('span', { className: 'mdr-sync-sub' }, '从远程仓库拉取插件的最新代码'),
+        h('span', { className: 'mdr-spacer' }),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: close },
+          h(Icons.close, { size: 12 }),
+        ),
+      ),
+      h(
+        'div',
+        { className: 'mdr-panel-body mdr-sync-body' },
+        h(
+          'div',
+          { className: 'mdr-sync-meta' },
+          metaRows.map(([key, value]) =>
+            h(
+              'div',
+              { className: 'mdr-sync-meta-row', key },
+              h('span', { className: 'mdr-sync-meta-k' }, key),
+              h(
+                'span',
+                { className: 'mdr-sync-meta-v' + (value == null || value === '' ? ' dim' : '') },
+                syncMetaValue(value),
+              ),
+            ),
+          ),
+        ),
+        h('div', { className: 'mdr-sync-status ' + lineKind }, lineText),
+        counts,
+        help,
+        error ? h('div', { className: 'mdr-sync-note err' }, error) : null,
+        fetchFailed && !error ? h('div', { className: 'mdr-sync-note err' }, reason) : null,
+        dirty && configured
+          ? h(
+              'div',
+              { className: 'mdr-sync-note' },
+              '本地有未提交改动：为避免覆盖，拉取会被后端拒绝。请先提交或丢弃这些改动再拉取。',
+            )
+          : null,
+        commits.length
+          ? h(
+              'div',
+              { className: 'mdr-sync-list' },
+              h(
+                'div',
+                { className: 'mdr-sync-list-head' },
+                `待拉取提交（最新在上，共 ${commits.length} 条` +
+                  (behind > commits.length ? `，还有 ${behind - commits.length} 条未显示` : '') +
+                  '）',
+              ),
+              commitRows,
+            )
+          : null,
+        note ? h('div', { className: 'mdr-sync-note' + (noteKind === 'ok' ? ' ok' : '') }, note) : null,
+      ),
+      h(
+        'div',
+        { className: 'mdr-sync-foot' },
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'mdr-btn',
+            onClick: () => loadStatus(true),
+            disabled: busy,
+            title: '执行 git fetch 检查远端是否有新提交（只读）',
+          },
+          phase === 'checking' ? '检查中…' : '检查更新',
+        ),
+        h('span', { className: 'mdr-spacer' }),
+        h(
+          'button',
+          {
+            type: 'button',
+            className: 'mdr-btn mdr-sync-btn mdr-sync-btn-primary',
+            onClick: pull,
+            disabled: !canPull,
+            title: fetched && behind > 0 ? `将拉取 ${behind} 个新提交（fast-forward）` : '暂无可拉取的更新',
+          },
+          phase === 'pulling' ? '拉取中…' : behind > 0 ? `拉取更新（${behind}）` : '拉取更新',
+        ),
+      ),
+    ),
   )
 }
 
@@ -2144,16 +2905,893 @@ function SyncPanel(props) {
  * Git 版本树 modal — owned by the panels slice.
  *
  * Contract (wired by 50-app.js): h(GitGraphModal, { path, onClose, onOpen })
- *   path: active tab path (or a repo info) to resolve the repository
- *   onOpen(path, commit?) opens a file/commit in a tab
- * Host: GET /api/git/repos, GET /api/git/graph?path=&limit=
+ *   path: active tab path (or '') used to resolve the repository containing it
+ *   onOpen: reserved for future file jumps; currently unused-safe
+ * Host: GET /markdown-reader/api/git/repos, GET /markdown-reader/api/git/graph?path=&limit=
+ *
+ * 为什么手绘：独立版当初把 gitgraph.js 换掉了 —— 它渲染到 canvas，文字不可选中、
+ * 暗色配色脏、devicePixelRatio≠1 时点击坐标偏移。这里沿用它最终的做法：
+ * Host 只返回拓扑（每个提交的 parents / refs），Client 用 SVG 自己画轨道：
+ *   · 行 = 时间（新的在上），列 = 轨道（lane），与 gitk / VS Code 的读法一致
+ *   · 每条「子 → 父」边一条 path：同轨道直线，跨轨道用三次贝塞尔平滑换列
+ *   · 分支头 / 当前分支画成彩色胶囊
+ * 轨道分配是纯函数 gitGraphLayout(commits)，可以脱离 DOM 单独测试。
  */
+
+/** 每行提交的高度（必须与 GitGraph CSS 里的 .mdr-gitgraph-row 一致）。 */
+const GITGRAPH_ROW_H = 30
+/** 一次最多取多少条提交（Host 契约上限 400，UI 取 200 已足够阅读）。 */
+const GITGRAPH_LIMIT = 200
+/** 轨道配色：按「轨道号」而不是分支名分配，临时分支再多也只有几条线。 */
+const GITGRAPH_LANE_COLORS = ['#7d8590', '#4a9eff', '#3fb950', '#d29922', '#a371f7', '#f85149', '#39c5cf', '#db61a2']
+
+function gitGraphLaneColor(lane) {
+  const index = Number(lane) || 0
+  return GITGRAPH_LANE_COLORS[((index % GITGRAPH_LANE_COLORS.length) + GITGRAPH_LANE_COLORS.length) % GITGRAPH_LANE_COLORS.length]
+}
+
+/** 与 15-git.js 的 hash 同色，避免两处 git 视图对同一个概念用两种颜色。 */
+const GITGRAPH_HASH_COLOR = '#d7ba7d'
+
+const GITGRAPH_CSS = `
+.mdr-gitgraph-panel{width:min(1200px,94vw);height:min(84vh,820px);max-height:84vh}
+.mdr-gitgraph-head{flex-wrap:wrap;row-gap:6px}
+.mdr-gitgraph-title{flex:0 0 auto}
+.mdr-gitgraph-repo{min-width:150px;max-width:320px;padding:4px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer}
+.mdr-gitgraph-repo:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary)}
+.mdr-gitgraph-repo:disabled{opacity:.55;cursor:default}
+.mdr-gitgraph-stats{font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.mdr-gitgraph-panel .mdr-btn:disabled{opacity:.45;cursor:default}
+.mdr-gitgraph-body{display:flex;flex-direction:column;flex:1;min-height:0;padding:0}
+.mdr-gitgraph-toolbar{display:flex;flex-direction:column;gap:6px;padding:7px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:0 0 auto}
+.mdr-gitgraph-repo-line{display:flex;align-items:center;gap:8px;min-width:0;font-size:12px}
+.mdr-gitgraph-repo-name{flex:0 0 auto;font-weight:600}
+.mdr-gitgraph-repo-path{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11.5px}
+.mdr-gitgraph-chips{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.mdr-gitgraph-chip{display:inline-flex;align-items:center;gap:5px;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11.5px;line-height:18px;cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+.mdr-gitgraph-chip:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.mdr-gitgraph-chip.on{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-label-primary)}
+.mdr-gitgraph-chip-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+.mdr-gitgraph-scroll{position:relative;flex:1;min-height:0;overflow:auto;padding:4px 0 14px;background:var(--dsw-alias-bg-base)}
+.mdr-gitgraph-canvas{position:relative;min-width:100%}
+.mdr-gitgraph-svg{position:absolute;left:0;top:0;z-index:1;pointer-events:none;overflow:visible}
+.mdr-gitgraph-rows{position:relative;z-index:2}
+.mdr-gitgraph-row{display:flex;align-items:stretch;height:${GITGRAPH_ROW_H}px;line-height:${GITGRAPH_ROW_H}px;font-size:12.5px;color:var(--dsw-alias-label-primary);cursor:pointer;border-bottom:1px solid rgba(127,127,127,.09)}
+.mdr-gitgraph-row:last-child{border-bottom:none}
+.mdr-gitgraph-gutter{flex:0 0 auto;pointer-events:none}
+.mdr-gitgraph-text{flex:1;min-width:0;display:flex;align-items:center;gap:8px;padding:0 12px 0 4px;border-radius:5px}
+.mdr-gitgraph-row:hover .mdr-gitgraph-text{background:var(--dsw-alias-bg-layer-2)}
+.mdr-gitgraph-row.selected .mdr-gitgraph-text{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.mdr-gitgraph-row.dim{opacity:.34}
+.mdr-gitgraph-row.on .mdr-gitgraph-text{background:rgba(78,155,214,.12)}
+.mdr-gitgraph-ref{display:inline-flex;align-items:center;flex:0 0 auto;padding:0 6px;border:1px solid;border-radius:999px;font-size:10.5px;line-height:16px;font-weight:600;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-gitgraph-ref.head{font-weight:700}
+.mdr-gitgraph-hash{flex:0 0 auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:11.5px;color:${GITGRAPH_HASH_COLOR}}
+.mdr-gitgraph-subject{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-gitgraph-author{flex:0 0 112px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11.5px}
+.mdr-gitgraph-date{flex:0 0 86px;text-align:right;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.mdr-gitgraph-dot{stroke:var(--dsw-alias-bg-base);stroke-width:1.5}
+.mdr-gitgraph-dot.head{stroke:var(--dsw-alias-label-primary);stroke-width:2.2}
+.mdr-gitgraph-dot.selected{stroke:var(--dsw-alias-brand-primary);stroke-width:2.6}
+.mdr-gitgraph-dot.dim{opacity:.25}
+.mdr-gitgraph-edge{fill:none;stroke-width:1.6;stroke-linecap:round;opacity:.5}
+.mdr-gitgraph-edge.merge{stroke-width:2;opacity:.72}
+.mdr-gitgraph-edge.dim{opacity:.16}
+.mdr-gitgraph-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:48px 16px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
+.mdr-gitgraph-state-err{color:var(--dsw-alias-state-error-primary)}
+.mdr-gitgraph-state-hint{max-width:520px;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-secondary)}
+.mdr-gitgraph-detail{flex:0 0 auto;display:flex;align-items:flex-start;gap:10px;padding:8px 12px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);max-height:190px;overflow:auto}
+.mdr-gitgraph-detail-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;font-size:12px}
+.mdr-gitgraph-detail-row{display:flex;align-items:baseline;gap:8px}
+.mdr-gitgraph-detail-k{flex:0 0 48px;color:var(--dsw-alias-label-secondary)}
+.mdr-gitgraph-detail-v{flex:1;min-width:0;word-break:break-all;color:var(--dsw-alias-label-primary)}
+.mdr-gitgraph-detail-hash{font-family:"Cascadia Code",Consolas,"Courier New",monospace;color:${GITGRAPH_HASH_COLOR}}
+.mdr-gitgraph-parent{padding:0 6px;margin-right:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:#4a9eff;font:inherit;font-size:11.5px;line-height:17px;cursor:pointer}
+.mdr-gitgraph-parent:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.mdr-gitgraph-parent:disabled{opacity:.45;cursor:default;color:var(--dsw-alias-label-secondary)}
+.mdr-gitgraph-detail-subject{margin-top:3px;color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word;line-height:1.55}
+.mdr-gitgraph-detail-actions{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+.mdr-gitgraph-copied{font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.mdr-gitgraph-copied.err{color:var(--dsw-alias-state-error-primary)}
+.mdr-gitgraph-foot{flex:0 0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:5px 12px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.mdr-gitgraph-legend{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.mdr-gitgraph-foot-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+.mdr-gitgraph-foot-dia{width:8px;height:8px;flex:0 0 auto;background:var(--dsw-alias-label-secondary);transform:rotate(45deg)}
+`
+
+/** Small helper for error messages coming out of async code. */
+function gitGraphErrorText(error) {
+  if (!error) return ''
+  const message = error && error.message != null ? error.message : error
+  const text = String(message == null ? '' : message).trim()
+  return text || '未知错误'
+}
+
+/** "2026-11-04 14:21" -> "11-04 14:21" (fallbacks to the raw value). */
+function gitGraphShortDate(value) {
+  const text = String(value == null ? '' : value)
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text)) return text.slice(5)
+  return text || '—'
+}
+
+/**
+ * Assign a lane (column) to every commit, in list order (newest first).
+ *
+ * A "lane" is a slot that remembers which commit it is currently heading to.
+ * Walking the list top-down:
+ *   1. the commit takes the lane already waiting for it (else the first free lane);
+ *   2. all other lanes waiting for the same commit converge into its dot;
+ *   3. the first parent inherits the lane, extra parents (merge) get their own lane.
+ * Lanes waiting for a parent outside the loaded window are released immediately:
+ * no line can be drawn to a commit that was never returned by the Host.
+ *
+ * Pure function, no DOM/React access — unit-tested with fixtures.
+ */
+function gitGraphLayout(commits) {
+  const list = Array.isArray(commits) ? commits.filter((commit) => commit && typeof commit.hash === 'string') : []
+  const byHash = new Map()
+  for (const commit of list) if (!byHash.has(commit.hash)) byHash.set(commit.hash, commit)
+  const lanes = []
+  const rows = []
+  const edges = []
+  const rowOf = new Map()
+  const laneOf = new Map()
+  let laneCount = 0
+
+  const takeLane = () => {
+    const free = lanes.indexOf(null)
+    if (free >= 0) return free
+    lanes.push(null)
+    return lanes.length - 1
+  }
+
+  for (let row = 0; row < list.length; row += 1) {
+    const commit = list[row]
+    let lane = lanes.indexOf(commit.hash)
+    if (lane < 0) lane = takeLane()
+    // Every lane that was waiting for this commit ends here (converging lines).
+    for (let index = 0; index < lanes.length; index += 1) {
+      if (lanes[index] === commit.hash) lanes[index] = null
+    }
+    rowOf.set(commit.hash, row)
+    laneOf.set(commit.hash, lane)
+    rows.push({ hash: commit.hash, lane, row })
+    if (lane >= laneCount) laneCount = lane + 1
+
+    const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
+    if (!parents.length) continue
+    // First parent keeps this lane; missing parent releases it (nothing to draw).
+    lanes[lane] = byHash.has(parents[0]) ? parents[0] : null
+    for (let index = 1; index < parents.length; index += 1) {
+      const parent = parents[index]
+      if (!byHash.has(parent)) continue
+      if (lanes.indexOf(parent) >= 0) continue // already tracked: the lines converge later
+      const slot = takeLane()
+      lanes[slot] = parent
+    }
+  }
+
+  // Edges need all lanes resolved first: record one per existing child→parent pair.
+  for (const rowInfo of rows) {
+    const commit = byHash.get(rowInfo.hash)
+    const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
+    for (let index = 0; index < parents.length; index += 1) {
+      const parent = parents[index]
+      const parentRow = rowOf.get(parent)
+      if (parentRow == null || parentRow <= rowInfo.row) continue // parent outside the loaded window
+      edges.push({
+        hash: commit.hash,
+        parent,
+        lane: rowInfo.lane,
+        parentLane: laneOf.get(parent),
+        row: rowInfo.row,
+        parentRow,
+        merge: index > 0,
+      })
+    }
+  }
+
+  return { rows, byHash, rowOf, laneOf, laneCount: Math.max(1, laneCount), edges }
+}
+
+/** Every commit reachable from `headHash` (its ancestors), bounded to the loaded list. */
+function gitGraphReachable(commits, headHash) {
+  const list = Array.isArray(commits) ? commits : []
+  const byHash = new Map()
+  for (const commit of list) if (commit && typeof commit.hash === 'string' && !byHash.has(commit.hash)) byHash.set(commit.hash, commit)
+  const seen = new Set()
+  if (!headHash || !byHash.has(headHash)) return seen
+  const stack = [headHash]
+  while (stack.length) {
+    const hash = stack.pop()
+    if (seen.has(hash)) continue
+    const commit = byHash.get(hash)
+    if (!commit) continue
+    seen.add(hash)
+    const parents = Array.isArray(commit.parents) ? commit.parents : []
+    for (const parent of parents) if (typeof parent === 'string' && byHash.has(parent)) stack.push(parent)
+  }
+  return seen
+}
+
+/**
+ * Branch refs come from `for-each-ref --format=%(objectname:short)` (7-char
+ * abbrev), while commits carry full hashes. Map the abbrev back to a loaded
+ * full hash so branch chips / HEAD detection line up with the commit rows.
+ */
+function gitGraphResolveHead(commits, hash) {
+  const value = String(hash == null ? '' : hash)
+  if (!value) return ''
+  const list = Array.isArray(commits) ? commits : []
+  for (const commit of list) if (commit && commit.hash === value) return value
+  for (const commit of list) {
+    if (!commit || typeof commit.hash !== 'string') continue
+    if (commit.short === value || commit.hash.startsWith(value)) return commit.hash
+  }
+  return ''
+}
+
+/**
+ * Resolve the initial graph query from the repo inventory + the active tab path.
+ * Returns { query, repoPath }: query is what to pass to /api/git/graph, repoPath
+ * is the repo-picker value ('' = let the Host resolve it from the file path).
+ */
+function gitGraphResolveRepo(repos, activePath) {
+  const list = Array.isArray(repos) ? repos.filter((repo) => repo && (repo.path || repo.repo)) : []
+  const candidate = String(activePath || '').trim()
+  if (candidate) {
+    // Longest matching repo root wins: inventories can list nested repos and a
+    // file must resolve to the innermost one.
+    let best = ''
+    for (const repo of list) {
+      const root = repo.path || repo.repo
+      if ((candidate === root || candidate.startsWith(`${root}/`)) && root.length > best.length) best = root
+    }
+    if (best) return { query: best, repoPath: best }
+    // Path outside the inventory (or repos failed to load): the Host can still
+    // walk up to the containing git root, so query it directly.
+    return { query: candidate, repoPath: '' }
+  }
+  if (list.length) {
+    const first = list[0].path || list[0].repo
+    return { query: first, repoPath: first }
+  }
+  return { query: '', repoPath: '' }
+}
+
+/** Copy helper with the execCommand fallback (navigator.clipboard needs a secure context). */
+function gitGraphFallbackCopy(text) {
+  try {
+    if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function' || !document.body) return false
+    const area = document.createElement('textarea')
+    area.value = String(text == null ? '' : text)
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.left = '-9999px'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, area.value.length)
+    const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+    document.body.removeChild(area)
+    return !!copied
+  } catch {
+    return false
+  }
+}
+
+function gitGraphCopyText(text) {
+  const value = String(text == null ? '' : text)
+  try {
+    if (typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      return Promise.resolve(navigator.clipboard.writeText(value))
+        .then(() => true)
+        .catch(() => gitGraphFallbackCopy(value))
+    }
+  } catch {
+    // fall through to the DOM fallback
+  }
+  return Promise.resolve(gitGraphFallbackCopy(value))
+}
+
 function GitGraphModal(props) {
-  const { onClose } = props
+  const { path } = props || {}
+  const [repos, setRepos] = React.useState(null)
+  const [reposStatus, setReposStatus] = React.useState('loading') // loading | ready | error
+  const [reposError, setReposError] = React.useState('')
+  const [repoPath, setRepoPath] = React.useState('')
+  const [graph, setGraph] = React.useState(null)
+  const [graphStatus, setGraphStatus] = React.useState('idle') // idle | loading | ready | error | empty
+  const [error, setError] = React.useState('')
+  const [selectedHash, setSelectedHash] = React.useState('')
+  const [filterBranch, setFilterBranch] = React.useState('')
+  const [copyState, setCopyState] = React.useState('') // '' | done | fail
+  const [bootNonce, setBootNonce] = React.useState(0)
+  const loadSeq = React.useRef(0)
+  const copyTimerRef = React.useRef(null)
+  const scrollRef = React.useRef(null)
+
+  const close = () => {
+    if (typeof props.onClose === 'function') props.onClose()
+  }
+
+  const loadGraph = React.useCallback((queryPath) => {
+    const seq = (loadSeq.current += 1)
+    setGraphStatus('loading')
+    setError('')
+    setSelectedHash('')
+    fetchJson('/api/git/graph', { path: queryPath, limit: GITGRAPH_LIMIT })
+      .then((payload) => {
+        if (seq !== loadSeq.current) return
+        const branches = Array.isArray(payload.branches) ? payload.branches : []
+        const commits = Array.isArray(payload.commits) ? payload.commits : []
+        setGraph({
+          repo: String(payload.repo || ''),
+          name: String(payload.name || ''),
+          current: String(payload.current || ''),
+          branches,
+          commits,
+        })
+        setGraphStatus('ready')
+        setFilterBranch('')
+        const repoRel = String(payload.repo || '')
+        if (repoRel) {
+          setRepoPath(repoRel)
+          setRepos((previous) => {
+            const list = Array.isArray(previous) ? previous : []
+            if (list.some((repo) => (repo.path || repo.repo) === repoRel)) return list
+            return [...list, { repo: repoRel, name: String(payload.name || repoRel.split('/').pop() || repoRel), path: repoRel }]
+          })
+        }
+      })
+      .catch((err) => {
+        if (seq !== loadSeq.current) return
+        setGraphStatus('error')
+        setError(`版本树加载失败：${gitGraphErrorText(err)}`)
+      })
+  }, [])
+
+  // Boot: inventory first (for the repo picker), then the graph for the active
+  // tab's repo (or the first repo when no tab path is available).
+  React.useEffect(() => {
+    let alive = true
+    loadSeq.current += 1
+    setReposStatus('loading')
+    setReposError('')
+    setGraphStatus('idle')
+    setGraph(null)
+    setSelectedHash('')
+    setFilterBranch('')
+    fetchJson('/api/git/repos')
+      .then((payload) => {
+        if (!alive) return
+        const list = Array.isArray(payload.repos) ? payload.repos.filter((repo) => repo && (repo.path || repo.repo)) : []
+        setRepos(list)
+        setReposStatus('ready')
+        const initial = gitGraphResolveRepo(list, path)
+        if (!initial.query) {
+          setGraphStatus('empty')
+          return
+        }
+        setRepoPath(initial.repoPath)
+        loadGraph(initial.query)
+      })
+      .catch((err) => {
+        if (!alive) return
+        const message = gitGraphErrorText(err)
+        setReposStatus('error')
+        setReposError(`仓库列表加载失败：${message}`)
+        const initial = gitGraphResolveRepo([], path)
+        if (initial.query) {
+          setRepoPath('')
+          loadGraph(initial.query)
+        } else {
+          setGraphStatus('error')
+          setError(`仓库列表加载失败：${message}`)
+        }
+      })
+    return () => {
+      alive = false
+      loadSeq.current += 1
+    }
+  }, [path, loadGraph, bootNonce])
+
+  React.useEffect(
+    () => () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    },
+    [],
+  )
+
+  // Keep the selected commit visible (parent jumps / first click in a long list).
+  React.useEffect(() => {
+    if (!selectedHash) return undefined
+    const scroller = scrollRef.current
+    if (!scroller || typeof scroller.querySelector !== 'function') return undefined
+    const node = scroller.querySelector(`.mdr-gitgraph-row[data-hash="${selectedHash}"]`)
+    if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' })
+    return undefined
+  }, [selectedHash])
+
+  const commits = graph && Array.isArray(graph.commits) ? graph.commits : []
+  const branches = graph && Array.isArray(graph.branches) ? graph.branches : []
+  const layout = React.useMemo(() => gitGraphLayout(commits), [commits])
+  const highlight = React.useMemo(() => {
+    if (!filterBranch || !graph) return null
+    const branch = branches.find((item) => item && item.name === filterBranch)
+    const head = branch ? gitGraphResolveHead(commits, branch.hash) : ''
+    if (!head || !layout.rowOf.has(head)) return null
+    return gitGraphReachable(commits, head)
+  }, [filterBranch, graph, branches, commits, layout])
+  const filterActive = !!(highlight && highlight.size)
+
+  const selectCommit = (hash) => {
+    setSelectedHash(String(hash || ''))
+    setCopyState('')
+  }
+
+  const copyHash = (hash) => {
+    gitGraphCopyText(hash)
+      .then((ok) => {
+        setCopyState(ok ? 'done' : 'fail')
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+        copyTimerRef.current = setTimeout(() => {
+          copyTimerRef.current = null
+          setCopyState('')
+        }, 1800)
+      })
+      .catch(() => {
+        setCopyState('fail')
+      })
+  }
+
+  // ---- geometry: lane columns in a left gutter, one HTML row per commit ----
+  const laneCount = layout.laneCount
+  const laneWidth = laneCount <= 6 ? 20 : laneCount <= 12 ? 16 : 12
+  const gutter = 28 + (laneCount - 1) * laneWidth
+  const graphHeight = Math.max(GITGRAPH_ROW_H, layout.rows.length * GITGRAPH_ROW_H)
+  const xOf = (lane) => 14 + (Number(lane) || 0) * laneWidth
+  const yOf = (row) => (Number(row) || 0) * GITGRAPH_ROW_H + GITGRAPH_ROW_H / 2
+
+  const svgChildren = []
+  for (const edge of layout.edges) {
+    const color = gitGraphLaneColor(edge.lane)
+    const x1 = xOf(edge.lane)
+    const y1 = yOf(edge.row)
+    const x2 = xOf(edge.parentLane)
+    const y2 = yOf(edge.parentRow)
+    const dimmed = filterActive && !highlight.has(edge.hash)
+    const className = 'mdr-gitgraph-edge' + (edge.merge ? ' merge' : '') + (dimmed ? ' dim' : '')
+    const key = `edge-${edge.hash}-${edge.parent}`
+    if (x1 === x2) {
+      svgChildren.push(h('path', { key, className, d: `M${x1} ${y1}L${x2} ${y2}`, stroke: color }))
+    } else {
+      const middle = (y1 + y2) / 2
+      svgChildren.push(
+        h('path', { key, className, d: `M${x1} ${y1}C${x1} ${middle} ${x2} ${middle} ${x2} ${y2}`, stroke: color }),
+      )
+    }
+  }
+  for (const rowInfo of layout.rows) {
+    const commit = layout.byHash.get(rowInfo.hash)
+    if (!commit) continue
+    const color = gitGraphLaneColor(rowInfo.lane)
+    const parents = Array.isArray(commit.parents) ? commit.parents : []
+    const refs = Array.isArray(commit.refs) ? commit.refs : []
+    const isMerge = parents.length > 1
+    const isHead = !!graph && graph.current !== '' && refs.includes(graph.current)
+    const isSelected = rowInfo.hash === selectedHash
+    const dimmed = filterActive && !highlight.has(rowInfo.hash)
+    const className =
+      'mdr-gitgraph-dot' + (isHead ? ' head' : '') + (isSelected ? ' selected' : '') + (dimmed ? ' dim' : '')
+    const cx = xOf(rowInfo.lane)
+    const cy = yOf(rowInfo.row)
+    const key = `dot-${rowInfo.hash}`
+    if (isMerge) {
+      svgChildren.push(
+        h('rect', {
+          key,
+          className,
+          x: cx - 4.5,
+          y: cy - 4.5,
+          width: 9,
+          height: 9,
+          transform: `rotate(45 ${cx} ${cy})`,
+          fill: color,
+        }),
+      )
+    } else {
+      svgChildren.push(h('circle', { key, className, cx, cy, r: isHead ? 5.5 : 4, fill: color }))
+    }
+  }
+
+  const rowNodes = layout.rows.map((rowInfo) => {
+    const commit = layout.byHash.get(rowInfo.hash)
+    if (!commit) return null
+    const refs = Array.isArray(commit.refs) ? commit.refs : []
+    const laneColor = gitGraphLaneColor(rowInfo.lane)
+    const highlighted = filterActive && highlight.has(rowInfo.hash)
+    const dimmed = filterActive && !highlight.has(rowInfo.hash)
+    const rowClass =
+      'mdr-gitgraph-row' + (rowInfo.hash === selectedHash ? ' selected' : '') + (highlighted ? ' on' : '') + (dimmed ? ' dim' : '')
+    const refNodes = refs.slice(0, 3).map((ref, index) => {
+      const isCurrent = !!graph && ref === graph.current
+      const color = isCurrent ? '#3fb950' : laneColor
+      return h(
+        'span',
+        {
+          key: `ref-${ref}-${index}`,
+          className: 'mdr-gitgraph-ref' + (isCurrent ? ' head' : ''),
+          style: { color, borderColor: `${color}66`, background: `${color}1a` },
+          title: isCurrent ? `${ref}（当前分支 / HEAD）` : `分支 ${ref}`,
+        },
+        ref,
+      )
+    })
+    if (refs.length > 3) {
+      refNodes.push(
+        h(
+          'span',
+          {
+            key: 'ref-more',
+            className: 'mdr-gitgraph-ref',
+            style: { color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l1)', background: 'transparent' },
+            title: refs.join('、'),
+          },
+          `+${refs.length - 3}`,
+        ),
+      )
+    }
+    return h(
+      'div',
+      {
+        key: `${rowInfo.hash}-${rowInfo.row}`,
+        className: rowClass,
+        'data-hash': rowInfo.hash,
+        title: `${commit.short || rowInfo.hash}  ${String(commit.subject || '')}\n${commit.author || ''} · ${commit.date || ''}`,
+        onClick: (event) => {
+          if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+          selectCommit(rowInfo.hash)
+        },
+      },
+      h('span', { className: 'mdr-gitgraph-gutter', style: { width: gutter } }),
+      h(
+        'div',
+        { className: 'mdr-gitgraph-text' },
+        refNodes,
+        h('span', { className: 'mdr-gitgraph-hash', title: String(commit.hash || '') }, commit.short || String(commit.hash || '').slice(0, 7)),
+        h('span', { className: 'mdr-gitgraph-subject', title: String(commit.subject || '') }, commit.subject || '(无提交说明)'),
+        h('span', { className: 'mdr-gitgraph-author', title: `作者 ${commit.author || '—'}` }, commit.author || '—'),
+        h('span', { className: 'mdr-gitgraph-date', title: String(commit.date || '') }, gitGraphShortDate(commit.date)),
+      ),
+    )
+  })
+
+  const onCanvasClick = (event) => {
+    const element = event && event.currentTarget
+    if (!element || typeof element.getBoundingClientRect !== 'function') return
+    const rect = element.getBoundingClientRect()
+    const row = Math.floor((Number(event.clientY) - rect.top) / GITGRAPH_ROW_H)
+    const rowInfo = layout.rows[row]
+    if (rowInfo) selectCommit(rowInfo.hash)
+  }
+
+  const selectRepo = (value) => {
+    const next = String(value || '')
+    if (!next || next === repoPath) return
+    setRepoPath(next)
+    setFilterBranch('')
+    setSelectedHash('')
+    loadGraph(next)
+  }
+
+  const refresh = () => {
+    if (repoPath) loadGraph(repoPath)
+    else if (path) loadGraph(path)
+    else setBootNonce((value) => value + 1)
+  }
+
+  const selectedCommit = selectedHash && layout.byHash.has(selectedHash) ? layout.byHash.get(selectedHash) : null
+
+  // ---- repo picker ----
+  const repoSources = Array.isArray(repos) ? repos : []
+  const repoOptionNodes = []
+  if (!repoSources.length) {
+    repoOptionNodes.push(
+      h('option', { key: '__none', value: '' }, reposStatus === 'loading' ? '加载中…' : '（无仓库）'),
+    )
+  } else {
+    for (const repo of repoSources) {
+      const value = String(repo.path || repo.repo || '')
+      if (!value) continue
+      repoOptionNodes.push(h('option', { key: value, value }, String(repo.name || value.split('/').pop() || value)))
+    }
+    if (repoPath && !repoSources.some((repo) => (repo.path || repo.repo) === repoPath)) {
+      repoOptionNodes.push(h('option', { key: '__current', value: repoPath }, repoPath.split('/').pop() || repoPath))
+    }
+  }
+
+  // ---- branch chips ----
+  const chipNodes = [
+    h(
+      'button',
+      {
+        type: 'button',
+        key: '__all',
+        className: 'mdr-gitgraph-chip' + (filterBranch === '' ? ' on' : ''),
+        onClick: () => setFilterBranch(''),
+        title: '显示全部提交',
+      },
+      '全部提交',
+    ),
+  ]
+  branches.forEach((branch, index) => {
+    if (!branch || !branch.name) return
+    const headHash = gitGraphResolveHead(commits, branch.hash)
+    const headRow = headHash && layout.rowOf.has(headHash) ? layout.rowOf.get(headHash) : -1
+    const color = gitGraphLaneColor(headRow >= 0 ? layout.rows[headRow].lane : index)
+    const active = filterBranch === branch.name
+    chipNodes.push(
+      h(
+        'button',
+        {
+          type: 'button',
+          key: branch.name,
+          className: 'mdr-gitgraph-chip' + (active ? ' on' : ''),
+          style: active ? { borderColor: color } : undefined,
+          onClick: () => setFilterBranch(active ? '' : branch.name),
+          title: `${branch.name} · ${branch.hash || ''}（点击高亮该分支可达的提交，再点取消）`,
+        },
+        h('span', { className: 'mdr-gitgraph-chip-dot', style: { background: color } }),
+        branch.name,
+      ),
+    )
+  })
+
+  // ---- body state ----
+  let bodyNode = null
+  if (graphStatus === 'loading' || (reposStatus === 'loading' && graphStatus === 'idle' && !error)) {
+    bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在读取版本图…')
+  } else if (graphStatus === 'error') {
+    bodyNode = h(
+      'div',
+      { className: 'mdr-gitgraph-state mdr-gitgraph-state-err' },
+      h('div', null, error || '版本树加载失败'),
+      h('button', { type: 'button', className: 'mdr-btn', onClick: refresh }, '重试'),
+    )
+  } else if (graphStatus === 'empty') {
+    bodyNode = h(
+      'div',
+      { className: 'mdr-gitgraph-state' },
+      h('div', null, '没有找到 git 仓库'),
+      h(
+        'div',
+        { className: 'mdr-gitgraph-state-hint' },
+        reposError || '当前工作区根下没有 git 仓库；可先用顶栏「工作区」菜单打开包含仓库的目录。',
+      ),
+    )
+  } else if (graphStatus === 'ready' && !layout.rows.length) {
+    bodyNode = h(
+      'div',
+      { className: 'mdr-gitgraph-state' },
+      h('div', null, '该仓库没有提交记录'),
+      graph && graph.repo ? h('div', { className: 'mdr-gitgraph-state-hint' }, graph.repo) : null,
+    )
+  } else if (graphStatus === 'ready') {
+    bodyNode = h(
+      'div',
+      { className: 'mdr-gitgraph-canvas', style: { height: graphHeight }, onClick: onCanvasClick },
+      h(
+        'svg',
+        {
+          className: 'mdr-gitgraph-svg',
+          width: gutter,
+          height: graphHeight,
+          viewBox: `0 0 ${gutter} ${graphHeight}`,
+          'aria-hidden': true,
+        },
+        svgChildren,
+      ),
+      h('div', { className: 'mdr-gitgraph-rows' }, rowNodes),
+    )
+  } else {
+    bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在准备版本图…')
+  }
+
+  const detailNode = selectedCommit
+    ? h(
+        'div',
+        { className: 'mdr-gitgraph-detail' },
+        h(
+          'div',
+          { className: 'mdr-gitgraph-detail-main' },
+          h(
+            'div',
+            { className: 'mdr-gitgraph-detail-row' },
+            h('span', { className: 'mdr-gitgraph-detail-k' }, '提交'),
+            h('span', { className: 'mdr-gitgraph-detail-v mdr-gitgraph-detail-hash' }, String(selectedCommit.hash || '')),
+          ),
+          h(
+            'div',
+            { className: 'mdr-gitgraph-detail-row' },
+            h('span', { className: 'mdr-gitgraph-detail-k' }, '作者'),
+            h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.author || '—'),
+          ),
+          h(
+            'div',
+            { className: 'mdr-gitgraph-detail-row' },
+            h('span', { className: 'mdr-gitgraph-detail-k' }, '日期'),
+            h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.date || '—'),
+          ),
+          h(
+            'div',
+            { className: 'mdr-gitgraph-detail-row' },
+            h('span', { className: 'mdr-gitgraph-detail-k' }, '父提交'),
+            h(
+              'span',
+              { className: 'mdr-gitgraph-detail-v' },
+              Array.isArray(selectedCommit.parents) && selectedCommit.parents.length
+                ? selectedCommit.parents.map((parent) => {
+                    const loaded = layout.rowOf.has(parent)
+                    return h(
+                      'button',
+                      {
+                        key: parent,
+                        type: 'button',
+                        className: 'mdr-gitgraph-parent',
+                        disabled: !loaded,
+                        title: loaded ? `跳转到父提交 ${parent}` : `父提交 ${parent} 不在当前加载的 ${GITGRAPH_LIMIT} 条提交内`,
+                        onClick: (event) => {
+                          if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+                          if (loaded) selectCommit(parent)
+                        },
+                      },
+                      String(parent).slice(0, 7),
+                    )
+                  })
+                : '（根提交）',
+            ),
+          ),
+          h(
+            'div',
+            { className: 'mdr-gitgraph-detail-row' },
+            h('span', { className: 'mdr-gitgraph-detail-k' }, '分支'),
+            h(
+              'span',
+              { className: 'mdr-gitgraph-detail-v' },
+              Array.isArray(selectedCommit.refs) && selectedCommit.refs.length ? selectedCommit.refs.join('、') : '—',
+            ),
+          ),
+          h('div', { className: 'mdr-gitgraph-detail-subject' }, selectedCommit.subject || '(无提交说明)'),
+        ),
+        h(
+          'div',
+          { className: 'mdr-gitgraph-detail-actions' },
+          copyState
+            ? h(
+                'span',
+                { className: 'mdr-gitgraph-copied' + (copyState === 'fail' ? ' err' : '') },
+                copyState === 'done' ? '已复制 hash' : '复制失败，请手动选择',
+              )
+            : null,
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'mdr-btn',
+              onClick: () => copyHash(selectedCommit.hash),
+              title: '复制完整提交 hash 到剪贴板',
+            },
+            '复制 hash',
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'mdr-btn',
+              onClick: () => {
+                selectCommit('')
+              },
+              title: '关闭提交详情',
+              'aria-label': '关闭提交详情',
+            },
+            h(Icons.close, { size: 12 }),
+          ),
+        ),
+      )
+    : null
+
+  const statsText = graph ? `${layout.rows.length} 提交 · ${branches.length} 分支` : ''
+  const filterHint = filterActive
+    ? `已高亮 ${highlight.size} 个提交`
+    : filterBranch
+      ? '该分支头不在当前加载的提交范围内'
+      : '点击提交查看详情 · 可复制 hash'
+
   return h(
     'div',
-    { className: 'mdr-overlay', onClick: onClose },
-    h('div', { className: 'mdr-panel', onClick: (event) => event.stopPropagation() }, '版本树由 panels 分片实现'),
+    {
+      className: 'mdr-overlay',
+      onClick: close,
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': 'Git 版本树',
+    },
+    h(
+      'div',
+      { className: 'mdr-panel mdr-gitgraph-panel', onClick: (event) => event.stopPropagation() },
+      h('style', { dangerouslySetInnerHTML: { __html: GITGRAPH_CSS } }),
+      h(
+        'div',
+        { className: 'mdr-panel-head mdr-gitgraph-head' },
+        h('span', { className: 'mdr-gitgraph-title' }, 'Git 版本树'),
+        h(
+          'select',
+          {
+            className: 'mdr-gitgraph-repo',
+            value: repoPath,
+            disabled: reposStatus === 'loading' || repoSources.length <= 1,
+            onChange: (event) => selectRepo(event.target.value),
+            title: '切换仓库（只列出工作区根下的 git 仓库）',
+            'aria-label': '选择仓库',
+          },
+          repoOptionNodes,
+        ),
+        h('span', { className: 'mdr-spacer' }),
+        h('span', { className: 'mdr-gitgraph-stats' }, statsText),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn', onClick: refresh, title: '重新读取版本图', disabled: graphStatus === 'loading' },
+          h(Icons.refresh, { size: 13 }),
+        ),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn', onClick: close, title: '关闭（Esc）', 'aria-label': '关闭' },
+          h(Icons.close, { size: 12 }),
+        ),
+      ),
+      h(
+        'div',
+        { className: 'mdr-gitgraph-body' },
+        graph
+          ? h(
+              'div',
+              { className: 'mdr-gitgraph-toolbar' },
+              h(
+                'div',
+                { className: 'mdr-gitgraph-repo-line' },
+                h('span', { className: 'mdr-gitgraph-repo-name' }, graph.name || graph.repo || '仓库'),
+                h('span', { className: 'mdr-gitgraph-repo-path', title: graph.repo || '' }, graph.repo || ''),
+                h('span', { className: 'mdr-spacer' }),
+                h(
+                  'span',
+                  { className: 'mdr-gitgraph-stats' },
+                  graph.current ? `当前分支 ${graph.current}` : '未在分支上（detached HEAD）',
+                ),
+              ),
+              h('div', { className: 'mdr-gitgraph-chips' }, chipNodes),
+            )
+          : null,
+        h('div', { className: 'mdr-gitgraph-scroll', ref: scrollRef }, bodyNode),
+        detailNode,
+        graph
+          ? h(
+              'div',
+              { className: 'mdr-gitgraph-foot' },
+              h(
+                'span',
+                { className: 'mdr-gitgraph-legend' },
+                h('span', { className: 'mdr-gitgraph-foot-dot', style: { background: gitGraphLaneColor(0) } }),
+                '普通提交',
+              ),
+              h('span', { className: 'mdr-gitgraph-legend' }, h('span', { className: 'mdr-gitgraph-foot-dia' }), '合并提交'),
+              h('span', { className: 'mdr-gitgraph-legend' }, '直线 / 曲线 = 分支汇入'),
+              h('span', { className: 'mdr-spacer' }),
+              h('span', { title: filterActive ? '再次点击该分支 chip 取消高亮' : '' }, filterHint),
+            )
+          : null,
+      ),
+    ),
   )
 }
 
@@ -2161,11 +3799,23 @@ function GitGraphModal(props) {
 /** Directory tree with on-demand loading and persisted expansion. */
 
 function TreeNode(props) {
-  const { node, depth, expanded, dirs, activePath, onToggle, onOpen } = props
+  const { node, depth, expanded, dirs, failed, activePath, onToggle, onOpen } = props
   const open = node.dir && expanded.has(node.path)
   const children = node.dir && open ? dirs[node.path] : null
+  // `dirs[path]` 有值 = 已加载（可能是空数组）；failed[path] = 加载失败。
+  // 一直「加载中…」只会出现在请求真的在飞的时候：App 恢复展开态时会主动 loadDir。
+  const failedHere = !!(open && failed && failed[node.path])
   const meta = node.dir ? { kind: 'folder', color: 'var(--dsw-alias-label-secondary)' } : fileIcon(node.ext)
   const Icon = Icons[meta.kind]
+  const childIndent = { paddingLeft: 18 + depth * 14 }
+  let placeholder = null
+  if (open && failedHere) {
+    placeholder = h('div', { className: 'mdr-tip', style: { ...childIndent, color: 'var(--dsw-alias-state-error-primary)' } }, '加载失败，点目录树右上角刷新重试')
+  } else if (open && !children) {
+    placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '加载中…')
+  } else if (open && children && !children.length) {
+    placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '（空目录）')
+  }
   return h(
     'div',
     null,
@@ -2189,23 +3839,37 @@ function TreeNode(props) {
             depth: depth + 1,
             expanded,
             dirs,
+            failed,
             activePath,
             onToggle,
             onOpen,
           }),
         )
       : null,
-    open && !dirs[node.path] ? h('div', { className: 'mdr-tip', style: { paddingLeft: 18 + depth * 14 } }, '加载中…') : null,
+    placeholder,
   )
 }
 
 function Tree(props) {
-  const { rootEntries, expanded, dirs, activePath, onToggle, onOpen } = props
-  if (!rootEntries) return h('div', { className: 'mdr-tip', style: { padding: '6px 12px' } }, '加载中…')
+  const { rootEntries, expanded, dirs, failed, activePath, onToggle, onOpen } = props
+  if (!rootEntries) {
+    const rootFailed = !!(failed && failed[''])
+    return h(
+      'div',
+      {
+        className: 'mdr-tip',
+        style: {
+          padding: '6px 12px',
+          color: rootFailed ? 'var(--dsw-alias-state-error-primary)' : undefined,
+        },
+      },
+      rootFailed ? '目录加载失败，点右上角刷新重试' : '加载中…',
+    )
+  }
   return h(
     'div',
     null,
-    rootEntries.map((node) => h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, activePath, onToggle, onOpen })),
+    rootEntries.map((node) => h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, onToggle, onOpen })),
   )
 }
 
@@ -2621,6 +4285,30 @@ function EmptyState(props) {
   )
 }
 
+/** Git 图 icon (topbar button) — same glyph as the original standalone tool. */
+function GitGraphIcon(props) {
+  const size = (props && props.size) || 14
+  return h(
+    'svg',
+    {
+      width: size,
+      height: size,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.8,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': true,
+      style: { display: 'block', flex: '0 0 auto' },
+    },
+    h('circle', { cx: 6, cy: 5, r: 3 }),
+    h('circle', { cx: 18, cy: 19, r: 3 }),
+    h('circle', { cx: 6, cy: 19, r: 3 }),
+    h('path', { d: 'M6 8v8M9 5h4a5 5 0 0 1 5 5v6' }),
+  )
+}
+
 function App() {
   const [meta, setMeta] = React.useState(null)
   const [dirs, setDirs] = React.useState({})
@@ -2641,8 +4329,27 @@ function App() {
   const [pathInput, setPathInput] = React.useState('')
   const [rootsOpen, setRootsOpen] = React.useState(false)
   const [overlay, setOverlay] = React.useState(null)
+  const [modalRequest, setModalRequest] = React.useState(null)
+  const [syncOpen, setSyncOpen] = React.useState(false)
+  const [gitOpen, setGitOpen] = React.useState(false)
+  const [failedDirs, setFailedDirs] = React.useState({})
   const [vendorReady, setVendorReady] = React.useState(false)
   const loadedRef = React.useRef(new Set())
+  const inflightDirsRef = React.useRef(new Set())
+  const dirsRef = React.useRef(dirs)
+  const expandedRef = React.useRef(expanded)
+  const tabsRef = React.useRef(tabs)
+  const panelsRef = React.useRef({ modal: false, sync: false, git: false, roots: false })
+  dirsRef.current = dirs
+  expandedRef.current = expanded
+  tabsRef.current = tabs
+  panelsRef.current = { modal: !!modalRequest, sync: syncOpen, git: gitOpen, roots: rootsOpen }
+
+  // 稳定引用：子分片把这些回调放进 effect 依赖（如代码弹窗的 Esc 监听），
+  // 每次渲染都换新函数会让它们反复解绑/重绑。
+  const closeModal = React.useCallback(() => setModalRequest(null), [])
+  const closeSync = React.useCallback(() => setSyncOpen(false), [])
+  const closeGit = React.useCallback(() => setGitOpen(false), [])
 
   React.useEffect(() => {
     ensureVendor()
@@ -2666,7 +4373,20 @@ function App() {
         event.preventDefault()
         setOverlay('files')
       } else if (event.key === 'Escape') {
-        setOverlay((current) => (current ? null : current))
+        // Esc 逐层关闭：代码弹窗 → 版本树 → 同步面板 → 工作区菜单 → 其它遮罩。
+        const panels = panelsRef.current
+        if (panels.modal) {
+          // 代码弹窗自己也有 Esc 监听（定义候选列表打开时只关候选列表，并用
+          // preventDefault 表明「已处理」）。App 的监听器注册更早、会先跑，所以
+          // 延到微任务里再判断：弹窗已处理就什么都不做，否则由 App 关掉弹窗。
+          const current = event
+          Promise.resolve().then(() => {
+            if (!current.defaultPrevented) closeModal()
+          })
+        } else if (panels.git) closeGit()
+        else if (panels.sync) closeSync()
+        else if (panels.roots) setRootsOpen(false)
+        else setOverlay((current) => (current ? null : current))
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -2674,21 +4394,57 @@ function App() {
   }, [])
 
   const loadDir = React.useCallback((rel) => {
-    return fetchJson('/api/list', { path: rel })
+    const key = String(rel == null ? '' : rel)
+    // 同一目录可能被「恢复展开态 / 展开点击 / 刷新」同时要求加载，inflight 去重。
+    if (inflightDirsRef.current.has(key)) return Promise.resolve()
+    inflightDirsRef.current.add(key)
+    setFailedDirs((prev) => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+    return fetchJson('/api/list', { path: key })
       .then((payload) => {
-        setDirs((prev) => ({ ...prev, [rel]: payload.entries }))
+        const entries = Array.isArray(payload.entries) ? payload.entries : []
+        setDirs((prev) => ({ ...prev, [key]: entries }))
       })
-      .catch((err) => setError(String((err && err.message) || err)))
+      .catch((err) => {
+        // 标记失败，目录树显示「加载失败，点刷新重试」而不是永远「加载中…」。
+        setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
+        setError(String((err && err.message) || err))
+      })
+      .finally(() => {
+        inflightDirsRef.current.delete(key)
+      })
   }, [])
 
   React.useEffect(() => {
+    let cancelled = false
     fetchJson('/api/meta')
       .then((payload) => {
-        setMeta(payload)
-        loadDir('')
+        if (!cancelled) setMeta(payload)
       })
-      .catch((err) => setError(String((err && err.message) || err)))
-  }, [loadDir])
+      .catch((err) => {
+        if (!cancelled) setError(String((err && err.message) || err))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 面板切换会让 Page 卸载重挂：`dirs` 从空开始，但 `expanded` 从 localStorage 恢复。
+  // meta（含根列表）到位后，把「已展开但还没有数据」的目录按绝对相对路径逐个加载：
+  // 不能只加载根 ''，否则恢复出来的展开目录会永远停在「加载中…」。
+  // 依赖只看 meta：loadDir 内部会 setDirs，若把 dirs 放进依赖会反复触发加载。
+  React.useEffect(() => {
+    if (!meta) return
+    const targets = new Set([''])
+    for (const rel of expandedRef.current) {
+      if (rel && !dirsRef.current[rel]) targets.add(rel)
+    }
+    for (const rel of targets) loadDir(rel)
+  }, [meta, loadDir])
 
   const loadTab = React.useCallback((id, kind, rel) => {
     fetchJson(kind === 'md' ? '/api/markdown' : '/api/code', { path: rel })
@@ -2745,6 +4501,7 @@ function App() {
   const closeTab = React.useCallback(
     (id) => {
       loadedRef.current.delete(id)
+      const closing = tabsRef.current.find((tab) => tab.id === id) || null
       setTabs((prev) => {
         const index = prev.findIndex((tab) => tab.id === id)
         const next = prev.filter((tab) => tab.id !== id)
@@ -2757,6 +4514,10 @@ function App() {
         }
         return next
       })
+      // 关掉标签页后不要在弹窗里留一个指向已关闭文件（可能已被移除/改路径）的陈旧请求。
+      if (closing) {
+        setModalRequest((current) => (current && current.path === closing.path ? null : current))
+      }
     },
     [],
   )
@@ -2775,36 +4536,36 @@ function App() {
   )
 
   const refreshTree = React.useCallback(() => {
-    const paths = ['', ...[...expanded].filter((rel) => dirs[rel])]
+    // 已展开的目录全部重载（含之前加载失败、`dirs` 里还没有的），再清掉已折叠目录的缓存。
+    const paths = ['', ...[...expanded].filter((rel) => rel !== '')]
     paths.forEach((rel) => loadDir(rel))
+    setFailedDirs((prev) => (Object.keys(prev).length ? {} : prev))
     setDirs((prev) => {
       const next = { ...prev }
       for (const rel of Object.keys(next)) {
-        if (!expanded.has(rel) && rel !== '') delete next[rel]
+        if (rel !== '' && !expanded.has(rel)) delete next[rel]
       }
       return next
     })
-  }, [expanded, dirs, loadDir])
+  }, [expanded, loadDir])
 
   const refreshActive = React.useCallback(() => {
     const tab = tabs.find((item) => item.id === activeId)
     if (tab) loadTab(tab.id, tab.kind, tab.path)
   }, [tabs, activeId, loadTab])
 
-  const changeRoots = React.useCallback(
-    (action, pathValue) => {
-      postJson('/api/roots', { action, path: pathValue })
-        .then((payload) => {
-          setMeta({ ok: true, roots: payload.roots, single: payload.single })
-          setDirs({})
-          setExpanded(new Set())
-          treeStorage.save(new Set())
-          loadDir('')
-        })
-        .catch((err) => setError(String((err && err.message) || err)))
-    },
-    [loadDir],
-  )
+  const changeRoots = React.useCallback((action, pathValue) => {
+    postJson('/api/roots', { action, path: pathValue })
+      .then((payload) => {
+        setMeta({ ok: true, roots: payload.roots, single: payload.single })
+        setDirs({})
+        setExpanded(new Set())
+        setFailedDirs({})
+        treeStorage.save(new Set())
+        // 根列表变了 → meta 变化会触发上面的恢复 effect，由它统一加载根目录。
+      })
+      .catch((err) => setError(String((err && err.message) || err)))
+  }, [])
 
   const activeTab = tabs.find((tab) => tab.id === activeId) || null
   const multi = !!(meta && !meta.single)
@@ -2815,7 +4576,17 @@ function App() {
     const anchor = target && target.closest ? target.closest('a[data-path]') : null
     if (!anchor) return
     event.preventDefault()
-    openPath(anchor.dataset.path, anchor.dataset.line ? Number(anchor.dataset.line) : null)
+    const rel = anchor.dataset.path
+    if (!rel) return
+    const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
+    // 文档里的代码链接：普通点击 → 代码弹窗；Ctrl/Cmd+点击 → 开为标签页。
+    // 注意 isCodeFile 也包含 .md，所以 md 链接必须先按 isMdFile 放行，仍开标签页。
+    // md 链接 / 树点击 / 快速打开 / 搜索仍由 openPath 开标签页。
+    if (event.ctrlKey || event.metaKey || isMdFile(rel) || !isCodeFile(rel)) {
+      openPath(rel, line)
+      return
+    }
+    setModalRequest({ path: rel, line: line == null ? null : line })
   }
 
   return h(
@@ -2843,9 +4614,33 @@ function App() {
         h(Icons.layers, { size: 14 }),
         '工作区',
       ),
-      h('button', { className: 'mdr-btn', onClick: () => setOverlay('search'), title: '项目内搜索 (Ctrl+Shift+F)' }, h(Icons.search, { size: 14 })),
-      h('button', { className: 'mdr-btn', onClick: () => setOverlay('files'), title: '快速打开 (Ctrl+P)' }, '打开'),
       h('button', { className: 'mdr-btn', onClick: () => setOverlay('json'), title: 'JSON 格式化工具' }, 'JSON'),
+      h(
+        'button',
+        {
+          className: 'mdr-btn' + (syncOpen ? ' on' : ''),
+          onClick: () => {
+            setSyncOpen(true)
+            setGitOpen(false)
+          },
+          title: '检查更新',
+        },
+        h(Icons.refresh, { size: 14 }),
+        '同步',
+      ),
+      h(
+        'button',
+        {
+          className: 'mdr-btn' + (gitOpen ? ' on' : ''),
+          onClick: () => {
+            setGitOpen(true)
+            setSyncOpen(false)
+          },
+          title: '版本树',
+        },
+        h(GitGraphIcon, { size: 14 }),
+        'Git 图',
+      ),
       h('button', { className: 'mdr-btn', onClick: refreshActive, disabled: !activeTab, title: '重新读取当前文件' }, h(Icons.refresh, { size: 14 }), '刷新'),
     ),
     rootsOpen ? h(RootsMenu, { meta, onAdd: (value) => changeRoots('add', value), onRemove: (value) => changeRoots('remove', value), onClose: () => setRootsOpen(false) }) : null,
@@ -2866,6 +4661,7 @@ function App() {
           rootEntries: dirs[''],
           expanded,
           dirs,
+          failed: failedDirs,
           activePath: activeTab ? activeTab.path : '',
           onToggle: toggleDir,
           onOpen: (rel) => openPath(rel, null),
@@ -2892,6 +4688,24 @@ function App() {
     overlay === 'search' ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: openPath }) : null,
     overlay === 'files' ? h(SearchPanel, { mode: 'files', onClose: () => setOverlay(null), onOpen: openPath }) : null,
     overlay === 'json' ? h(JsonTool, { onClose: () => setOverlay(null) }) : null,
+    // 代码弹窗（24-modal.js 分片实现；分片未落地前 typeof 守卫保证不炸）。
+    typeof CodeModal === 'function' && modalRequest
+      ? h(CodeModal, {
+          request: modalRequest,
+          onClose: closeModal,
+          // 弹窗内部可能原地跳转过（返回栈），所以优先用弹窗回传的当前视图。
+          onOpenTab: (target) => {
+            const request = target && target.path ? target : modalRequest
+            closeModal()
+            if (request) openPath(request.path, request.line)
+          },
+          onOpen: openPath,
+        })
+      : null,
+    typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,
+    typeof GitGraphModal === 'function' && gitOpen
+      ? h(GitGraphModal, { path: activeTab ? activeTab.path : '', onClose: closeGit, onOpen: openPath })
+      : null,
   )
 }
 
