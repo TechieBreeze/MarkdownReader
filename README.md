@@ -50,16 +50,17 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
     Client 用 `fetch('/markdown-reader/...')`，避免跨进程/跨源。
   - **不使用 Node 打包器**：`src-client/*.js` 为共享作用域的分片，`node build.mjs` 拼成 client.js；
     只 `require('react')`（Harness 内置模块表）。
-  - **Host 代码无热更新**：已装插件的 `index.js`/`lib/*` 改动需要重启 DSH 才生效；客户端 `client.js`
-    刷新页面即生效。因此 Host 逻辑用 `work/host-test.mjs` 单独验，避免反复重启。
+  - **Host 代码可免重启生效**：不用重启 DSH——在插件管理器里把本 bundle 禁用再启用（toggle）会重新
+    import Host 模块，新增的 `/api/search`、`/api/def`、mermaid 白名单均已实测立即生效；Host 逻辑仍用
+    `work/host-test.mjs` 单独验（端口 8799），避免依赖 UI 操作。
   - **Java 定义查找不用 AST**：原工具靠 Python javalang AST；插件改为有界源码扫描 + 声明形态
     启发式（class/interface/enum/record/method/field）+ JS/TS import 解析，返回候选列表。
   - **mermaid 不内联 SVG**：沿用原工具结论（内联 SVG 的全局 `<style>` 会拖垮页面），渲染成
     `<img src="data:image/svg+xml;base64,...">`，且只在可见时渲染、串行排队、带缓存。
 - 风险：
-  - DSH 重启前 Host 最新代码不生效（`/api/search`、`/api/files`、`/api/def`、mermaid 资产白名单）。
-  - 无浏览器控制：渲染结果只能由用户刷新后目测，agent 侧仅能验证 JSON/语法/注册状态。
+  - 无浏览器控制：渲染结果只能由用户刷新后目测，agent 侧已验证 JSON/语法/注册状态/接口形状。
   - Java defs 为启发式，重载/同名方法可能多候选；后续可按候选列表 UI 收敛。
+  - 原工具的「工作台 chip / git graph / 同步检查更新 / SOA 适配层」尚未移植。
 - 未决问题：
   - 是否把「工作台任务 chip / git graph / 同步检查更新 / SOA 适配」也移植（原工具的后半部分功能）。
   - 插件包是否需要发布/共享（当前是本机 `@local` bundle）。
