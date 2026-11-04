@@ -98,12 +98,37 @@ function projectCandidates(state, project, preferRootName) {
       // not there
     }
   }
+  // 1) the plain layout (`gits/<project>`), preferred root first
   const roots = state.roots().filter((root) => (preferRootName ? root.name === preferRootName : true))
   for (const root of roots) add(path.join(root.path, 'gits', project))
-  if (!candidates.length) {
-    for (const root of state.roots()) {
-      add(path.join(root.path, 'gits', project))
-      for (const extra of ['docs', 'tools']) add(path.join(root.path, extra, project))
+  for (const root of state.roots()) {
+    add(path.join(root.path, 'gits', project))
+    add(path.join(root.path, project))
+  }
+  if (candidates.length) return candidates
+  // 2) nested repositories: the remote project name can be a repo checked out
+  //    inside another repo (`gits/core/data-excel`). Walk every root (bounded)
+  //    for a directory named like the project that owns a `.git`.
+  for (const root of state.roots()) {
+    const queue = [{ dir: root.path, depth: 0 }]
+    while (queue.length && candidates.length < 8) {
+      const { dir, depth } = queue.shift()
+      let dirents
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const dirent of dirents) {
+        if (!dirent.isDirectory()) continue
+        if (dirent.name.startsWith('.') || dirent.name === 'node_modules') continue
+        const abs = path.join(dir, dirent.name)
+        if (dirent.name === project && fs.existsSync(path.join(abs, '.git'))) {
+          add(abs)
+          continue
+        }
+        if (depth < 5) queue.push({ dir: abs, depth: depth + 1 })
+      }
     }
   }
   return candidates

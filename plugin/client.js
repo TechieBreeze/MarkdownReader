@@ -583,10 +583,12 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   for (const anchor of [...container.querySelectorAll('a[href]')]) {
     const raw = anchor.getAttribute('href') || ''
     if (isRepoBlobUrl(raw)) {
-      anchor.classList.add('mdr-repo-link')
+      // Keep the remote href: Shift+click / right-click stay native. Styled like
+      // the original tool's repository links while the local target is resolved.
+      anchor.classList.add('mdr-jump', 'mdr-repo-link')
       anchor.target = '_blank'
       anchor.rel = 'noopener noreferrer'
-      anchor.title = '仓库链接：解析到本地后可直接打开代码（Shift+点击 / 右键按仓库链接打开）'
+      anchor.title = '在仓库中新标签页打开（正在解析本地文件…）'
       repoLinks.push({ anchor, url: raw })
       continue
     }
@@ -677,23 +679,45 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       .catch(() => {})
   }
 
-  // 4) fenced code blocks -> highlight.js (mermaid kept for the lazy slice)
-  container.querySelectorAll('pre > code').forEach((code) => {
-    const source = code.textContent || ''
+  // 4) fenced code blocks -> the SAME pipeline as the code view (hljs language
+  //    aliases + Java/Kotlin post passes), sliced so a doc with hundreds of
+  //    blocks does not block the main thread.
+  const fenceBlocks = []
+  for (const code of container.querySelectorAll('pre > code')) {
     const match = /language-([\w+-]+)/.exec(code.className || '')
     const lang = match ? match[1] : ''
     if (lang === 'mermaid') {
-      code.dataset.mermaidSource = source
+      code.dataset.mermaidSource = code.textContent || ''
       code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
-      return
+      continue
     }
-    try {
-      code.innerHTML = window.hljs.highlight(source, { language: lang || 'plaintext', ignoreIllegals: true }).value || escapeHtml(source)
-      code.classList.add('hljs')
-    } catch {
-      code.innerHTML = escapeHtml(source)
+    fenceBlocks.push({ code, lang })
+  }
+  if (fenceBlocks.length) {
+    let index = 0
+    const step = () => {
+      const started = performance.now()
+      for (; index < fenceBlocks.length; index += 1) {
+        const { code, lang } = fenceBlocks[index]
+        const source = code.textContent || ''
+        try {
+          code.innerHTML =
+            typeof renderFenceCodeHtml === 'function'
+              ? renderFenceCodeHtml(source, lang)
+              : escapeHtml(source)
+          code.classList.add('hljs')
+        } catch {
+          code.innerHTML = escapeHtml(source)
+        }
+        if (performance.now() - started > 60) {
+          index += 1
+          break
+        }
+      }
+      if (index < fenceBlocks.length) setTimeout(step, 16)
     }
-  })
+    setTimeout(step, 0)
+  }
 
   // 5) mermaid fences are rendered lazily by the mermaid slice
   try {
@@ -2018,6 +2042,171 @@ function highlightLinesCached(content, lang) {
     highlightCache.delete(oldest)
   }
   return lines
+}
+
+/* ================= md fenced code blocks (same pipeline as the code view) =================
+   10-markdown.js hands every ```lang fence to renderFenceCodeHtml(source, lang) instead of
+   running hljs itself. Both views then share highlightCodeHtml → highlightToLines, so the
+   token classes (and therefore the colours) of a md code block are identical to the same
+   source in a code tab/modal: multi-line comments/strings stay coloured, and Java/Kotlin get
+   the type/method/variable post passes. */
+
+/* 代码块语言名归一化（port of the standalone reader's hljsLang):
+   ```lang 里的常见别名 → highlight.js 语言名；未收录的语言返回 ''（调用方保持原文）。 */
+const HLJS_LANG_ALIAS = {
+  // 前端框架模板 → xml（hljs common 包无 vue/svelte 语言）
+  vue: 'xml',
+  svelte: 'xml',
+  astro: 'xml',
+  angular: 'xml',
+  hbs: 'xml',
+  handlebars: 'xml',
+  pug: 'xml',
+  ejs: 'xml',
+  jsp: 'xml',
+  thymeleaf: 'xml',
+  html: 'xml',
+  htm: 'xml',
+  svg: 'xml',
+  xhtml: 'xml',
+  js: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  jsx: 'javascript',
+  node: 'javascript',
+  ts: 'typescript',
+  tsx: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  py: 'python',
+  py3: 'python',
+  python3: 'python',
+  ipython: 'python',
+  gyp: 'python',
+  pycon: 'python',
+  rb: 'ruby',
+  gemspec: 'ruby',
+  podspec: 'ruby',
+  yml: 'yaml',
+  sh: 'bash',
+  shell: 'bash',
+  zsh: 'bash',
+  console: 'bash',
+  golang: 'go',
+  rs: 'rust',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  cs: 'csharp',
+  'c#': 'csharp',
+  'c++': 'cpp',
+  cpp: 'cpp',
+  hpp: 'cpp',
+  'h++': 'cpp',
+  hh: 'cpp',
+  cc: 'cpp',
+  objc: 'objectivec',
+  'obj-c': 'objectivec',
+  bat: 'dos',
+  cmd: 'dos',
+  dos: 'dos',
+  ps1: 'powershell',
+  powershell: 'powershell',
+  patch: 'diff',
+  md: 'markdown',
+  markdown: 'markdown',
+  jsonc: 'json',
+  json5: 'json',
+  text: '',
+  txt: '',
+  plaintext: '',
+  plain: '',
+  mermaid: '',
+  ini: 'ini',
+  properties: 'ini',
+}
+
+/** Alias targets missing from the vendored common bundle → closest available grammar.
+    `dos` is mapped to bash here for the same reason LANG_MAP maps `.bat` to bash. */
+const HLJS_LANG_FALLBACK = { dos: 'bash' }
+
+/** Normalize a fence language hint to a highlight.js language name ('' = plain text).
+    The ALIAS table is applied BEFORE the "already a hljs name" check on purpose: the
+    code view resolves languages from the file extension (`langForPath`, e.g. .js →
+    javascript, .kt → kotlin, .html → xml), so a ```js / ```kt / ```html fence must
+    resolve to the same canonical name to produce byte-identical token classes. */
+function hljsLangNormalized(lang) {
+  const lib = typeof window !== 'undefined' ? window.hljs : null
+  if (!lang || !lib || typeof lib.getLanguage !== 'function') return ''
+  const raw = String(lang).trim().toLowerCase().replace(/^\./, '')
+  if (!raw) return ''
+  if (Object.prototype.hasOwnProperty.call(HLJS_LANG_ALIAS, raw)) {
+    const mapped = HLJS_LANG_ALIAS[raw]
+    if (!mapped) return '' // text / plaintext / mermaid … → keep the source as-is
+    if (lib.getLanguage(mapped)) return mapped
+    const fallback = HLJS_LANG_FALLBACK[mapped]
+    if (fallback && lib.getLanguage(fallback)) return fallback
+    return ''
+  }
+  if (lib.getLanguage(raw)) return raw // already a canonical hljs name
+  return ''
+}
+
+/**
+ * md-scoped VSCode Dark+ palette — keep in sync with the `.mdr-code` palette in
+ * GIT_CSS (15-git.js). 00-core's APP_CSS already covers the common tokens for
+ * `.mdr-root`, but it has no rules for the Java/Kotlin post-pass classes
+ * (`hljs-constant`, `hljs-params.hljs-type`, …), so md fences would otherwise
+ * leave ALL-CAPS constants white and paint parameter types as plain variables.
+ * Injected once (idempotently) the first time a fence is rendered.
+ */
+const FENCE_CSS_ID = 'mdr-fence-css'
+const FENCE_CSS = `
+.mdr-md pre code .hljs-keyword,.mdr-md pre code .hljs-doctag,.mdr-md pre code .hljs-template-tag,.mdr-md pre code .hljs-tag,.mdr-md pre code .hljs-name,.mdr-md pre code .hljs-attr,.mdr-md pre code .hljs-selector-tag,.mdr-md pre code .hljs-meta,.mdr-md pre code .hljs-section,.mdr-md pre code .hljs-link,.mdr-md pre code .hljs-variable.language_{color:#569cd6}
+.mdr-md pre code .hljs-string,.mdr-md pre code .hljs-meta .hljs-string,.mdr-md pre code .hljs-code,.mdr-md pre code .hljs-formula{color:#ce9178}
+.mdr-md pre code .hljs-comment,.mdr-md pre code .hljs-quote{color:#6a9955}
+.mdr-md pre code .hljs-number,.mdr-md pre code .hljs-literal,.mdr-md pre code .hljs-symbol,.mdr-md pre code .hljs-bullet{color:#b5cea8}
+.mdr-md pre code .hljs-type,.mdr-md pre code .hljs-title,.mdr-md pre code .hljs-title.class_,.mdr-md pre code .hljs-title.class_.inherited__,.mdr-md pre code .hljs-built_in{color:#4ec9b0}
+.mdr-md pre code .hljs-title.function_,.mdr-md pre code .hljs-title.function_.invoke__{color:#dcdcaa}
+.mdr-md pre code .hljs-variable,.mdr-md pre code .hljs-property,.mdr-md pre code .hljs-attribute,.mdr-md pre code .hljs-params,.mdr-md pre code .hljs-template-variable{color:#9cdcfe}
+.mdr-md pre code .hljs-selector-id,.mdr-md pre code .hljs-selector-class,.mdr-md pre code .hljs-selector-attr,.mdr-md pre code .hljs-selector-pseudo{color:#d7ba7d}
+.mdr-md pre code .hljs-regexp{color:#d16969}
+.mdr-md pre code .hljs-operator,.mdr-md pre code .hljs-punctuation,.mdr-md pre code .hljs-subst{color:#d4d4d4}
+.mdr-md pre code .hljs-addition{color:#b5cea8;background-color:rgba(46,160,67,.15)}
+.mdr-md pre code .hljs-deletion{color:#f48771;background-color:rgba(248,81,73,.15)}
+.mdr-md pre code .hljs-constant{color:#b5cea8}
+.mdr-md pre code .hljs-params.hljs-type{color:#4ec9b0}
+.mdr-md pre code .hljs-params.hljs-variable{color:#9cdcfe}
+.mdr-md pre code .hljs-params.hljs-keyword{color:#569cd6}
+.mdr-md pre code .hljs-params.hljs-constant{color:#b5cea8}
+`
+
+/** Inject the md-fence palette once; safe to call on every fence render. */
+function ensureFenceCss() {
+  if (typeof document === 'undefined' || !document.head) return
+  const existing = typeof document.getElementById === 'function' ? document.getElementById(FENCE_CSS_ID) : null
+  if (existing) return
+  const style = document.createElement('style')
+  style.id = FENCE_CSS_ID
+  style.textContent = FENCE_CSS
+  document.head.appendChild(style)
+}
+
+/**
+ * Highlight one fenced code block exactly like the code view would: whole-source
+ * hljs pass + Java/Kotlin post passes + per-line span rebuild, joined back with
+ * newlines for the `<pre><code>` innerHTML. Unknown/absent language → escaped
+ * plain text (never throws; synchronous, one block at a time).
+ */
+function renderFenceCodeHtml(source, langHint) {
+  const text = String(source == null ? '' : source)
+  const hl = hljsLangNormalized(langHint)
+  if (!hl) return escapeHtml(text)
+  try {
+    ensureFenceCss()
+    return highlightToLines(highlightCodeHtml(text, hl), isJavaKtLang(hl)).join('\n')
+  } catch {
+    return escapeHtml(text)
+  }
 }
 
 /* -------------------------------------------------------------- code scroll */
@@ -4906,8 +5095,14 @@ function WorkbenchBar(props) {
  *       from 20-code.js, and keeps the jumped-to line highlighted persistently.
  *   h(ImageView, { tab, onLocate? })
  *     tab = { id, kind:'image', path }
- *     · centered image from /api/raw, letterboxed fit by default, click to
- *       toggle 100% (scrollable) and back; natural-size badge + error retry.
+ *     · one <img> (src derived only from tab.path — never replaced on click)
+ *       centered on a checkered stage, letterboxed to fit by default.
+ *     · gestures: click toggles 适应 ↔ 100%, wheel / Ctrl+wheel zooms in steps
+ *       (25%–400% of fit, anchored at the cursor), double-click resets to fit,
+ *       drag pans when the zoomed image overflows; a % badge shows the scale.
+ *     · zoom + scroll are remembered on tab (imgScale/scrollLeft/scrollTop, plus
+ *       a module cache) so switching tabs and back keeps the view; error state
+ *       with retry; header shows filename (path tooltip) + natural size.
  *
  * All styles are component-local with mdr-html-* / mdr-image-* prefixes; only
  * shared utility classes (.mdr-btn/.mdr-spacer) are reused, none are changed.
@@ -4943,21 +5138,106 @@ const HTML_TAB_CSS = `
 .mdr-html-state-err{color:var(--dsw-alias-state-error-primary)}
 `
 
+/** Padding around the image inside the stage; the fit math below assumes it. */
+const IMAGE_PAD = 20
+/** Zoom factor is relative to the fit size (1 = fit); gestures clamp to this. */
+const IMAGE_MIN_ZOOM = 0.25
+const IMAGE_MAX_ZOOM = 4
+/** One wheel notch multiplies the current zoom by this factor. */
+const IMAGE_WHEEL_STEP = 1.2
+/** First-paint fallback when the stage cannot be measured yet. */
+const IMAGE_FALLBACK_VIEWPORT = { width: 960, height: 640 }
+/** zoom/scroll memory keyed by tab id, so tab switches keep the view. */
+const imageViewStateCache = new Map()
+
 const IMAGE_TAB_CSS = `
 .mdr-image{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
 .mdr-image-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap;row-gap:4px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
 .mdr-image-icon{display:inline-flex;flex:0 0 auto;color:var(--dsw-alias-brand-primary)}
 .mdr-image-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .mdr-image-dims{flex:0 0 auto;padding:0 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;font-size:11px;color:var(--dsw-alias-label-secondary);white-space:nowrap;font-variant-numeric:tabular-nums}
+.mdr-image-zoom{flex:0 0 auto;padding:0 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;font-size:11px;color:var(--dsw-alias-label-primary);white-space:nowrap;font-variant-numeric:tabular-nums}
 .mdr-image-hint{flex:0 0 auto;color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
-.mdr-image-stage{position:relative;display:flex;flex:1;min-height:0;overflow:auto;background-color:#1e1e1e;background-image:linear-gradient(45deg,#262626 25%,transparent 25%),linear-gradient(-45deg,#262626 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#262626 75%),linear-gradient(-45deg,transparent 75%,#262626 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
-.mdr-image-wrap{display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:auto;width:100%;height:100%;padding:20px;box-sizing:border-box}
-.mdr-image-img{display:block;max-width:100%;max-height:100%;object-fit:contain;border-radius:6px;cursor:zoom-in;user-select:none;box-shadow:0 0 0 1px rgba(255,255,255,.08),0 8px 30px rgba(0,0,0,.45)}
-.mdr-image-zoomed .mdr-image-wrap{width:auto;height:auto;max-width:none;max-height:none}
-.mdr-image-zoomed .mdr-image-img{max-width:none;max-height:none;cursor:zoom-out}
+.mdr-image-stage{position:relative;display:flex;flex:1;min-height:0;overflow:auto;padding:${IMAGE_PAD}px;box-sizing:border-box;background-color:#1e1e1e;background-image:linear-gradient(45deg,#262626 25%,transparent 25%),linear-gradient(-45deg,#262626 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#262626 75%),linear-gradient(-45deg,transparent 75%,#262626 75%);background-size:20px 20px;background-position:0 0,0 10px,10px -10px,-10px 0}
+.mdr-image-wrap{display:flex;align-items:center;justify-content:center;flex:0 0 auto;margin:auto}
+.mdr-image-img{display:block;max-width:100%;max-height:100%;border-radius:6px;user-select:none;-webkit-user-drag:none;box-shadow:0 0 0 1px rgba(255,255,255,.08),0 8px 30px rgba(0,0,0,.45)}
+.mdr-image-img-sized{max-width:none;max-height:none}
+.mdr-image-pannable .mdr-image-img{cursor:grab}
+.mdr-image-dragging,.mdr-image-dragging .mdr-image-img{cursor:grabbing;user-select:none}
+.mdr-image-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-secondary);font-size:12.5px}
 .mdr-image-error{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-state-error-primary);font-size:12.5px;text-align:center}
 .mdr-image-error-path{color:var(--dsw-alias-label-secondary);font-size:11.5px;word-break:break-all}
 `
+
+/* --------------------------------------------------- image view math ---- */
+
+/** Clamp a zoom factor (relative to fit) into the supported gesture range. */
+function imageClampZoom(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number <= 0) return 1
+  return Math.min(IMAGE_MAX_ZOOM, Math.max(IMAGE_MIN_ZOOM, number))
+}
+
+/** One wheel notch in (`direction` > 0) or out, clamped to the range. */
+function imageStepZoom(zoom, direction) {
+  const base = imageClampZoom(zoom)
+  return imageClampZoom(direction > 0 ? base * IMAGE_WHEEL_STEP : base / IMAGE_WHEEL_STEP)
+}
+
+/**
+ * Scale that makes the natural size fit the stage content box. Never upscales
+ * beyond 100% (same as the original `max-width/max-height` behaviour).
+ */
+function imageFitScale(naturalWidth, naturalHeight, viewWidth, viewHeight, padding) {
+  const width = Number(naturalWidth) || 0
+  const height = Number(naturalHeight) || 0
+  const pad = Math.max(0, Number(padding) || 0)
+  const availableWidth = (Number(viewWidth) || 0) - pad * 2
+  const availableHeight = (Number(viewHeight) || 0) - pad * 2
+  if (!(width > 0) || !(height > 0) || !(availableWidth > 0) || !(availableHeight > 0)) return 1
+  return Math.min(1, availableWidth / width, availableHeight / height)
+}
+
+/** Explicit rendered size for the current zoom; null until the natural size is known. */
+function imageDisplaySize(naturalWidth, naturalHeight, fitScale, zoom) {
+  const width = Number(naturalWidth) || 0
+  const height = Number(naturalHeight) || 0
+  if (!(width > 0) || !(height > 0)) return null
+  const scale = (Number(fitScale) || 1) * imageClampZoom(zoom)
+  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) }
+}
+
+/** Header percentage: displayed size relative to the natural pixels. */
+function imageZoomPercent(zoom, fitScale) {
+  return Math.max(1, Math.round(imageClampZoom(zoom) * (Number(fitScale) || 1) * 100))
+}
+
+/** Pan scroll offsets from drag deltas (dragging right shows content to the left). */
+function imagePanScroll(startLeft, startTop, deltaX, deltaY) {
+  return {
+    left: Math.max(0, (Number(startLeft) || 0) - (Number(deltaX) || 0)),
+    top: Math.max(0, (Number(startTop) || 0) - (Number(deltaY) || 0)),
+  }
+}
+
+/** Restored zoom factor for a (re)mounted image tab. */
+function imageInitialZoom(tab, stateKey) {
+  const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+  if (cached && Number.isFinite(cached.zoom)) return imageClampZoom(cached.zoom)
+  const stored = tab ? Number(tab.imgScale) : NaN
+  if (Number.isFinite(stored) && stored > 0) return imageClampZoom(stored)
+  return 1
+}
+
+/** Legacy `tab.imgZoom` (boolean "100%") resolved once the fit scale is known. */
+function imageInitialNaturalZoom(tab, stateKey) {
+  const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+  if (cached && Number.isFinite(cached.zoom)) return false
+  const stored = tab ? Number(tab.imgScale) : NaN
+  if (Number.isFinite(stored) && stored > 0) return false
+  return !!(tab && tab.imgZoom)
+}
+
 
 /** Exception text for the inline source-mode error row. */
 function htmlTabErrorText(error) {
@@ -5213,65 +5493,315 @@ function ImageView(props) {
   const { tab, onLocate } = props || {}
   const path = String((tab && tab.path) || '')
   const name = path.split('/').pop() || path || '图片'
-  const [zoomed, setZoomed] = React.useState(false)
-  const [size, setSize] = React.useState(null)
-  const [error, setError] = React.useState('')
-  const [retry, setRetry] = React.useState(0)
-  const stageRef = React.useRef(null)
-  const srcBase = path ? `${ROUTE}/api/raw?path=${encodeURIComponent(path)}` : ''
-  const src = srcBase && retry > 0 ? `${srcBase}&_retry=${retry}` : srcBase
+  const stateKey = tab && tab.id ? String(tab.id) : path
+  const src = path ? `${ROUTE}/api/raw?path=${encodeURIComponent(path)}` : ''
   const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
 
+  const [natural, setNatural] = React.useState(null)
+  const [viewport, setViewport] = React.useState(null)
+  const [zoom, setZoom] = React.useState(() => imageInitialZoom(tab, stateKey))
+  const [loaded, setLoaded] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [retry, setRetry] = React.useState(0)
+  const [dragging, setDragging] = React.useState(false)
+  const stageRef = React.useRef(null)
+  const panRef = React.useRef(null)
+  const panCleanupRef = React.useRef(null)
+  const suppressClickRef = React.useRef(false)
+  const clickTimerRef = React.useRef(0)
+  const pendingScrollRef = React.useRef(null)
+  const restoredRef = React.useRef(false)
+  const naturalRef = React.useRef(natural)
+  naturalRef.current = natural
+  const zoomRef = React.useRef(zoom)
+  zoomRef.current = zoom
+  const viewportRef = React.useRef(viewport)
+  viewportRef.current = viewport
+  const legacyNaturalRef = React.useRef(imageInitialNaturalZoom(tab, stateKey))
+  const applyZoomRef = React.useRef(null)
+
+  // Wheel / pan / resize listeners must not capture stale state; the memory
+  // lives on the tab (mutable, like the original) plus a module-level cache so
+  // an App re-render or a tab switch cannot reset the view.
+  const persistState = (nextZoom, scroll) => {
+    if (!stateKey) return
+    const entry = imageViewStateCache.get(stateKey) || {}
+    if (Number.isFinite(nextZoom)) entry.zoom = nextZoom
+    if (scroll) {
+      entry.scrollLeft = scroll.left
+      entry.scrollTop = scroll.top
+    }
+    imageViewStateCache.set(stateKey, entry)
+    if (tab && typeof tab === 'object') {
+      if (Number.isFinite(nextZoom)) {
+        tab.imgScale = nextZoom
+        tab.imgZoom = Math.abs(nextZoom - 1) > 0.001
+      }
+      if (scroll) {
+        tab.scrollLeft = scroll.left
+        tab.scrollTop = scroll.top
+      }
+    }
+  }
+
+  // The stage size drives the fit scale; observe it (ResizeObserver + window
+  // resize) so panel resizes never leave the image at a stale size.
   React.useEffect(() => {
-    // A new file gets a clean fit / error state.
-    setZoomed(false)
-    setSize(null)
-    setError('')
+    const stage = stageRef.current
+    if (!stage) return undefined
+    const measure = () => {
+      const width = Number(stage.clientWidth) || 0
+      const height = Number(stage.clientHeight) || 0
+      setViewport((previous) => (previous && previous.width === width && previous.height === height ? previous : { width, height }))
+    }
+    measure()
+    let observer = null
+    if (typeof ResizeObserver === 'function') {
+      observer = new ResizeObserver(measure)
+      observer.observe(stage)
+    }
+    if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
+    return () => {
+      if (observer) observer.disconnect()
+      if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
+    }
   }, [path])
 
   React.useEffect(() => {
+    setNatural(null)
+    setLoaded(false)
+    setError('')
+    restoredRef.current = false
+  }, [path])
+
+  React.useEffect(
+    () => () => {
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current)
+      if (panCleanupRef.current) panCleanupRef.current()
+    },
+    [],
+  )
+
+  const viewWidth = viewport && viewport.width > 0 ? viewport.width : IMAGE_FALLBACK_VIEWPORT.width
+  const viewHeight = viewport && viewport.height > 0 ? viewport.height : IMAGE_FALLBACK_VIEWPORT.height
+  const fitScale = natural ? imageFitScale(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD) : 1
+  const display = natural ? imageDisplaySize(natural.width, natural.height, fitScale, zoom) : null
+  const percent = natural ? imageZoomPercent(zoom, fitScale) : 0
+  const canPan = !!display && (display.width > viewWidth - IMAGE_PAD * 2 || display.height > viewHeight - IMAGE_PAD * 2)
+
+  // Restore the previous zoom (100% legacy) and scroll once the size is known.
+  React.useEffect(() => {
+    if (!legacyNaturalRef.current || !natural) return
+    legacyNaturalRef.current = false
+    const scale = imageFitScale(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD)
+    if (scale > 0 && Math.abs(scale - 1) > 0.01 && applyZoomRef.current) applyZoomRef.current(1 / scale)
+  }, [natural, viewWidth, viewHeight])
+
+  React.useEffect(() => {
+    if (restoredRef.current || !natural) return
+    restoredRef.current = true
     const stage = stageRef.current
     if (!stage) return
-    if (zoomed) {
-      stage.scrollLeft = Math.max(0, (stage.scrollWidth - stage.clientWidth) / 2)
-      stage.scrollTop = Math.max(0, (stage.scrollHeight - stage.clientHeight) / 2)
-    } else {
-      stage.scrollLeft = 0
-      stage.scrollTop = 0
+    const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+    const left = cached && Number.isFinite(cached.scrollLeft) ? cached.scrollLeft : Number(tab && tab.scrollLeft) || 0
+    const top = cached && Number.isFinite(cached.scrollTop) ? cached.scrollTop : Number(tab && tab.scrollTop) || 0
+    if (left > 0) stage.scrollLeft = left
+    if (top > 0) stage.scrollTop = top
+  }, [natural, display && display.width, display && display.height, stateKey, tab])
+
+  React.useEffect(() => {
+    const stage = stageRef.current
+    const pending = pendingScrollRef.current
+    if (!stage || !pending) return
+    pendingScrollRef.current = null
+    stage.scrollLeft = pending.left
+    stage.scrollTop = pending.top
+  }, [zoom])
+
+  React.useEffect(() => {
+    const stage = stageRef.current
+    if (!stage || typeof stage.addEventListener !== 'function') return undefined
+    const onWheel = (event) => {
+      if (!naturalRef.current) return
+      const delta = Number(event.deltaY) || 0
+      if (!delta) return
+      if (typeof event.preventDefault === 'function') event.preventDefault()
+      const factor = delta < 0 ? IMAGE_WHEEL_STEP : 1 / IMAGE_WHEEL_STEP
+      if (applyZoomRef.current) {
+        applyZoomRef.current(imageClampZoom(zoomRef.current * factor), {
+          clientX: Number(event.clientX) || 0,
+          clientY: Number(event.clientY) || 0,
+        })
+      }
     }
-  }, [zoomed])
+    stage.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      if (typeof stage.removeEventListener === 'function') stage.removeEventListener('wheel', onWheel)
+    }
+  }, [path])
+
+  /** Fit scale measured from the live stage box (falls back to the state viewport). */
+  const currentFitScale = () => {
+    const stage = stageRef.current
+    const width = stage && stage.clientWidth ? stage.clientWidth : viewportRef.current && viewportRef.current.width ? viewportRef.current.width : IMAGE_FALLBACK_VIEWPORT.width
+    const height = stage && stage.clientHeight ? stage.clientHeight : viewportRef.current && viewportRef.current.height ? viewportRef.current.height : IMAGE_FALLBACK_VIEWPORT.height
+    const size = naturalRef.current
+    return size ? imageFitScale(size.width, size.height, width, height, IMAGE_PAD) : 1
+  }
+
+  /** Zoom change; keeps the point under `anchor` stable, then re-applies scroll. */
+  const applyZoom = (nextValue, anchor) => {
+    const next = imageClampZoom(nextValue)
+    const current = imageClampZoom(zoomRef.current)
+    if (Math.abs(next - current) < 0.001) return
+    const stage = stageRef.current
+    if (anchor && stage) {
+      const rect = typeof stage.getBoundingClientRect === 'function' ? stage.getBoundingClientRect() : null
+      if (rect) {
+        const px = Number(anchor.clientX) - rect.left
+        const py = Number(anchor.clientY) - rect.top
+        const ratio = next / current
+        pendingScrollRef.current = {
+          left: Math.max(0, (stage.scrollLeft + px) * ratio - px),
+          top: Math.max(0, (stage.scrollTop + py) * ratio - py),
+        }
+      }
+    }
+    zoomRef.current = next
+    setZoom(next)
+    persistState(next)
+  }
+  applyZoomRef.current = applyZoom
+
+  const toggleZoom = () => {
+    const base = imageClampZoom(zoomRef.current)
+    if (Math.abs(base - 1) < 0.001) {
+      const scale = currentFitScale()
+      applyZoom(scale > 0 ? 1 / scale : 1)
+    } else {
+      applyZoom(1)
+    }
+  }
+
+  const onImageClick = () => {
+    // A drag that actually moved must not also toggle the zoom.
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
+    if (clickTimerRef.current) return
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = 0
+      toggleZoom()
+    }, 180)
+  }
+
+  const onImageDoubleClick = () => {
+    if (clickTimerRef.current) {
+      clearTimeout(clickTimerRef.current)
+      clickTimerRef.current = 0
+    }
+    suppressClickRef.current = false
+    applyZoom(1)
+  }
 
   const onImageLoad = (event) => {
     setError('')
+    setLoaded(true)
     const image = event && event.target
     if (!image) return
-    const width = Number(image.naturalWidth) || 0
-    const height = Number(image.naturalHeight) || 0
-    setSize(width && height ? [width, height] : null)
-    // SVG exported with width="100%" lays out at 0×0 inside an <img>: force the
-    // intrinsic size as a fallback (max-width/height still constrain it in fit mode).
-    if (width && height && (!image.clientWidth || !image.clientHeight)) {
+    let width = Number(image.naturalWidth) || 0
+    let height = Number(image.naturalHeight) || 0
+    if (!(width > 0 && height > 0)) {
+      // SVG with width="100%" (mermaid exports) can report no natural size:
+      // fall back to its rendered box so the layout is never 0×0.
+      width = Number(image.clientWidth) || 0
+      height = Number(image.clientHeight) || 0
+    }
+    if (!(width > 0 && height > 0)) return
+    setNatural({ width, height })
+    if (typeof image.style === 'object' && (!image.clientWidth || !image.clientHeight)) {
       image.style.width = `${width}px`
       image.style.height = `${height}px`
     }
   }
+
   const onImageError = () => {
-    setSize(null)
+    setLoaded(false)
     setError('图片加载失败：无法读取该文件（可能不是受支持的图片格式）')
+  }
+
+  const onStageScroll = () => {
+    const stage = stageRef.current
+    if (!stage) return
+    persistState(undefined, { left: stage.scrollLeft || 0, top: stage.scrollTop || 0 })
+  }
+
+  const startPan = (event) => {
+    const stage = stageRef.current
+    if (!stage || !display) return
+    if (event && event.button != null && event.button !== 0) return
+    const target = event && event.target
+    const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
+    if (tag === 'BUTTON' || tag === 'INPUT') return
+    const overflowing = stage.scrollWidth > stage.clientWidth + 1 || stage.scrollHeight > stage.clientHeight + 1
+    if (!overflowing) return
+    if (typeof window === 'undefined' || !window.addEventListener) return
+    const pan = {
+      startX: Number(event.clientX) || 0,
+      startY: Number(event.clientY) || 0,
+      left: stage.scrollLeft || 0,
+      top: stage.scrollTop || 0,
+      moved: false,
+    }
+    panRef.current = pan
+    setDragging(true)
+    const onMove = (moveEvent) => {
+      const active = panRef.current
+      if (!active) return
+      const deltaX = (Number(moveEvent.clientX) || 0) - active.startX
+      const deltaY = (Number(moveEvent.clientY) || 0) - active.startY
+      if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) active.moved = true
+      if (!active.moved) return
+      if (typeof moveEvent.preventDefault === 'function') moveEvent.preventDefault()
+      const next = imagePanScroll(active.left, active.top, deltaX, deltaY)
+      stage.scrollLeft = next.left
+      stage.scrollTop = next.top
+      persistState(undefined, next)
+    }
+    const stop = () => {
+      const active = panRef.current
+      panRef.current = null
+      setDragging(false)
+      if (active && active.moved) suppressClickRef.current = true
+      if (panCleanupRef.current === stop) panCleanupRef.current = null
+      if (typeof window !== 'undefined' && window.removeEventListener) {
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', stop)
+      }
+    }
+    if (panCleanupRef.current) panCleanupRef.current()
+    panCleanupRef.current = stop
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', stop)
   }
 
   const head = h(
     'div',
     { className: 'mdr-image-head' },
     h('span', { className: 'mdr-image-icon' }, h(Icons.image, { size: 14 })),
-    h('span', { className: 'mdr-image-name', title: path }, path || '（未选择图片）'),
-    size ? h('span', { className: 'mdr-image-dims' }, `${size[0]}×${size[1]} px`) : null,
+    h('span', { className: 'mdr-image-name', title: path || '（未选择图片）' }, name || '图片'),
+    natural ? h('span', { className: 'mdr-image-dims' }, `${natural.width}×${natural.height} px`) : null,
+    natural ? h('span', { className: 'mdr-image-zoom', title: '滚轮缩放 · 点击切换 100% · 双击还原' }, `${percent}%`) : null,
     h('span', { className: 'mdr-spacer' }),
-    h('span', { className: 'mdr-image-hint' }, zoomed ? '点击图片还原为适应窗口' : '点击图片放大到 100%'),
+    h('span', { className: 'mdr-image-hint' }, '滚轮缩放 · 拖动平移 · 双击还原'),
     locate
       ? h('button', { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' }, '定位')
       : null,
   )
+
+  const stageClass =
+    'mdr-image-stage' + (canPan ? ' mdr-image-pannable' : '') + (dragging ? ' mdr-image-dragging' : '')
 
   return h(
     'div',
@@ -5280,24 +5810,29 @@ function ImageView(props) {
     head,
     h(
       'div',
-      { className: 'mdr-image-stage' + (zoomed ? ' mdr-image-zoomed' : ''), ref: stageRef },
+      { className: stageClass, ref: stageRef, onMouseDown: startPan, onScroll: onStageScroll },
       h(
         'div',
         { className: 'mdr-image-wrap' },
         src
           ? h('img', {
               key: retry,
-              className: 'mdr-image-img',
+              // The src is derived from tab.path only: zoom/pan/click NEVER
+              // replaces or clears it, so the image can never blank out.
+              className: 'mdr-image-img' + (display ? ' mdr-image-img-sized' : ''),
               src,
               alt: name,
-              title: '点击切换 适应窗口 / 100% 原尺寸',
+              title: '点击切换 适应 / 100% · 双击还原 · 滚轮缩放 · 拖动平移',
               draggable: false,
+              style: display ? { width: `${display.width}px`, height: `${display.height}px` } : undefined,
               onLoad: onImageLoad,
               onError: onImageError,
-              onClick: () => setZoomed((value) => !value),
+              onClick: onImageClick,
+              onDoubleClick: onImageDoubleClick,
             })
           : null,
       ),
+      !loaded && !error && src ? h('div', { className: 'mdr-image-loading' }, '正在加载图片…') : null,
       error
         ? h(
             'div',
