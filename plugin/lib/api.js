@@ -12,7 +12,7 @@ import { promisify } from 'node:util'
 import { ROUTE, VERSION } from './constants.js'
 import { sendJson, sendError, sendFile, readBody } from './http.js'
 import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
-import { findDefinitions } from './defs.js'
+import { resolveDefinition } from './defs.js'
 import { syncStatus, syncPull } from './sync.js'
 import { gitGraph, listRepos } from './gitgraph.js'
 import { renderHtmlPreview } from './htmlpreview.js'
@@ -201,6 +201,8 @@ function apiCode(res, state, url) {
 
 function apiExists(res, state, url) {
   const inputs = url.searchParams.getAll('path')
+  const from = url.searchParams.get('from') || ''
+  const preferredRoot = preferredRootFor(state, from)
   const results = {}
   for (const input of inputs) {
     const text = String(input || '')
@@ -215,7 +217,7 @@ function apiExists(res, state, url) {
       abs = null
     }
     if (!abs || !fs.existsSync(abs)) {
-      const hit = searchByBasename(state, text)
+      const hit = searchByBasename(state, text, preferredRoot)
       if (hit) {
         results[input] = { abs: state.relOf(hit), exists: true }
         continue
@@ -228,44 +230,86 @@ function apiExists(res, state, url) {
   return sendJson(res, 200, { ok: true, results })
 }
 
-function searchByBasename(state, rel) {
-  const base = path.basename(String(rel).replace(/\\/g, '/'))
-  if (!base) return null
-  for (const root of state.roots()) {
-    const hit = bfsFind(root.path, base, root.path === state.roots()[0].path ? 12 : 8)
-    if (hit) return hit
+/** Root that owns the requesting document (`from`), or null. */
+function preferredRootFor(state, from) {
+  if (!from) return null
+  try {
+    const root = state.rootForAbs(state.safePath(from))
+    return root ? root.path : null
+  } catch {
+    return null
   }
-  return null
 }
 
-function bfsFind(rootPath, basename, maxDepth) {
-  let level = [rootPath]
-  let visited = 0
-  for (let depth = 0; depth <= maxDepth && level.length; depth += 1) {
-    const next = []
-    for (const dir of level) {
-      let dirents
-      try {
-        dirents = fs.readdirSync(dir, { withFileTypes: true })
-      } catch {
+/**
+ * Basename -> absolute paths index for one workspace root.
+ *
+ * Bounded depth is the reason this index exists: a fixed per-root depth silently
+ * lost every Java file under `gits/<svc>/src/main/java/...` (10+ levels), so the
+ * reader could not resolve the bare filenames docs cite in tables while it did
+ * resolve shallower `.xml` mappers. Indexing once also keeps a doc with dozens of
+ * bare paths from running dozens of directory walks.
+ */
+const nameIndex = { at: 0, key: '', map: new Map() }
+const NAME_INDEX_TTL = 90000
+const NAME_INDEX_MAX_FILES = 400000
+const NAME_INDEX_MAX_DEPTH = 18
+
+function fileNameIndex(state) {
+  const key = state.roots().map((root) => root.path).join('|')
+  if (nameIndex.map.size && Date.now() - nameIndex.at < NAME_INDEX_TTL && nameIndex.key === key) return nameIndex.map
+  const map = new Map()
+  let files = 0
+  const stack = state.roots().map((root) => ({ dir: root.path, depth: 0 }))
+  while (stack.length && files < NAME_INDEX_MAX_FILES) {
+    const { dir, depth } = stack.pop()
+    let dirents
+    try {
+      dirents = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
+      const child = path.join(dir, dirent.name)
+      if (dirent.isDirectory()) {
+        if (depth < NAME_INDEX_MAX_DEPTH) stack.push({ dir: child, depth: depth + 1 })
         continue
       }
-      for (const dirent of dirents) {
-        if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
-        const child = path.join(dir, dirent.name)
-        if (dirent.isDirectory()) {
-          // The reader's docs live in deep trees; skip node_modules-like sinks only.
-          next.push(child)
-        } else if (dirent.isFile() && dirent.name === basename) {
-          return child
-        }
-        visited += 1
-        if (visited > 60000) return null
-      }
+      if (!dirent.isFile()) continue
+      files += 1
+      const bucket = map.get(dirent.name)
+      if (bucket) bucket.push(child)
+      else map.set(dirent.name, [child])
     }
-    level = next
   }
-  return null
+  nameIndex.at = Date.now()
+  nameIndex.key = key
+  nameIndex.map = map
+  return map
+}
+
+/** Resolve a bare (or partly wrong) citation by filename, preferring the doc's own root. */
+function searchByBasename(state, rel, preferredRoot) {
+  const base = path.basename(String(rel).replace(/\\/g, '/'))
+  if (!base) return null
+  const hits = fileNameIndex(state).get(base)
+  if (!hits || !hits.length) return null
+  if (preferredRoot) {
+    const inside = hits.find((hit) => hit.startsWith(preferredRoot + path.sep) || hit === path.join(preferredRoot, base))
+    if (inside) return inside
+  }
+  // Shallowest first: a doc's citation means the top-level file, not a copy deep in target/.
+  let best = hits[0]
+  let bestDepth = best.split(path.sep).length
+  for (const hit of hits) {
+    const depth = hit.split(path.sep).length
+    if (depth < bestDepth) {
+      best = hit
+      bestDepth = depth
+    }
+  }
+  return best
 }
 
 function apiRaw(res, state, url) {
@@ -425,9 +469,33 @@ function apiFiles(res, state, url) {
 
 // --------------------------------------------------------- symbol definitions
 
+/**
+ * POST /api/def — v2 single-target "go to definition" contract.
+ *
+ * Request: { path, line, col, name, kind, text?, branch?, commit? }
+ *   - `kind`: method | type | variable | constant | '' (auto: method→type→variable)
+ *   - `text` is the client's current view text (commit/branch views send that
+ *     revision's text); when absent the Host reads the workspace file / git blob.
+ * Success: { ok, file, line, kind, defName, impl }
+ * Not found: HTTP 400 { ok: false, error } (error text is shown by the client).
+ *
+ * The standalone v1 client sent `{ path, symbol, context }`; that shape is still
+ * accepted (line/col derived from the context line) while the web client lands.
+ */
 async function apiDef(req, res, state) {
   const body = JSON.parse((await readBody(req)) || '{}')
-  return sendJson(res, 200, findDefinitions(state, body))
+  const result = resolveDefinition(state, body)
+  if (!result || result.error) {
+    return sendJson(res, 400, { ok: false, error: (result && result.error) || '未找到定义' })
+  }
+  return sendJson(res, 200, {
+    ok: true,
+    file: result.file,
+    line: result.line,
+    kind: result.kind,
+    defName: result.defName,
+    impl: result.impl || null,
+  })
 }
 
 // ---------------------------------------------------------------- git (read-only)

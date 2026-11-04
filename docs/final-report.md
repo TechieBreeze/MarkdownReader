@@ -101,6 +101,39 @@ Host 新增/放宽：`/api/html`、`/api/git/resolve`、`project=` 作用域（s
 | 打开 SVG 后切会话再回插件弹「目录不存在: X/X/docs/…」 | 双项目前缀 bug：`locateInTree` 对已带 vtop 前缀的路径又拼了一次当前项目，并把 `X/X/…` 持久化到展开集合，重挂载时去 list 报错。修复：已带真实项目名时原样使用；新增 `collapseDoubledVtopPrefix` 自愈（多根且首段是真实项目、循环处理三重），持久化集合重挂载/切换项目时清洗并回写；`loadDir` 防御性清洗。Host `/api/list` 也容忍「重复前缀但重复形式不存在」的旧状态。 |
 | SVG 显示很小、放到最大也勉强窗口 | SVG 无固有像素宽（`width="100%"` + viewBox）。ImageView 改为 fetch `/api/raw` 读 SVG 文本，解析 `viewBox`（优先）/数字 width/height 作为 intrinsic；flow-order.svg 解析为 1265.67×1587.52，默认 fit 撑满面板（约 478×600），100% = 1266×1588 可滚动，缩放上限 8× fit；解析失败回退实测盒，png/jpg 仍走 naturalWidth；不改/清 src。 |
 
+## 附录：第 7 轮（继续迁移原版功能点，2026-11-04 晚）
+
+用户第 4 批反馈（原话要点）：**「右键菜单能复制路径」**、**「代码链接的识别」**——举
+`20260917-微服务/docs/codereview/20261104_ck-dev-1105_th-dev-1105_vs_基线_1105版本_codereview.md`
+§三「差异总览」表格前两行第一列的 `.java` 文件名，原版能识别成代码；**「代码弹窗中变量不存在候选什么的，原版直接能定位到位置」**。
+并提示「可以看原版最近的 commit 来看功能点」。
+
+| 反馈 | 根因 | 修复 |
+|---|---|---|
+| 表格里的裸文件名（`.java`）识别不到代码 | Host `/api/exists` 的 basename 兜底用「第一个根 12 层、其余根 8 层」的写死深度 BFS；`20260917-微服务` 是第二个根，而 `gits/<svc>/src/main/java/...` 深 10 层 → `.xml`（7 层）能解析、`.java` 全部解析不到 | `plugin/lib/api.js`：改成**文件名索引**（懒建、90s TTL、深度 18、跨根、40 万文件上限），新增 `from=<当前文档>` 让索引优先命中**文档所在项目**；客户端 `10-markdown.js` 带上 `from` |
+| 右键没有复制路径 | 未移植原版 `2fab45a` 的路径右键菜单 | `00-core.js`：`copyText()`（clipboard → execCommand → 手动 Ctrl+C 三级回退）、`toast()`、`pathMenuOpen()` + 全局 `contextmenu` 委托；覆盖代码弹窗头/代码标签页头/HTML 头/图片名/搜索结果/目录树行/标签页（原版 4 类，这里扩到 7 类） |
+| 代码弹窗里点变量没有结果（只给「候选」且为空） | `/api/def` 只有「正则扫声明 + 返回候选列表」，没有局部变量/参数/枚举常量/接收者类型/继承/Lombok 能力（原版是 Python javalang AST 单目标解析） | **推倒重做**：新增 `plugin/lib/javasym.js`（Java 词法器 + 声明/作用域树，含 catch/for-each/lambda/try-with-resources/record/var），重写 `plugin/lib/defs.js` 逐条对齐原版 `_resolve_java_def`（variable/constant/type/method、接收者链 ≤3、接口→impl、Mapper→XML 语句行、链尾 `a.b().c()`、`commit`/`branch` 视图）+ 移植原版 `/api/web/def` 的 JS/TS/Vue 分支；接口改单目标 `{file,line,kind,defName,impl}`，客户端 `22-defs.js` 按 hljs class 判 kind + 行内列号，删除候选选择器 |
+| 枚举值/常量、方法签名参数类型、泛型/`List<X>`/import 类名的高亮与可跳 | 原版 `2fab45a`/`6b8a095`/`b9d5714` 的等价实现前几轮已移植，本轮补断言确认 | 用探针复核（`hl-real` 32/32 真实文件、`hl-probe` 25/25 合成）确认 `hljs-constant`、`hljs-params` 内类型、泛型头/实参、import 类名均已高亮且无重复包裹，未改高亮代码 |
+
+**验证（第 7 轮，agent 侧可复现）**
+
+- 与原版 `/api/java/def`、`/api/web/def` **逐点击对拍**：`work/work-def-parity.mjs` 53 个真实样本（Java 41 + web 12），
+  原版成功 46 个 → **46/46 file+line 一致，0 仅原版、0 不一致，RESULT: PASS**（7 个双方失败样本是原版也失败的负样本，文案逐字一致）。
+- 广扫对拍：`work/defs-oracle-sweep.mjs` 32 个文件 / **1014 次真实 token 点击**（覆盖 user/order/product/customer/core
+  多模块 + `.js`/`.vue`）→ 原版成功 392 次，**file+line 一致 392/392**，0「原版能跳、插件失败」；插件延迟 p50 6–9ms（原版 27–47ms）。
+- **线上 Host 验收**（bundle 禁用→启用热重载后，`work/live-acceptance.mjs`）：
+  该 codereview 文档里 9 个可解析裸路径 **9/9** 命中（含 §三 表格前两行的 `UserCookieMapper.java` / `UserCookieServiceImpl.java`）；
+  `UserCookieServiceImpl.java` 上 13 个点击（参数 `token`、`queryWrapper`、`cookiePO`、`dict`、`dto`、类型 `UserCookiePO`、
+  import 的 `UserCookieMapper`/`UserCookieService`）与原版 **12/12 成功目标一致**，另 1 个双方同样未找到定义。
+- 回归 harness 全绿：load 8/8、boot、code 177/177、html 159/159、panels 100/100、**copy-menu 66/66（新增）**、
+  **defs 63/63（新增）**；`node build.mjs` → `client.js` 322.2KB / 16 parts，`node --check` 通过。
+- 原版最近提交的功能点差异审计（含逐条文件行号证据）：[`feature-gap-audit.md`](./feature-gap-audit.md)
+  （14 项：已移植 11、部分 1、缺失 1=SOA 适配层、不适用 1）；本轮验证细节：[`round-7-report.md`](./round-7-report.md)；
+  接口契约与分工：[`round-7-feature-parity-plan.md`](./round-7-feature-parity-plan.md)。
+
+**待用户目测（无浏览器控制，未做渲染断言）**：表格裸文件名是否渲染成可点链接、Ctrl+点击变量是否直接跳到声明行且常驻高亮、
+接口类型是否出现「实现: XxxImpl」入口条、跨文件跳转后 ←返回/Alt+← 是否回到点击位置、右键菜单与 toast 的视觉。
+
 ## 验收结论（2026-11-04）
 
 用户共提出 3 批反馈（17 项），全部回归通过，用户确认「没有其它问题了」：
@@ -114,4 +147,5 @@ Host 新增/放宽：`/api/html`、`/api/git/resolve`、`project=` 作用域（s
 - 插件分支已推送 `git@github.com:TechieBreeze/MarkdownReader.git` 的 `dsh-plugin`，本地与远端一致；原工具仓库 `master` 未改动。
 - 回归工具：`work/harnesses/*.mjs`（fake React/DOM 断言）、`work/host-test.mjs`（Host API 独立服务）、`work/compare-link-resolve.mjs`（与原版 /api/git/resolve 对照）。
 
-未移植（后续可选）：SOA（ody）适配层、性能日志上报、原版部分快捷操作（行折叠/书签/大纲等），以及工作台任务 chip 之外的原版细节。
+未移植（后续可选）：SOA（ody）适配层（唯一功能缺失，见 `feature-gap-audit.md`）、性能日志上报、原版部分快捷操作
+（行折叠/书签/大纲等）、搜索结果打开为代码弹窗（当前为标签页）。

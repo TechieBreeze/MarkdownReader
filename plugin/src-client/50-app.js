@@ -281,6 +281,7 @@ function App() {
         line: entry.line || 0,
         branch: entry.branch || '',
         commit: entry.commit || '',
+        kind: entry.kind || '',
         taskId: entry.taskId || '',
       })
       if (stack.length > 200) stack.shift()
@@ -295,7 +296,9 @@ function App() {
    */
   const applyNavEntry = React.useCallback((entry) => {
     if (!entry || !entry.path) return
-    const kind = kindForPath(entry.path)
+    // Definition jumps may open a non-code extension as a code tab; the entry
+    // remembers the intended kind so Alt+← restores the same tab.
+    const kind = entry.kind === 'code' || entry.kind === 'md' ? entry.kind : kindForPath(entry.path)
     const id = `${kind}:${entry.path}`
     const wb = workbenchRef.current
     const candidates = wb.tasks.filter((task) => task.tabs.some((tab) => tab.id === id))
@@ -436,7 +439,9 @@ function App() {
         .replace(/^\/+/, '')
         .trim()
       if (!value) return
-      const kind = kindForPath(value)
+      // A definition jump always opens in the CODE view, even when the target is
+      // .html/.vue/... (opts.kind overrides the extension-based tab kind).
+      const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
       const id = `${kind}:${value}`
       const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
       saveActiveScroll()
@@ -453,6 +458,8 @@ function App() {
                     branch: options.branch || tab.branch || '',
                     commit: options.commit || tab.commit || '',
                     navFrom: options.jump ? true : !!tab.navFrom,
+                    // undefined = leave the existing entry bar alone
+                    ...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
                   }
                 : tab,
             )
@@ -469,6 +476,7 @@ function App() {
             commit: options.commit || '',
             htmlMode: 'render',
             navFrom: !!options.jump,
+            defBar: options.defBar !== undefined ? options.defBar : null,
             error: '',
             scroll: 0,
           }
@@ -482,11 +490,24 @@ function App() {
         })
         return { ...prev, tasks }
       })
+      // Definition jumps first record the clicked source position (the original's
+      // ctrlJump pushNav(src.path, lineNo)) so ← 返回 / Alt+← return to the token.
+      if (options.from && options.from.path) {
+        pushNav({
+          path: options.from.path,
+          line: Math.max(0, Number(options.from.line) || 0),
+          branch: options.from.branch || '',
+          commit: options.from.commit || '',
+          kind: 'code',
+          taskId: workbenchRef.current.activeTaskId,
+        })
+      }
       pushNav({
         path: value,
         line: targetLine,
         branch: options.branch || '',
         commit: options.commit || '',
+        kind,
         taskId: workbenchRef.current.activeTaskId,
       })
     },
@@ -1115,7 +1136,10 @@ function App() {
                 ? h(CodeView, {
                     key: activeTab.id,
                     tab: activeTab,
-                    onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+                    // Definition jumps pass {kind:'code', branch, commit, defBar}
+                    // so a .vue/.html target still opens as code and keeps the
+                    // rendered git version + 「实现」 entry bar.
+                    onOpen: (rel, line, opts) => openPath(rel, line, { ...(opts || {}), jump: true }),
                     onBack: () => goNav(-1),
                   })
                 : activeTab.kind === 'html'

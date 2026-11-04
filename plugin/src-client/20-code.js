@@ -813,31 +813,95 @@ function CodeGitInfo(props) {
 /** Tab id -> `${branch}\0${commit}` already applied (so remount does not re-apply). */
 const gitTabViewApplied = new Map()
 
+/** 「实现: XxxImpl」entry bar CSS (the original's _jumpDefbar), code-tab scoped. */
+const DEFBAR_CSS = `
+.mdr-code .mdr-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:3px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mdr-code .mdr-defbar-lbl{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}
+.mdr-code .mdr-defbar-btn{padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.mdr-code .mdr-defbar-btn:hover{border-color:var(--dsw-alias-brand-primary)}
+`
+
+/** Does the git view recorded on an impl entry bar still match what is rendered? */
+function defBarViewMatches(defView, view) {
+  if (!defView) return !view.commit && view.branchContent == null
+  if (defView.commit) return defView.commit === view.commit
+  if (defView.branch) return defView.branch === view.branch && !view.commit && view.branchContent != null
+  return !view.commit && view.branchContent == null
+}
+
 function CodeView(props) {
   const { tab, onOpen, onBack } = props
   const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
   const workspaceContent = String(tab.content == null ? '' : tab.content)
   const viewRef = React.useRef(null)
-  const [defState, setDefState] = React.useState(null)
 
-  // Ctrl/Cmd+click anywhere in the code body looks the symbol up and opens the
-  // chooser (or the only candidate directly).
+  const { rows, diffMode } = useCodeRows(view, workspaceContent)
+  // Text + git version that the jump request must carry: exactly what is
+  // rendered (commit version in a diff view, branch version in a branch view,
+  // workspace content otherwise).
+  const defText = React.useMemo(
+    () =>
+      diffMode && Array.isArray(view.fileLines)
+        ? view.fileLines.join('\n')
+        : view.branchContent != null
+          ? String(view.branchContent)
+          : workspaceContent,
+    [diffMode, view.fileLines, view.branchContent, workspaceContent],
+  )
+  // A commit only counts as the rendered version when its diff rows are shown.
+  const defView = view.commit && diffMode ? { commit: view.commit } : view.branchContent != null ? { branch: view.branch } : null
+  const defSourceRef = React.useRef({})
+  defSourceRef.current = {
+    path: tab.path,
+    text: defText,
+    branch: defView && defView.branch ? defView.branch : '',
+    commit: defView && defView.commit ? defView.commit : '',
+    line: tab.line || 0,
+  }
+
+  // Ctrl/Cmd+click → one definition, then jump (same file → line highlight;
+  // another file → open it; no candidate chooser). getSource is a ref read so the
+  // listener stays bound while branch/commit/text change under it.
   React.useEffect(() => {
     const root = viewRef.current
     if (!root || typeof onOpen !== 'function') return undefined
-    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
-      if (!candidates.length) {
-        setDefState({ symbol, candidates: [], error: error || '' })
-        return
-      }
-      if (candidates.length === 1) {
-        onOpen(candidates[0].path, candidates[0].line)
-        return
-      }
-      setDefState({ symbol, candidates, error: '' })
-    })
-    return dispose
+    return setupDefinitionClick(
+      root,
+      () => defSourceRef.current,
+      (result, source, hit) => {
+        const target = String(result.file || '').replace(/\\/g, '/')
+        if (!target) return
+        const line = Math.max(0, Number(result.line) || 0)
+        const opts = { kind: 'code' }
+        if (source.commit) opts.commit = source.commit
+        else if (source.branch) opts.branch = source.branch
+        // Push the clicked position onto the nav history first (the original's
+        // ctrlJump pushNav(src.path, lineNo) before opening the target), so the
+        // ← 返回 button / Alt+← return to the token that was clicked.
+        opts.from = {
+          path: source.path,
+          line: Math.max(0, Number(hit && hit.line) || 0),
+          branch: source.branch || '',
+          commit: source.commit || '',
+        }
+        // Interface hit → carry the 「实现: XxxImpl」entry bar onto the target tab
+        // (the original's openTargetTab/_jumpDefbar behaviour).
+        if (result.impl && result.impl.file) {
+          const implFile = String(result.impl.file)
+          opts.defBar = {
+            impl: { file: implFile, line: Math.max(0, Number(result.impl.line) || 0) },
+            label: implFile.split('/').pop().replace(/\.java$/, '') || implFile,
+            view: source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null,
+          }
+        } else {
+          opts.defBar = null
+        }
+        // Def results always open in the CODE view, even when the target file is
+        // .html/.vue/... (linkKindFor must not be applied to definitions).
+        onOpen(target, line, opts)
+      },
+    )
   }, [tab.id, tab.path, onOpen])
 
   // git-adapted code link: tab.branch / tab.commit must be applied to this tab's
@@ -852,7 +916,6 @@ function CodeView(props) {
     void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
   }, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
 
-  const { rows, diffMode } = useCodeRows(view, workspaceContent)
   const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
     view.branchContent == null ? 'ws' : 'branch'
   }`
@@ -862,10 +925,13 @@ function CodeView(props) {
   const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
   const contentReady = tab.content != null || view.branchContent != null
 
+  const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null
+  const showDefBar = !!defBar && defBarViewMatches(defBar.view, view)
+
   return h(
     'div',
     { className: 'mdr-code' },
-    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS } }),
+    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + DEFBAR_CSS } }),
     h(
       'div',
       { className: 'mdr-code-head' },
@@ -882,6 +948,24 @@ function CodeView(props) {
       view.git ? h(GitBar, { view, actions }) : null,
       h('span', { className: 'mdr-tip', title: 'Ctrl/Cmd + 点击符号跳转到定义' }, `${lang || 'text'} · ${rows.length} 行 · Ctrl+点击跳定义`),
     ),
+    showDefBar
+      ? h(
+          'div',
+          { className: 'mdr-defbar' },
+          h('span', { className: 'mdr-defbar-lbl' }, '实现:'),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'mdr-defbar-btn',
+              title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+              onClick: () =>
+                onOpen(defBar.impl.file, defBar.impl.line, { kind: 'code', ...(defBar.view || {}), defBar: null }),
+            },
+            defBar.label,
+          ),
+        )
+      : null,
     showInfo ? h(CodeGitInfo, { view }) : null,
     h(
       'div',
@@ -900,15 +984,5 @@ function CodeView(props) {
         freshOpen: tab.content == null,
       }),
     ),
-    defState
-      ? h(DefinitionChooser, {
-          state: defState,
-          onPick: (candidate) => {
-            onOpen(candidate.path, candidate.line)
-            setDefState(null)
-          },
-          onClose: () => setDefState(null),
-        })
-      : null,
   )
 }

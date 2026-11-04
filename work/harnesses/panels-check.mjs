@@ -13,7 +13,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.resolve(HERE, '..')
+const ROOT = path.resolve(HERE, '..', '..')
 const SRC = path.join(ROOT, 'plugin', 'src-client')
 const ORDER = [
   '00-core.js',
@@ -472,30 +472,70 @@ async function testRealGraphComponent() {
 }
 
 async function testRealSyncPanel() {
-  console.log('\n[3c] SyncPanel · real Host endpoint through the component')
+  console.log('\n[3c] SyncPanel · real Host endpoint through the component (state-agnostic)')
   const props = { onClose() {} }
-  let tree
-  // fetchJson() uses same-origin relative URLs (fine in the browser); in Node
-  // resolve them against the standalone Host origin before delegating.
   const realFetch = globalThis.fetch
-  globalThis.fetch = (url, init) => realFetch(new URL(String(url), 'http://127.0.0.1:8799').href, init)
+  let status = null
   try {
-    tree = await mount(SyncPanel, props, react)
-    tree = await settleFor(SyncPanel, props, react, 1500)
-    const text = textOf(tree)
-    check('real panel reason rendered', text.includes('未配置同步远程仓库'), text.slice(0, 200))
-    check('real panel how-to rendered', text.includes('syncRepo'))
-    check('real panel repo shown', text.includes('20261104-markdown-reader-plugin'))
+    const response = await realFetch('http://127.0.0.1:8799/api/sync/status')
+    status = await response.json()
   } catch (error) {
-    console.log(`  skip  real SyncPanel mount failed: ${error.message}`)
-    globalThis.fetch = realFetch
+    console.log(`  skip  real sync endpoint not reachable: ${error.message}`)
     return
   }
-  clickNode(buttonWithText(tree, '检查更新'))
-  tree = await settleFor(SyncPanel, props, react, 2000)
-  check('real check keeps not-configured state', textOf(tree).includes('未配置同步远程仓库'))
-  check('real pull stays disabled', buttonWithText(tree, '拉取更新').props.disabled === true)
-  globalThis.fetch = realFetch
+  if (!status || status.ok === false) {
+    console.log('  skip  real sync endpoint returned no status')
+    return
+  }
+  check(
+    'real sync status shape',
+    typeof status.configured === 'boolean' && typeof status.repo === 'string' && Array.isArray(status.commits),
+    JSON.stringify(status).slice(0, 200),
+  )
+  // fetchJson() uses same-origin relative URLs (fine in the browser); in Node
+  // resolve them against the standalone Host origin before delegating.
+  globalThis.fetch = (url, init) => realFetch(new URL(String(url), 'http://127.0.0.1:8799').href, init)
+  try {
+    let tree = await mount(SyncPanel, props, react)
+    tree = await settleFor(SyncPanel, props, react, 1500)
+    const text = textOf(tree)
+    const repoName = String(status.repo || '')
+      .split(/[\\/]/)
+      .filter(Boolean)
+      .pop() || ''
+    check('real panel repo rendered', !repoName || text.includes(repoName), repoName)
+    check('real panel branch rendered', !status.branch || text.includes(status.branch), status.branch)
+    // The plugin checkout this harness runs against now HAS an origin remote
+    // (git@github.com:TechieBreeze/MarkdownReader.git) and an unclean tree, so the
+    // previous "must be 未配置同步远程仓库" assertions were stale (bound to an old
+    // checkout state), NOT a product regression. Assert the component mirrors
+    // whatever the real endpoint reports instead of hard-coding that state.
+    if (status.configured === false) {
+      check('real panel not-configured reason rendered', text.includes('未配置同步远程仓库'), text.slice(0, 160))
+      check('real panel not-configured how-to rendered', text.includes('syncRepo') || text.includes('git remote add origin'))
+    } else {
+      check('real panel configured state rendered', !text.includes('未配置同步远程仓库'), text.slice(0, 120))
+    }
+    const initialPull = buttonWithText(tree, '拉取更新')
+    check(
+      'real pull disabled until fetched updates exist',
+      !!initialPull && initialPull.props.disabled === true,
+      initialPull && initialPull.props.disabled,
+    )
+    const checkButton = buttonWithText(tree, '检查更新')
+    check('real check button rendered', !!checkButton)
+    clickNode(checkButton)
+    tree = await settleFor(SyncPanel, props, react, 2500)
+    const after = textOf(tree)
+    check(
+      'real check keeps the same configured state',
+      status.configured === false ? after.includes('未配置同步远程仓库') : after.includes(repoName),
+      repoName || '(not configured)',
+    )
+    check('real check keeps the panel rendered', after.includes('检查更新') && !!buttonWithText(tree, '拉取更新'))
+  } finally {
+    globalThis.fetch = realFetch
+  }
 }
 
 /* ----------------------------------------------------- SyncPanel tests */

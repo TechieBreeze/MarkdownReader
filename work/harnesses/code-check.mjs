@@ -17,7 +17,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const ROOT = path.resolve(HERE, '..')
+const ROOT = path.resolve(HERE, '..', '..')
 const SRC = path.join(ROOT, 'plugin', 'src-client')
 const ORDER = ['00-core.js', '15-git.js', '20-code.js', '22-defs.js', '24-modal.js']
 
@@ -664,10 +664,21 @@ async function testJumps() {
   const html5 = innerHtmlOf(tree5)
   check('diff target highlight lands on added row', /class="mdr-cl mdr-git-add hit" data-line="5"/.test(html5), html5)
   check('deleted row is not highlighted', !/class="mdr-cl mdr-git-del hit"/.test(html5), html5)
+  // Diff markers must survive the jump itself (round-7 regression guard for the
+  // original's 798442f): the rendered jump target keeps its add/del rows.
+  check(
+    'diff add/del markers kept after jump',
+    (html5.match(/mdr-git-(?:add|del|ctx)/g) || []).length >= 2,
+    (html5.match(/mdr-git-(?:add|del|ctx)/g) || []).length,
+  )
 
-  // 6) diff deleted row is not jumpable (source-level + handler guard)
+  // 6) round-7 single-target definition flow: the old candidate chooser is gone,
+  //    each Ctrl+click sends one v2 /api/def request and deleted diff rows stay
+  //    non-jumpable (behaviour is covered in work/harnesses/defs-check.mjs).
   const defsSource = fs.readFileSync(path.join(SRC, '22-defs.js'), 'utf8')
-  check('ctrl+click skips deleted diff rows', defsSource.includes("closest('.mdr-git-del')"))
+  check('ctrl+click skips deleted diff rows', defsSource.includes('.mdr-git-del') && /definitionHitAt|setupDefinitionClick/.test(defsSource))
+  check('defs sends one v2 /api/def request', /postJson\('\/api\/def'/.test(defsSource) && /definitionRequestBody/.test(defsSource))
+  check('defs candidate chooser removed (single-target jump)', !/DefinitionChooser/.test(defsSource) && !/candidates/.test(defsSource))
 
   // 7) persistent highlight has no expiry timer
   const codeSource = fs.readFileSync(path.join(SRC, '20-code.js'), 'utf8')

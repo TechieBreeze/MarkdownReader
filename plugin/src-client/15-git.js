@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Code-tab git viewer (owned by the git slice): branch/commit selection, the
  * commit-version diff view, and the per-file view state / metadata caches.
  *
@@ -413,14 +413,19 @@ const GIT_CSS = `
 .mdr-code .mdr-cl.hit .mdr-cl-no{background:rgba(255,214,102,.22);color:#ffd33d}
 .mdr-code .mdr-cl.mdr-git-add.hit,.mdr-code .mdr-cl.mdr-git-del.hit,.mdr-code .mdr-cl.mdr-git-ctx.hit{box-shadow:inset 3px 0 0 #ffd33d}
 /* Ctrl+点击可跳转 token 的 hover 提示：仅 Java/Kotlin 视图挂 .jump-hover 时生效
-   （与原版一致：下划线 + 轻微变亮 + pointer）。删除行不给提示——它的行号是旧文件
-   的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
+   （与原版一致：下划线 + 轻微变亮 + pointer）。覆盖所有会产生跳转的 token class：
+   function_（方法）/ hljs-type、class_（类型；泛型头与泛型实参也是 hljs-type）/
+   hljs-variable（变量、字段、参数名）/ hljs-constant（枚举值、大写常量）+
+   hljs-params 里的复合 class（参数列表整段是 hljs-params，签名里的类型/变量/常量
+   都带这个前缀，复合选择器优先级更高才能拿到类型色/下划线）。删除行不给提示——
+   它的行号是旧文件的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
 .mdr-code .mdr-code-body.jump-hover span.hljs-title.function_:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-variable:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-type:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-title.class_:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-constant:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-type:hover,
-.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-variable:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-variable:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-constant:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
 .mdr-code .mdr-code-body.jump-hover .mdr-cl.mdr-git-del span:hover{text-decoration:none;cursor:default;filter:none}
 `

@@ -130,6 +130,171 @@ function splitHref(href) {
   return { path: text.slice(0, hashAt), hash: text.slice(hashAt + 1) }
 }
 
+/* ------------------------------------------------------- clipboard & toast */
+
+/**
+ * Copy text with the same three-step ladder as the standalone reader:
+ * navigator.clipboard → execCommand → select for a manual Ctrl+C.
+ * `http://` origins have no navigator.clipboard in Chromium, so the fallback is
+ * the normal path when the harness UI is served over plain HTTP.
+ */
+function copyText(value) {
+  const text = String(value == null ? '' : value)
+  if (!text) return Promise.resolve(false)
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => copyTextFallback(text),
+    )
+  }
+  return Promise.resolve(copyTextFallback(text))
+}
+
+function copyTextFallback(text) {
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+    document.body.appendChild(area)
+    area.select()
+    const ok = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+    area.remove()
+    return ok
+  } catch {
+    return false
+  }
+}
+
+let toastTimer = null
+
+/** Transient status line at the bottom of the viewport (replaces the original's #toast). */
+function toast(message, kind) {
+  let node = document.getElementById('mdr-toast')
+  if (!node) {
+    node = document.createElement('div')
+    node.id = 'mdr-toast'
+    document.body.appendChild(node)
+  }
+  node.className = 'mdr-toast show' + (kind === 'err' ? ' err' : '')
+  node.textContent = String(message == null ? '' : message)
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    node.className = 'mdr-toast'
+  }, 2600)
+}
+
+function copyWithToast(value, okMessage) {
+  const text = String(value == null ? '' : value)
+  if (!text) {
+    toast('没有可复制的内容', 'err')
+    return
+  }
+  copyText(text).then((ok) => toast(ok ? okMessage || '已复制到剪贴板' : '复制失败：请手动选中后按 Ctrl+C', ok ? 'ok' : 'err'))
+}
+
+/* ------------------------------------------------- path right-click menu */
+
+/**
+ * Right-click a path (code modal head / code tab head / html tab head / image
+ * name / search hit / tree row / tab) → copy the path or the file name.
+ *
+ * The standalone reader only covered the four path labels; the tree row and the
+ * tab strip are included here because they are the same affordance shape and a
+ * file tree is the first place a path gets copied from.
+ */
+const PATH_MENU_SELECTOR = [
+  '.mdr-code-path',
+  '.mdr-cmodal-path',
+  '.mdr-html-path',
+  '.mdr-image-name',
+  '.mdr-search-path',
+  '.mdr-tr',
+  '.mdr-tab',
+].join(',')
+
+let pathMenu = null
+
+function pathMenuClose() {
+  if (pathMenu && pathMenu.parentNode) pathMenu.parentNode.removeChild(pathMenu)
+  pathMenu = null
+  document.removeEventListener('mousedown', pathMenuOnDocMouseDown, true)
+  document.removeEventListener('keydown', pathMenuOnKey, true)
+}
+
+function pathMenuOnDocMouseDown(event) {
+  if (pathMenu && pathMenu.contains(event.target)) return
+  pathMenuClose()
+}
+
+function pathMenuOnKey(event) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  pathMenuClose()
+}
+
+function pathMenuOpen(x, y, items) {
+  pathMenuClose()
+  const menu = document.createElement('div')
+  menu.className = 'mdr-ctx'
+  menu.setAttribute('role', 'menu')
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'mdr-ctx-item'
+    button.textContent = item.label
+    button.title = item.title || item.label
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      pathMenuClose()
+      item.action()
+    })
+    menu.appendChild(button)
+  }
+  document.body.appendChild(menu)
+  const rect = menu.getBoundingClientRect()
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 8))}px`
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 8))}px`
+  pathMenu = menu
+  // Defer so the very right-click that opened the menu cannot close it.
+  setTimeout(() => {
+    document.addEventListener('mousedown', pathMenuOnDocMouseDown, true)
+    document.addEventListener('keydown', pathMenuOnKey, true)
+  }, 0)
+}
+
+/** Path shown by an element: explicit attribute → title → text. */
+function pathOfElement(element) {
+  if (!element) return ''
+  const explicit = element.getAttribute('data-mdr-path') || element.getAttribute('data-path')
+  if (explicit) return explicit
+  const title = (element.getAttribute('title') || '').trim()
+  if (title) return title.split('\n')[0].replace(/:\d+$/, '')
+  return (element.textContent || '').trim()
+}
+
+function pathMenuTarget(event) {
+  if (!event.target || !event.target.closest) return null
+  const hit = event.target.closest(PATH_MENU_SELECTOR)
+  if (!hit) return null
+  const path = pathOfElement(hit)
+  if (!path || /\s/.test(path)) return null
+  return path
+}
+
+if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+  document.addEventListener('contextmenu', (event) => {
+    const path = pathMenuTarget(event)
+    if (!path) return
+    event.preventDefault()
+    const fileName = path.split(/[\\/]/).pop()
+    pathMenuOpen(event.clientX, event.clientY, [
+      { label: '复制路径', title: path, action: () => copyWithToast(path, '已复制路径') },
+      { label: '复制文件名', title: fileName, action: () => copyWithToast(fileName, '已复制文件名') },
+    ])
+  })
+}
+
 /* ------------------------------------------------------------------ vendor */
 
 let vendorPromise = null
@@ -458,4 +623,10 @@ const APP_CSS = `
 .mdr-root .hljs-title{color:#dcdcaa}
 .mdr-def-busy{cursor:progress}
 .mdr-def-snippet{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-ctx{position:fixed;z-index:2147483000;min-width:148px;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.mdr-ctx-item{display:block;width:100%;text-align:left;padding:6px 10px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.mdr-ctx-item:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-toast{position:fixed;left:50%;bottom:38px;z-index:2147483000;transform:translateX(-50%) translateY(8px);padding:7px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.mdr-toast.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
 `

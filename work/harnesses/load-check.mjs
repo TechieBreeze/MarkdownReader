@@ -11,9 +11,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const CLIENT = path.resolve(HERE, '..', 'plugin', 'client.js')
+const CLIENT = path.resolve(HERE, '..', '..', 'plugin', 'client.js')
 const source = fs.readFileSync(CLIENT, 'utf8')
-const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', 'plugin', 'package.json'), 'utf8'))
+const pkg = JSON.parse(fs.readFileSync(path.resolve(HERE, '..', '..', 'plugin', 'package.json'), 'utf8'))
 
 const React = {
   Fragment: 'Fragment',
