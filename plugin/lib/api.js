@@ -12,6 +12,7 @@ import { promisify } from 'node:util'
 import { ROUTE, VERSION } from './constants.js'
 import { sendJson, sendError, sendFile, readBody } from './http.js'
 import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
+import { findDefinitions } from './defs.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -67,6 +68,7 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/raw' && req.method === 'GET') return apiRaw(res, state, url)
     if (pathname === '/api/search' && req.method === 'GET') return apiSearch(res, state, url)
     if (pathname === '/api/files' && req.method === 'GET') return apiFiles(res, state, url)
+    if (pathname === '/api/def' && req.method === 'POST') return await apiDef(req, res, state)
     if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
     if (pathname === '/api/git/file' && req.method === 'GET') return await apiGitFile(res, state, url)
     if (pathname === '/api/git/diff' && req.method === 'GET') return await apiGitDiff(res, state, url)
@@ -335,8 +337,7 @@ function quickIndexItems(state) {
   return items
 }
 
-function apiFiles(res, state, url) {
-  const query = (url.searchParams.get('q') || '').trim()
+function apiFiles(res, state, url) {  const query = (url.searchParams.get('q') || '').trim()
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') || '40')))
   const items = quickIndexItems(state)
   const lower = query.toLowerCase()
@@ -358,6 +359,13 @@ function apiFiles(res, state, url) {
     total: scored.length,
     items: scored.slice(0, limit).map((entry) => entry.item),
   })
+}
+
+// --------------------------------------------------------- symbol definitions
+
+async function apiDef(req, res, state) {
+  const body = JSON.parse((await readBody(req)) || '{}')
+  return sendJson(res, 200, findDefinitions(state, body))
 }
 
 // ---------------------------------------------------------------- git (read-only)

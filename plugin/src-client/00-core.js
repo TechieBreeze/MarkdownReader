@@ -81,25 +81,30 @@ async function postJson(endpoint, body) {
 }
 
 /** Resolve a link inside a markdown document to a client-visible relative path. */
-function resolveRel(mdPath, href, multi) {
-  const baseParts = String(mdPath || '').split('/').filter(Boolean)
-  const top = multi && baseParts.length > 1 ? baseParts[0] : ''
-  const clean = String(href || '').replace(/\\/g, '/')
+function resolveRel(mdPath, href, multi, rootNames) {
+  const raw = String(href || '').replace(/\\/g, '/')
+  const clean = raw.replace(/^\/+/, '')
+  const segs = clean.split('/').filter((part) => part && part !== '.')
+  const baseDir = dirnameOf(mdPath)
+  const docRootName = multi ? String(mdPath || '').split('/')[0] : ''
   let parts
-  if (clean.startsWith('/')) parts = clean.slice(1).split('/')
-  else parts = [...(dirnameOf(mdPath) ? dirnameOf(mdPath).split('/') : []), ...clean.split('/')]
+  if (raw.startsWith('/')) {
+    // Root-absolute links (`/docs/x.md`) mean "from the project root". In a
+    // multi-root session that is the CURRENT document's project unless the
+    // first segment already names an open root.
+    if (multi && rootNames && rootNames.includes(segs[0])) parts = segs
+    else if (multi) parts = [docRootName, ...segs]
+    else parts = segs
+  } else {
+    parts = [...(baseDir ? baseDir.split('/') : []), ...segs]
+  }
   const out = []
   for (const part of parts) {
     if (!part || part === '.') continue
     if (part === '..') out.pop()
     else out.push(part)
   }
-  let rel = out.join('/')
-  // A root-absolute link belongs to the current project when several roots are open.
-  if (clean.startsWith('/') && multi && !out.some((part) => part === top) && !out.includes('/')) {
-    rel = top ? `${top}/${rel}` : rel
-  }
-  return rel
+  return out.join('/')
 }
 
 function splitHref(href) {
@@ -151,6 +156,35 @@ const treeStorage = {
       localStorage.setItem(TREE_KEY, JSON.stringify([...paths]))
     } catch {
       // private mode / quota: expansion stays in memory only
+    }
+  },
+}
+
+const TABS_KEY = 'mdreader.plugin.tabs.v1'
+
+const tabsStorage = {
+  load() {
+    try {
+      const value = JSON.parse(localStorage.getItem(TABS_KEY) || 'null')
+      if (!value || !Array.isArray(value.tabs)) return null
+      const tabs = value.tabs
+        .filter((tab) => tab && typeof tab.path === 'string' && (tab.kind === 'md' || tab.kind === 'code'))
+        .map((tab) => ({ id: `${tab.kind}:${tab.path}`, kind: tab.kind, path: tab.path, line: Number(tab.line) || 0 }))
+      if (!tabs.length) return null
+      const activeId = tabs.some((tab) => tab.id === value.activeId) ? value.activeId : tabs[tabs.length - 1].id
+      return { tabs, activeId }
+    } catch {
+      return null
+    }
+  },
+  save(tabs, activeId) {
+    try {
+      localStorage.setItem(
+        TABS_KEY,
+        JSON.stringify({ tabs: tabs.map((tab) => ({ kind: tab.kind, path: tab.path, line: tab.line || 0 })), activeId }),
+      )
+    } catch {
+      // ignore storage failures
     }
   },
 }
@@ -276,6 +310,7 @@ const APP_CSS = `
 .mdr-md hr{border:none;border-top:1px solid var(--dsw-alias-border-l1);margin:1.8em 0}
 .mdr-mermaid-note{color:#d4a94a;font-size:12px}
 .mdr-code{display:flex;flex-direction:column;height:100%;min-height:0}
+.mdr-code-viewwrap{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
 .mdr-code-head{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1);font-size:12px}
 .mdr-code-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .mdr-code-body{background:#1e1e1e;padding:8px 0 40px;flex:1;min-height:0}
@@ -292,4 +327,6 @@ const APP_CSS = `
 .mdr-root .hljs-variable,.mdr-root .hljs-params,.mdr-root .hljs-property,.mdr-root .hljs-attr-name,.mdr-root .hljs-subst{color:#9cdcfe}
 .mdr-root .hljs-regexp,.mdr-root .hljs-link{color:#d16969}
 .mdr-root .hljs-title{color:#dcdcaa}
+.mdr-def-busy{cursor:progress}
+.mdr-def-snippet{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 `

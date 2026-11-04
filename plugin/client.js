@@ -89,25 +89,30 @@ async function postJson(endpoint, body) {
 }
 
 /** Resolve a link inside a markdown document to a client-visible relative path. */
-function resolveRel(mdPath, href, multi) {
-  const baseParts = String(mdPath || '').split('/').filter(Boolean)
-  const top = multi && baseParts.length > 1 ? baseParts[0] : ''
-  const clean = String(href || '').replace(/\\/g, '/')
+function resolveRel(mdPath, href, multi, rootNames) {
+  const raw = String(href || '').replace(/\\/g, '/')
+  const clean = raw.replace(/^\/+/, '')
+  const segs = clean.split('/').filter((part) => part && part !== '.')
+  const baseDir = dirnameOf(mdPath)
+  const docRootName = multi ? String(mdPath || '').split('/')[0] : ''
   let parts
-  if (clean.startsWith('/')) parts = clean.slice(1).split('/')
-  else parts = [...(dirnameOf(mdPath) ? dirnameOf(mdPath).split('/') : []), ...clean.split('/')]
+  if (raw.startsWith('/')) {
+    // Root-absolute links (`/docs/x.md`) mean "from the project root". In a
+    // multi-root session that is the CURRENT document's project unless the
+    // first segment already names an open root.
+    if (multi && rootNames && rootNames.includes(segs[0])) parts = segs
+    else if (multi) parts = [docRootName, ...segs]
+    else parts = segs
+  } else {
+    parts = [...(baseDir ? baseDir.split('/') : []), ...segs]
+  }
   const out = []
   for (const part of parts) {
     if (!part || part === '.') continue
     if (part === '..') out.pop()
     else out.push(part)
   }
-  let rel = out.join('/')
-  // A root-absolute link belongs to the current project when several roots are open.
-  if (clean.startsWith('/') && multi && !out.some((part) => part === top) && !out.includes('/')) {
-    rel = top ? `${top}/${rel}` : rel
-  }
-  return rel
+  return out.join('/')
 }
 
 function splitHref(href) {
@@ -159,6 +164,35 @@ const treeStorage = {
       localStorage.setItem(TREE_KEY, JSON.stringify([...paths]))
     } catch {
       // private mode / quota: expansion stays in memory only
+    }
+  },
+}
+
+const TABS_KEY = 'mdreader.plugin.tabs.v1'
+
+const tabsStorage = {
+  load() {
+    try {
+      const value = JSON.parse(localStorage.getItem(TABS_KEY) || 'null')
+      if (!value || !Array.isArray(value.tabs)) return null
+      const tabs = value.tabs
+        .filter((tab) => tab && typeof tab.path === 'string' && (tab.kind === 'md' || tab.kind === 'code'))
+        .map((tab) => ({ id: `${tab.kind}:${tab.path}`, kind: tab.kind, path: tab.path, line: Number(tab.line) || 0 }))
+      if (!tabs.length) return null
+      const activeId = tabs.some((tab) => tab.id === value.activeId) ? value.activeId : tabs[tabs.length - 1].id
+      return { tabs, activeId }
+    } catch {
+      return null
+    }
+  },
+  save(tabs, activeId) {
+    try {
+      localStorage.setItem(
+        TABS_KEY,
+        JSON.stringify({ tabs: tabs.map((tab) => ({ kind: tab.kind, path: tab.path, line: tab.line || 0 })), activeId }),
+      )
+    } catch {
+      // ignore storage failures
     }
   },
 }
@@ -284,6 +318,7 @@ const APP_CSS = `
 .mdr-md hr{border:none;border-top:1px solid var(--dsw-alias-border-l1);margin:1.8em 0}
 .mdr-mermaid-note{color:#d4a94a;font-size:12px}
 .mdr-code{display:flex;flex-direction:column;height:100%;min-height:0}
+.mdr-code-viewwrap{flex:1;min-height:0;display:flex;flex-direction:column;position:relative}
 .mdr-code-head{position:sticky;top:0;z-index:3;display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--dsw-alias-bg-layer-1);border-bottom:1px solid var(--dsw-alias-border-l1);font-size:12px}
 .mdr-code-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .mdr-code-body{background:#1e1e1e;padding:8px 0 40px;flex:1;min-height:0}
@@ -300,6 +335,8 @@ const APP_CSS = `
 .mdr-root .hljs-variable,.mdr-root .hljs-params,.mdr-root .hljs-property,.mdr-root .hljs-attr-name,.mdr-root .hljs-subst{color:#9cdcfe}
 .mdr-root .hljs-regexp,.mdr-root .hljs-link{color:#d16969}
 .mdr-root .hljs-title{color:#dcdcaa}
+.mdr-def-busy{cursor:progress}
+.mdr-def-snippet{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 `
 
 // ---- 10-markdown.js ----
@@ -322,7 +359,7 @@ function findLineToken(anchor) {
   return null
 }
 
-function enhanceMarkdown(container, mdPath, multi) {
+function enhanceMarkdown(container, mdPath, multi, rootNames) {
   // 1) local images -> raw endpoint
   container.querySelectorAll('img[src]').forEach((img) => {
     const raw = img.getAttribute('src') || ''
@@ -334,7 +371,7 @@ function enhanceMarkdown(container, mdPath, multi) {
     } catch {
       decoded = href
     }
-    const resolved = resolveRel(mdPath, decoded, multi)
+    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
     img.src = `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}`
     img.loading = 'lazy'
     img.alt = img.alt || ''
@@ -356,7 +393,7 @@ function enhanceMarkdown(container, mdPath, multi) {
     } catch {
       decoded = href
     }
-    const resolved = resolveRel(mdPath, decoded, multi)
+    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
     const titlePath = resolved
     if (isCodeFile(resolved)) {
       let line = null
@@ -444,7 +481,7 @@ function enhanceMarkdown(container, mdPath, multi) {
 }
 
 function MarkdownView(props) {
-  const { tab, multi } = props
+  const { tab, multi, rootNames } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
 
@@ -461,7 +498,7 @@ function MarkdownView(props) {
             headerIds: false,
           })
           boxRef.current.innerHTML = html
-          enhanceMarkdown(boxRef.current, tab.path, multi)
+          enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
         } catch (err) {
           setError(String((err && err.message) || err))
@@ -471,7 +508,7 @@ function MarkdownView(props) {
     return () => {
       cancelled = true
     }
-  }, [tab.id, tab.content, tab.path, multi])
+  }, [tab.id, tab.content, tab.path, multi, rootNames])
 
   return h(
     'div',
@@ -482,19 +519,805 @@ function MarkdownView(props) {
 }
 
 // ---- 12-mermaid.js ----
-/** Mermaid rendering for fenced ```mermaid blocks (owned by the mermaid slice). */
+/** Mermaid rendering for fenced ```mermaid blocks: lazy, sequential, cached.
+ *
+ * Why so much machinery for a diagram: the vendored mermaid bundle is 3.3MB and a
+ * single flowchart render runs the dagre layout plus DOM measurement on the main
+ * thread. Rendering every diagram of a document at once is what made the original
+ * tool lag ("whole machine lags"), so here:
+ *   - the library is fetched only when a diagram actually scrolls into view;
+ *   - at most ONE diagram renders at a time (a queue drains serially);
+ *   - rendered results are cached as base64 data URLs keyed by hash(source)+theme,
+ *     so a re-mounted tab gets its diagrams back instantly without re-rendering.
+ *
+ * The SVG is inserted as <img src="data:image/svg+xml;base64,...">, never inline.
+ * An inline mermaid SVG carries a <style> block scoped to every node of every
+ * diagram; 50+ of them leak thousands of global CSS rules into the page (the
+ * original performance bug). SVG inside an <img> is an isolated document: no CSS
+ * leak and no hundreds of SVG nodes in the main DOM.
+ */
 
-// eslint-disable-next-line no-unused-vars
+const MMD_THEME = 'dark'
+const MMD_LIB_SRC = `${ROUTE}/vendor/mermaid.min.js`
+const MMD_CACHE_MAX_ENTRIES = 200
+const MMD_CACHE_MAX_CHARS = 24 * 1024 * 1024
+const MMD_DATA_URL_PREFIX = 'data:image/svg+xml;base64,'
+const MMD_SCROLL_MARGIN = '200px 0px'
+
+const MMD_CSS = `
+.mdr-mermaid{margin:1em 0;padding:2px 0;text-align:center;overflow-x:auto}
+.mdr-mermaid>img{max-width:100%;height:auto;display:inline-block;border-radius:6px}
+.mdr-mermaid-pending{padding:10px 14px;border:1px dashed var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);text-align:center}
+.mdr-mermaid-error{text-align:left;color:#ef6b6b;font-size:12px;line-height:1.6;word-break:break-word}
+.mdr-mermaid-details{margin-top:6px;text-align:left;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mdr-mermaid-details>summary{cursor:pointer;user-select:none}
+.mdr-mermaid-details>pre{margin:6px 0 0;padding:8px 10px;border-radius:6px;background:#1e1e1e;color:#d4d4d4;font:12px/1.5 "Cascadia Code",Consolas,monospace;white-space:pre-wrap;word-break:break-all;overflow:auto;text-align:left}
+`
+
+/* --------------------------------------------------------------- module state */
+
+/** Rendered diagrams: key = theme + hash(source) -> {source, url, width, chars}. */
+const mmdCache = new Map()
+let mmdCacheChars = 0
+/** Single shared library-load promise: the 3.3MB script is requested at most once. */
+let mmdLibPromise = null
+let mmdInited = false
+/** Unique suffix for mermaid.render ids (ids are global in the document). */
+let mmdRenderSeq = 0
+let mmdMountSeq = 0
+/** Serial render queue: at most one mermaid.render() in flight. */
+const mmdQueue = []
+let mmdPumping = false
+/** Live observers, pruned whenever their container has been detached. */
+const mmdLiveRecs = new Set()
+const mmdContainerRecs = new WeakMap()
+/** IntersectionObserver target -> queued render entry. */
+const mmdPendingByEl = new WeakMap()
+
+/* ------------------------------------------------------------------ hash/cache */
+
+function mmdHash(text) {
+  const value = String(text || '')
+  let h1 = 0x811c9dc5 // FNV-1a
+  let h2 = 5381 // djb2
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i)
+    h1 = Math.imul(h1 ^ code, 0x01000193)
+    h2 = (Math.imul(h2, 33) + code) | 0
+  }
+  // Two independent 32-bit hashes + length: a wrong-diagram collision is not
+  // realistic, and the cached source is compared again on every hit anyway.
+  return `${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}-${value.length.toString(36)}`
+}
+
+function mmdCacheKey(source) {
+  return `${MMD_THEME}|${mmdHash(source)}`
+}
+
+function mmdCacheGet(key, source) {
+  const entry = mmdCache.get(key)
+  if (!entry || entry.source !== source) return null
+  // LRU touch: move the entry to the tail of the insertion-ordered Map.
+  mmdCache.delete(key)
+  mmdCache.set(key, entry)
+  return entry
+}
+
+function mmdCacheSet(key, source, svg) {
+  const url = mmdSvgDataUrl(svg)
+  if (!url) return null
+  const entry = { source, url, width: mmdSvgHintWidth(svg), chars: url.length + source.length }
+  const previous = mmdCache.get(key)
+  if (previous) {
+    mmdCache.delete(key)
+    mmdCacheChars -= previous.chars
+  }
+  mmdCache.set(key, entry)
+  mmdCacheChars += entry.chars
+  // Bounded LRU: cap both entry count and approximate character weight. Keep the
+  // just-inserted entry even if it alone exceeds the budget.
+  while (mmdCache.size > 1 && (mmdCache.size > MMD_CACHE_MAX_ENTRIES || mmdCacheChars > MMD_CACHE_MAX_CHARS)) {
+    const oldest = mmdCache.keys().next()
+    if (oldest.done) break
+    const dropped = mmdCache.get(oldest.value)
+    mmdCache.delete(oldest.value)
+    if (dropped) mmdCacheChars -= dropped.chars
+  }
+  if (mmdCacheChars < 0) mmdCacheChars = 0
+  return entry
+}
+
+/** UTF-8 safe base64 data URL. Plain btoa() throws on non-Latin1 diagram labels. */
+function mmdSvgDataUrl(svg) {
+  const text = String(svg || '')
+  if (!text) return ''
+  try {
+    let base64 = ''
+    if (typeof TextEncoder === 'function') {
+      const bytes = new TextEncoder().encode(text)
+      const chunk = 0x8000
+      let binary = ''
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
+      }
+      base64 = btoa(binary)
+    } else {
+      base64 = btoa(unescape(encodeURIComponent(text)))
+    }
+    return MMD_DATA_URL_PREFIX + base64
+  } catch {
+    try {
+      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text)
+    } catch {
+      return ''
+    }
+  }
+}
+
+/** Design width from the SVG root's viewBox (mermaid often emits width="100%"). */
+function mmdSvgHintWidth(svg) {
+  const text = String(svg || '')
+  const root = /<svg\b[^>]*>/i.exec(text)
+  const head = root ? root[0] : text.slice(0, 4000)
+  const viewBox = /viewBox\s*=\s*["']\s*[-+\d.]+[\s,]+[-+\d.]+[\s,]+([-+\d.]+)[\s,]+[-+\d.]+/i.exec(head)
+  if (viewBox) {
+    const width = Number(viewBox[1])
+    if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
+  }
+  const widthAttr = /\bwidth\s*=\s*["']([\d.]+)(?:px)?["']/i.exec(head)
+  if (widthAttr) {
+    const width = Number(widthAttr[1])
+    if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
+  }
+  return 0
+}
+
+/* ---------------------------------------------------------------- local style */
+
+function mmdEnsureStyle() {
+  if (document.getElementById('mdr-mermaid-style')) return
+  const style = document.createElement('style')
+  style.id = 'mdr-mermaid-style'
+  style.textContent = MMD_CSS
+  document.head.appendChild(style)
+}
+
+/* -------------------------------------------------------------- library load */
+
+function mmdEnsureLib() {
+  if (mmdLibPromise) return mmdLibPromise
+  mmdLibPromise = new Promise((resolve, reject) => {
+    const activate = () => {
+      try {
+        const lib = window.mermaid
+        if (!lib || typeof lib.render !== 'function' || typeof lib.initialize !== 'function') {
+          reject(new Error('mermaid 全局对象不可用'))
+          return
+        }
+        if (!mmdInited) {
+          lib.initialize({ startOnLoad: false, theme: MMD_THEME, securityLevel: 'strict' })
+          mmdInited = true
+        }
+        resolve(lib)
+      } catch (err) {
+        reject(err)
+      }
+    }
+    if (window.mermaid && typeof window.mermaid.render === 'function') {
+      activate()
+      return
+    }
+    const script = document.createElement('script')
+    script.src = MMD_LIB_SRC
+    script.async = true
+    script.setAttribute('data-mdr-mermaid-lib', '1')
+    script.onload = () => activate()
+    script.onerror = () => reject(new Error(`mermaid 库加载失败: ${MMD_LIB_SRC}`))
+    document.head.appendChild(script)
+  })
+  return mmdLibPromise
+}
+
+/* ------------------------------------------------------------------- rendering */
+
+function mmdExtractSvg(result) {
+  if (typeof result === 'string') return result
+  if (result && typeof result.svg === 'string') return result.svg
+  return ''
+}
+
+function mmdErrorMessage(err) {
+  if (!err) return '未知错误'
+  const raw = typeof err === 'string' ? err : err.message || err.reason || String(err)
+  const text = String(raw).replace(/\s+/g, ' ').trim()
+  if (!text) return '未知错误'
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text
+}
+
+/** mermaid.render creates temporary #id / #d{id} / #i{id} nodes in <body>. */
+function mmdCleanupRenderNodes(id) {
+  for (const prefix of ['', 'd', 'i']) {
+    const node = document.getElementById(prefix + id)
+    if (node && node.parentNode) node.parentNode.removeChild(node)
+  }
+}
+
+async function mmdRenderOne(entry) {
+  const el = entry.el
+  if (!el || !el.isConnected) return
+  const cached = mmdCacheGet(entry.key, entry.source)
+  if (cached) {
+    mmdApplyCached(el, cached, entry.source)
+    return
+  }
+  let lib
+  try {
+    lib = await mmdEnsureLib()
+  } catch (err) {
+    if (el.isConnected) mmdShowError(el, entry.source, err)
+    return
+  }
+  if (!el.isConnected) return
+  const id = `mdr-mermaid-${entry.mount}-${++mmdRenderSeq}`
+  let result
+  try {
+    result = await lib.render(id, entry.source)
+  } catch (err) {
+    mmdCleanupRenderNodes(id)
+    if (el.isConnected) mmdShowError(el, entry.source, err)
+    return
+  }
+  mmdCleanupRenderNodes(id)
+  const svg = mmdExtractSvg(result)
+  if (!svg) {
+    if (el.isConnected) mmdShowError(el, entry.source, new Error('渲染结果为空'))
+    return
+  }
+  // Cache first: if the tab was switched away while rendering, the next mount of
+  // the same document still gets the diagram instantly from the cache.
+  const stored = mmdCacheSet(entry.key, entry.source, svg)
+  if (!el.isConnected) return
+  if (stored) mmdApplyCached(el, stored, entry.source)
+  else mmdShowError(el, entry.source, new Error('SVG 编码失败'))
+}
+
+/* -------------------------------------------------------------- serial queue */
+
+function mmdEnqueue(entry) {
+  if (!entry || !entry.el || !entry.el.isConnected) return
+  mmdQueue.push(entry)
+  mmdPump()
+}
+
+async function mmdPump() {
+  if (mmdPumping) return
+  mmdPumping = true
+  try {
+    while (mmdQueue.length) {
+      const entry = mmdQueue.shift()
+      if (!entry || !entry.el || !entry.el.isConnected) continue
+      if (entry.el.classList.contains('mdr-mermaid-done')) continue
+      try {
+        await mmdRenderOne(entry)
+      } catch (err) {
+        // A broken diagram must never stop the queue or break the document.
+        if (entry.el && entry.el.isConnected) mmdShowError(entry.el, entry.source, err)
+      }
+    }
+  } finally {
+    mmdPumping = false
+  }
+}
+
+/* ------------------------------------------------------------------- observers */
+
+function mmdStopRec(rec) {
+  if (!rec) return
+  try {
+    rec.observer.disconnect()
+  } catch {
+    // already gone
+  }
+  mmdLiveRecs.delete(rec)
+  if (rec.container && mmdContainerRecs.get(rec.container) === rec) {
+    mmdContainerRecs.delete(rec.container)
+  }
+}
+
+/** Disconnect observers whose container was detached (tab switch / refresh). */
+function mmdPruneRecs() {
+  for (const rec of [...mmdLiveRecs]) {
+    if (!rec.container || !rec.container.isConnected) mmdStopRec(rec)
+  }
+}
+
+function mmdHandleIntersect(rec, entries) {
+  if (!rec.container || !rec.container.isConnected) {
+    mmdStopRec(rec)
+    return
+  }
+  for (const change of entries) {
+    if (!change.isIntersecting) continue
+    const el = change.target
+    const entry = mmdPendingByEl.get(el)
+    mmdPendingByEl.delete(el)
+    try {
+      rec.observer.unobserve(el)
+    } catch {
+      // already unobserved
+    }
+    rec.left = Math.max(0, rec.left - 1)
+    if (entry) mmdEnqueue(entry)
+  }
+  if (rec.left <= 0) mmdStopRec(rec)
+}
+
+/* ---------------------------------------------------------------------- DOM */
+
+function mmdCreatePlaceholder(source) {
+  const el = document.createElement('div')
+  el.className = 'mdr-mermaid mdr-mermaid-pending'
+  el.dataset.mermaidSource = source
+  const note = document.createElement('span')
+  note.className = 'mdr-mermaid-note'
+  note.textContent = '▦ mermaid 图 · 滚动到可见时渲染'
+  el.appendChild(note)
+  return el
+}
+
+/** Collapsed source block: keeps the mermaid source copyable without noise. */
+function mmdSourceDetails(source) {
+  const details = document.createElement('details')
+  details.className = 'mdr-mermaid-details'
+  const summary = document.createElement('summary')
+  summary.textContent = 'mermaid 源码'
+  const pre = document.createElement('pre')
+  pre.textContent = source
+  details.appendChild(summary)
+  details.appendChild(pre)
+  return details
+}
+
+function mmdApplyCached(el, cached, source) {
+  if (!el || !el.isConnected) return
+  if (el.classList.contains('mdr-mermaid-done')) return
+  mmdPendingByEl.delete(el)
+  el.classList.remove('mdr-mermaid-pending')
+  el.classList.add('mdr-mermaid-done')
+  el.textContent = ''
+  const img = document.createElement('img')
+  img.alt = 'mermaid 图'
+  img.title = 'mermaid 图'
+  img.loading = 'lazy'
+  if (cached.width > 0) img.style.width = `${cached.width}px`
+  img.onerror = () => {
+    el.textContent = ''
+    const note = document.createElement('div')
+    note.className = 'mdr-mermaid-error'
+    note.textContent = 'mermaid 图片加载失败'
+    el.appendChild(note)
+  }
+  img.src = cached.url
+  el.appendChild(img)
+  el.appendChild(mmdSourceDetails(source))
+}
+
+function mmdShowError(el, source, err) {
+  if (!el || !el.isConnected) return
+  mmdPendingByEl.delete(el)
+  el.classList.remove('mdr-mermaid-pending')
+  el.classList.add('mdr-mermaid-failed')
+  el.textContent = ''
+  const note = document.createElement('div')
+  note.className = 'mdr-mermaid-error'
+  note.textContent = `mermaid 渲染失败: ${mmdErrorMessage(err)}`
+  el.appendChild(note)
+  el.appendChild(mmdSourceDetails(source))
+}
+
+/* ------------------------------------------------------------------- entry */
+
 function enhanceMermaid(container, scroller) {
-  // Implemented by the mermaid slice: render visible diagrams lazily, never all
-  // at once, and never insert a 3MB library when the document has no mermaid.
+  if (!container || typeof container.querySelectorAll !== 'function') return
+  try {
+    const codes = container.querySelectorAll('code[data-mermaid-source]')
+    const pendingEls = container.querySelectorAll('.mdr-mermaid[data-mermaid-source]')
+    if ((!codes || !codes.length) && (!pendingEls || !pendingEls.length)) {
+      // No mermaid fence in this document: never touch / load the 3.3MB library.
+      return
+    }
+    mmdEnsureStyle()
+    mmdPruneRecs()
+    // Refresh replaces innerHTML of the SAME .mdr-md container, so the previous
+    // observer can outlive its placeholders. Drop it here, before the early return
+    // paths below (cache-hit rebuilds register no new observer at all).
+    const previous = mmdContainerRecs.get(container)
+    if (previous) mmdStopRec(previous)
+    const mount = ++mmdMountSeq
+
+    const items = []
+    const created = new Set()
+    if (codes && codes.length) {
+      for (const code of codes) {
+        const source = code.getAttribute('data-mermaid-source') || ''
+        if (!source.trim()) continue
+        const holder = code.closest('pre') || code
+        if (!holder.parentNode) continue
+        const el = mmdCreatePlaceholder(source)
+        created.add(el)
+        holder.replaceWith(el)
+        items.push({ el, source })
+      }
+    }
+    // A re-run on the same container (defensive: 10-markdown re-enhances after a
+    // rebuild in place) may find already-created placeholders instead of <code>.
+    for (const el of pendingEls || []) {
+      if (created.has(el)) continue
+      if (el.classList.contains('mdr-mermaid-done') || el.classList.contains('mdr-mermaid-failed')) continue
+      if (el.querySelector('img')) continue
+      const source = el.getAttribute('data-mermaid-source') || ''
+      if (!source.trim()) continue
+      items.push({ el, source })
+    }
+    if (!items.length) return
+
+    // Cache hits are restored synchronously during insert -> rebuilt tab has its
+    // diagrams back before the first paint and its scroll height is correct again.
+    const waiting = []
+    for (const item of items) {
+      const key = mmdCacheKey(item.source)
+      const hit = mmdCacheGet(key, item.source)
+      if (hit) mmdApplyCached(item.el, hit, item.source)
+      else waiting.push({ el: item.el, source: item.source, key, mount })
+    }
+    if (!waiting.length) return
+
+    if (typeof window.IntersectionObserver !== 'function') {
+      // Degrade gracefully: still serial through the queue, so only one renders.
+      waiting.forEach((entry) => mmdEnqueue(entry))
+      return
+    }
+    const scrollRoot = scroller || (container.closest ? container.closest('.mdr-content') : null)
+    const rec = { container, left: waiting.length, observer: null }
+    rec.observer = new window.IntersectionObserver((entries) => mmdHandleIntersect(rec, entries), {
+      root: scrollRoot || null,
+      rootMargin: MMD_SCROLL_MARGIN,
+      threshold: 0,
+    })
+    mmdContainerRecs.set(container, rec)
+    mmdLiveRecs.add(rec)
+    for (const entry of waiting) {
+      mmdPendingByEl.set(entry.el, entry)
+      rec.observer.observe(entry.el)
+    }
+  } catch (err) {
+    // Mermaid rendering is an enhancement: a failure must not break the document.
+    if (window.console && console.warn) console.warn('[markdown-reader] mermaid:', err)
+  }
 }
 
 // ---- 15-git.js ----
 /**
- * Code-tab git bar (owned by the git slice): branch/commit selection and the
- * commit-version diff view, rendered inside CodeView.
+ * Code-tab git viewer (owned by the git slice): branch/commit selection, the
+ * commit-version diff view, and the per-file view state / metadata caches.
+ *
+ * Everything here is read-only: the host exposes only git log/show/for-each-ref
+ * style endpoints, the working tree is never touched. State is cached per
+ * relative path at module level so switching tabs (CodeView remounts) keeps the
+ * selected branch / commit, while the App still owns the tab objects themselves.
  */
+
+/** Rows above this count are virtualized (only the viewport +/- buffer is painted). */
+const GIT_V_THRESHOLD = 1500
+/** Constant row height, kept in sync with .mdr-cl CSS (min-height/line-height 20px). */
+const GIT_LINE_H = 20
+/** Extra rows painted above and below the viewport in virtual mode. */
+const GIT_BUFFER = 40
+
+const gitMetaCache = new Map() // path -> Promise<meta|null>
+const gitViewCache = new Map() // path -> mutable view state
+
+function gitViewFor(path) {
+  const key = String(path || '')
+  let view = gitViewCache.get(key)
+  if (!view) {
+    view = {
+      ready: false,
+      git: false,
+      repo: '',
+      currentBranch: '',
+      branch: '',
+      branches: [],
+      commits: [],
+      commit: null,
+      commitMeta: null,
+      fileLines: null,
+      hunks: [],
+      hint: '',
+      loading: false,
+      stats: { add: 0, del: 0 },
+      seq: 0, // race guard: bumped on every branch/commit selection
+      branchContent: null, // content of the selected branch's HEAD (null = workspace content)
+    }
+    gitViewCache.set(key, view)
+  }
+  return view
+}
+
+/** Load /api/git/meta once per path (null = not inside a git repository). */
+function loadGitMeta(path) {
+  const key = String(path || '')
+  const cached = gitMetaCache.get(key)
+  if (cached) return cached
+  const promise = fetchJson('/api/git/meta', { path: key })
+    .then((payload) => {
+      if (!payload || !Array.isArray(payload.branches) || payload.branches.length === 0) return null
+      return {
+        repo: payload.repo || '',
+        branch: payload.branch || payload.currentBranch || '',
+        currentBranch: payload.currentBranch || '',
+        branches: payload.branches,
+        commits: Array.isArray(payload.commits) ? payload.commits : [],
+      }
+    })
+    .catch(() => null) // non-git file / host error -> hide the bar quietly
+  gitMetaCache.set(key, promise)
+  return promise
+}
+
+/** Full file at a commit + this commit's hunks -> the row sequence to render. */
+function buildDiffRows(fileLines, hunks) {
+  const rows = []
+  const hasFile = Array.isArray(fileLines)
+  let fileIdx = 0 // 0-based cursor into the commit-version file
+  const pushFile = () => {
+    rows.push({ no: fileIdx + 1, kind: 'plain', text: fileLines[fileIdx] == null ? '' : fileLines[fileIdx] })
+    fileIdx += 1
+  }
+  for (const hunk of Array.isArray(hunks) ? hunks : []) {
+    const newStart = Number(hunk.new_start) || 1
+    while (hasFile && fileIdx < newStart - 1) pushFile()
+    for (const line of hunk.lines || []) {
+      const text = line.text == null ? '' : line.text
+      if (line.type === '-') {
+        // Deleted lines have no position in the commit-version file: show them
+        // inline at their old-file position, numbered with the OLD line number.
+        rows.push({ no: line.old_no, kind: 'del', text })
+      } else if (line.type === '+') {
+        rows.push({ no: line.new_no, kind: 'add', text })
+        fileIdx += 1
+      } else {
+        rows.push({ no: line.new_no, kind: 'ctx', text })
+        fileIdx += 1
+      }
+    }
+  }
+  // Unchanged tail of the commit-version file.
+  while (hasFile && fileIdx < fileLines.length) pushFile()
+  return rows
+}
+
+function countDiffStats(hunks) {
+  const stats = { add: 0, del: 0 }
+  for (const hunk of hunks || []) {
+    for (const line of hunk.lines || []) {
+      if (line.type === '+') stats.add += 1
+      else if (line.type === '-') stats.del += 1
+    }
+  }
+  return stats
+}
+
+/** Switch branch: refetch that branch's commits AND its HEAD version of the file. */
+async function selectGitBranch(path, branch, refresh) {
+  const view = gitViewFor(path)
+  const seq = (view.seq += 1)
+  view.branch = branch
+  view.commit = null
+  view.commitMeta = null
+  view.fileLines = null
+  view.hunks = []
+  view.hint = ''
+  view.stats = { add: 0, del: 0 }
+  view.loading = true
+  refresh()
+  try {
+    const [meta, file] = await Promise.all([
+      fetchJson('/api/git/meta', { path, branch }),
+      fetchJson('/api/git/file', { path, commit: branch }).catch(() => null),
+    ])
+    if (view.seq !== seq) return // a newer selection already won
+    view.branches = Array.isArray(meta.branches) && meta.branches.length ? meta.branches : view.branches
+    view.currentBranch = meta.currentBranch || view.currentBranch
+    view.commits = Array.isArray(meta.commits) ? meta.commits : []
+    if (file && file.content != null) {
+      // The first commit option must show THIS branch's content, not the working tree.
+      view.branchContent = String(file.content)
+    } else {
+      view.branchContent = null
+      view.hint = `⚠ 分支 ${branch} 不存在此文件`
+    }
+  } catch (error) {
+    if (view.seq !== seq) return
+    view.branchContent = null
+    view.hint = `切换分支失败: ${(error && error.message) || error}`
+  }
+  view.loading = false
+  refresh()
+}
+
+/** Select a real commit (diff view) or become back to "◎ <branch> 最新" (commit = ''). */
+async function selectGitCommit(path, commit, refresh) {
+  const view = gitViewFor(path)
+  if (!commit) {
+    view.seq += 1
+    view.commit = null
+    view.commitMeta = null
+    view.fileLines = null
+    view.hunks = []
+    view.hint = ''
+    view.loading = false
+    view.stats = { add: 0, del: 0 }
+    refresh()
+    return
+  }
+  const seq = (view.seq += 1)
+  view.commit = commit
+  view.commitMeta = view.commits.find((item) => item.hash === commit || item.short === commit) || null
+  view.fileLines = null
+  view.hunks = []
+  view.hint = ''
+  view.stats = { add: 0, del: 0 }
+  view.loading = true
+  refresh()
+  try {
+    // Hunk fragments alone are not enough for a full-file diff view: fetch the
+    // commit-version file in parallel and mark the hunks inside it.
+    const [diff, file] = await Promise.all([
+      fetchJson('/api/git/diff', { path, commit }),
+      fetchJson('/api/git/file', { path, commit }).catch(() => null),
+    ])
+    if (view.seq !== seq) return
+    view.hunks = Array.isArray(diff.hunks) ? diff.hunks : []
+    view.fileLines = file && file.content != null ? String(file.content).split('\n') : null
+    if (view.hunks.length === 0) {
+      view.hint = '⚠ 此提交未修改该文件'
+    } else {
+      view.stats = countDiffStats(view.hunks)
+    }
+  } catch (error) {
+    if (view.seq !== seq) return
+    view.hunks = []
+    view.fileLines = null
+    view.hint = `加载提交改动失败: ${(error && error.message) || error}`
+  }
+  view.loading = false
+  refresh()
+}
+
+/**
+ * Per-path git state for CodeView: loads meta once, exposes branch/commit
+ * actions. The view object is module-cached (mutable) so a remount keeps the
+ * user's selection; `bump` re-renders after async work / mutation.
+ */
+function useGitView(tab) {
+  const path = tab.path
+  const [, bump] = React.useReducer((count) => count + 1, 0)
+  const view = gitViewFor(path)
+  React.useEffect(() => {
+    const seq = view.seq
+    loadGitMeta(path).then((meta) => {
+      if (view.seq !== seq) return // user already changed branch/commit
+      if (!meta) {
+        if (!view.ready) {
+          view.ready = true
+          view.git = false
+        }
+        bump()
+        return
+      }
+      if (!view.ready) {
+        view.ready = true
+        view.git = true
+        view.repo = meta.repo
+        view.branch = meta.branch
+        view.currentBranch = meta.currentBranch
+        view.branches = meta.branches
+        view.commits = meta.commits
+      }
+      bump()
+    })
+    // `path` and the module-cached view decide the load; bump is stable.
+  }, [path, view, bump])
+  const actions = React.useMemo(
+    () => ({
+      selectBranch(branch) {
+        if (!view.git || !branch || branch === view.branch) return
+        void selectGitBranch(path, branch, bump)
+      },
+      selectCommit(commit) {
+        const value = String(commit || '')
+        if (value === (view.commit || '')) return
+        void selectGitCommit(path, value, bump)
+      },
+      clearCommit() {
+        if (!view.commit) return
+        void selectGitCommit(path, '', bump)
+      },
+    }),
+    [path, view, bump],
+  )
+  return { view, actions }
+}
+
+/** Branch + commit dropdowns and the 清除 button, shown inside .mdr-code-head. */
+function GitBar(props) {
+  const { view, actions } = props
+  const branchOptions = view.branches.map((branch) => h('option', { key: branch, value: branch }, branch))
+  const commitOptions = [h('option', { key: '__latest', value: '' }, `◎ ${view.branch || '当前分支'} 最新`)]
+  for (const commit of view.commits) {
+    commitOptions.push(
+      h(
+        'option',
+        { key: commit.hash, value: commit.hash },
+        `${commit.short} ${commit.author} ${commit.date} ${String(commit.subject || '').slice(0, 30)}`,
+      ),
+    )
+  }
+  return h(
+    'span',
+    { className: 'mdr-git-bar' },
+    h(
+      'select',
+      {
+        className: 'mdr-git-sel',
+        title: '选择分支',
+        value: view.branch,
+        onChange: (event) => actions.selectBranch(event.target.value),
+      },
+      branchOptions,
+    ),
+    h(
+      'select',
+      {
+        className: 'mdr-git-sel',
+        title: '选择提交，查看该提交对当前文件的改动',
+        value: view.commit || '',
+        onChange: (event) => actions.selectCommit(event.target.value),
+      },
+      commitOptions,
+    ),
+    h('button', { className: 'mdr-git-btn', title: '清除提交选择，回到最新版本', onClick: actions.clearCommit }, '清除'),
+  )
+}
+
+/** Git-related styles; the body padding/overflow override makes the body the scroller. */
+const GIT_CSS = `
+.mdr-code .mdr-code-body{position:relative;overflow:auto;padding:0}
+.mdr-code .mdr-git-bar{display:flex;align-items:center;gap:6px;flex:0 0 auto;max-width:100%}
+.mdr-code .mdr-git-sel{max-width:190px;padding:2px 6px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;outline:none;cursor:pointer}
+.mdr-code .mdr-git-sel:hover{border-color:var(--dsw-alias-brand-primary)}
+.mdr-code .mdr-git-btn{padding:2px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.mdr-code .mdr-git-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.mdr-code .mdr-git-info{display:flex;align-items:center;gap:12px;flex-wrap:wrap;flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px}
+.mdr-code .mdr-git-hash{font-family:Consolas,"Courier New",monospace;color:#d7ba7d}
+.mdr-code .mdr-git-author{color:#89d185}
+.mdr-code .mdr-git-date{color:var(--dsw-alias-label-secondary)}
+.mdr-code .mdr-git-subject{color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:52%}
+.mdr-code .mdr-git-stat{margin-left:auto;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.mdr-code .mdr-git-note{color:#e2c08d}
+.mdr-code .mdr-cl.mdr-git-add{background:rgba(46,160,67,.15)}
+.mdr-code .mdr-cl.mdr-git-add .mdr-cl-no{background:rgba(46,160,67,.25);color:#3fb950}
+.mdr-code .mdr-cl.mdr-git-del{background:rgba(248,81,73,.12)}
+.mdr-code .mdr-cl.mdr-git-del .mdr-cl-no{background:rgba(248,81,73,.2);color:#f48771}
+.mdr-code .mdr-cl.mdr-git-del .mdr-cl-code{text-decoration:line-through;opacity:.72}
+.mdr-code .mdr-code-head{flex-wrap:wrap;row-gap:4px}
+.mdr-code .mdr-code-body.mdr-git-vscroll{padding:0}
+.mdr-code .mdr-git-vwrap{position:relative;min-width:100%}
+.mdr-code .mdr-git-vscroll .mdr-cl{position:absolute;left:0;height:${GIT_LINE_H}px;line-height:${GIT_LINE_H}px;min-height:0}
+.mdr-code .mdr-git-vscroll .mdr-cl-no{position:static}
+.mdr-code .mdr-cl.hit{background:rgba(255,214,102,.16);box-shadow:inset 3px 0 0 #ffd33d}
+`
 
 // ---- 20-code.js ----
 /** Code tab: VSCode-Dark+-style line-numbered viewer with hljs colors. */
@@ -550,71 +1373,648 @@ function highlightLineHtml(text, lang) {
   }
 }
 
-function buildCodeHtml(lines, lang) {
-  const chunks = new Array(lines.length)
-  for (let i = 0; i < lines.length; i += 1) {
-    chunks[i] = `<div class="mdr-cl" data-line="${i + 1}"><span class="mdr-cl-no">${i + 1}</span><span class="mdr-cl-code">${highlightLineHtml(
-      lines[i],
-      lang,
-    )}</span></div>`
+/** One row's HTML. diffMode adds the +/-/space gutter sign and diff row classes. */
+function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
+  const classes = ['mdr-cl']
+  if (row.kind === 'add') classes.push('mdr-git-add')
+  else if (row.kind === 'del') classes.push('mdr-git-del')
+  if (hitLine && row.no === hitLine) classes.push('hit')
+  const sign = diffMode ? (row.kind === 'add' ? '+ ' : row.kind === 'del' ? '- ' : '  ') : ''
+  const style = top == null ? '' : ` style="top:${top}px"`
+  const no = row.no == null ? '' : row.no
+  return `<div class="${classes.join(' ')}" data-line="${no}"${style}><span class="mdr-cl-no">${no}</span><span class="mdr-cl-code">${sign}${codeHtml}</span></div>`
+}
+
+/**
+ * Rows viewport. Files over GIT_V_THRESHOLD rows keep full highlighting but only
+ * paint the viewport +/- GIT_BUFFER rows (20px absolute rows inside a spacer).
+ */
+function CodeBody(props) {
+  const { rows, lang, diffMode, targetLine, viewKey } = props
+  const total = rows.length
+  const virtual = total > GIT_V_THRESHOLD
+  const scrollerRef = React.useRef(null)
+  const [win, setWin] = React.useState(() => ({ first: 0, last: Math.min(total, 160) }))
+  const [hitLine, setHitLine] = React.useState(0)
+  const rafRef = React.useRef(0)
+  const rowsRef = React.useRef(rows)
+  rowsRef.current = rows
+  const hlRef = React.useRef(null)
+  if (!hlRef.current || hlRef.current.rows !== rows || hlRef.current.lang !== lang) {
+    hlRef.current = { rows, lang, map: new Map() }
   }
-  return chunks.join('')
+  const codeHtmlAt = (index) => {
+    const cache = hlRef.current
+    if (!cache.map.has(index)) {
+      const row = rows[index]
+      cache.map.set(index, highlightLineHtml(row && row.text != null ? String(row.text) : '', lang))
+    }
+    return cache.map.get(index)
+  }
+
+  const paintWindow = () => {
+    const el = scrollerRef.current
+    if (!el) return
+    const list = rowsRef.current
+    if (list.length <= GIT_V_THRESHOLD) return
+    const scrollTop = el.scrollTop
+    const first = Math.max(0, Math.floor(scrollTop / GIT_LINE_H) - GIT_BUFFER)
+    const last = Math.min(list.length, Math.ceil((scrollTop + el.clientHeight) / GIT_LINE_H) + GIT_BUFFER)
+    setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
+  }
+
+  React.useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return undefined
+    setHitLine(0)
+    // Base view: honor tab.line (transient .mdr-cl.hit at the target line). Diff
+    // view: start at the top; deleted rows have no meaningful workspace line no.
+    let rowIndex = -1
+    if (!diffMode && targetLine > 0) {
+      rowIndex = rows.findIndex((row) => row.no === targetLine)
+      if (rowIndex < 0) rowIndex = Math.min(targetLine - 1, Math.max(0, total - 1))
+    }
+    el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
+    paintWindow()
+    if (rowIndex >= 0) {
+      setHitLine(targetLine)
+      const timer = setTimeout(() => setHitLine(0), 2400)
+      return () => clearTimeout(timer)
+    }
+    return undefined
+    // rows identity changes whenever the rendered content (commit/branch/file) changes.
+  }, [viewKey, targetLine, diffMode, rows, total])
+
+  React.useEffect(
+    () => () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    },
+    [],
+  )
+
+  const onScroll = () => {
+    if (!virtual) return
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = 0
+      paintWindow()
+    })
+  }
+
+  const windowFrom = virtual ? Math.max(0, Math.min(win.first, Math.max(0, total - 1))) : 0
+  const windowTo = virtual ? Math.min(total, Math.max(windowFrom, win.last)) : 0
+
+  const plainHtml = React.useMemo(() => {
+    if (virtual) return ''
+    let html = ''
+    for (let index = 0; index < rows.length; index += 1) {
+      html += gitRowHtml(rows[index], index, lang, diffMode, hitLine, codeHtmlAt(index), null)
+    }
+    return html
+  }, [virtual, rows, lang, diffMode, hitLine])
+
+  const windowHtml = React.useMemo(() => {
+    if (!virtual) return ''
+    let html = ''
+    for (let index = windowFrom; index < windowTo; index += 1) {
+      html += gitRowHtml(rows[index], index, lang, diffMode, hitLine, codeHtmlAt(index), index * GIT_LINE_H)
+    }
+    return html
+  }, [virtual, rows, lang, diffMode, hitLine, windowFrom, windowTo])
+
+  return h(
+    'div',
+    {
+      className: 'mdr-code-body' + (virtual ? ' mdr-git-vscroll' : ''),
+      ref: scrollerRef,
+      onScroll,
+    },
+    virtual
+      ? h('div', {
+          className: 'mdr-git-vwrap',
+          style: { height: total * GIT_LINE_H + 'px' },
+          dangerouslySetInnerHTML: { __html: windowHtml },
+        })
+      : h('div', { dangerouslySetInnerHTML: { __html: plainHtml } }),
+  )
+}
+
+function CodeGitInfo(props) {
+  const { view } = props
+  const meta = view.commitMeta
+  const parts = []
+  if (view.commit) {
+    parts.push(h('span', { className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
+    if (meta) {
+      parts.push(h('span', { className: 'mdr-git-author' }, meta.author))
+      parts.push(h('span', { className: 'mdr-git-date' }, meta.date))
+      parts.push(h('span', { className: 'mdr-git-subject', title: meta.subject }, meta.subject))
+    }
+  }
+  if (view.loading) parts.push(h('span', { className: 'mdr-git-stat' }, '加载中…'))
+  else if (view.hint) parts.push(h('span', { className: 'mdr-git-stat mdr-git-note' }, view.hint))
+  else if (view.commit) parts.push(h('span', { className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
+  return h('div', { className: 'mdr-git-info' }, parts)
 }
 
 function CodeView(props) {
-  const { tab } = props
-  const scrollerRef = React.useRef(null)
-  const content = String(tab.content == null ? '' : tab.content)
+  const { tab, onOpen } = props
+  const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
-  const lineCount = tab.content == null ? 0 : content.split('\n').length
-  const html = React.useMemo(() => buildCodeHtml(content.split('\n'), lang), [content, lang])
-  const targetLine = tab.line || 0
+  const workspaceContent = String(tab.content == null ? '' : tab.content)
+  const viewRef = React.useRef(null)
+  const [defState, setDefState] = React.useState(null)
 
+  // Ctrl/Cmd+click anywhere in the code body looks the symbol up and opens the
+  // chooser (or the only candidate directly).
   React.useEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return undefined
-    scroller.querySelectorAll('.mdr-cl.hit').forEach((row) => row.classList.remove('hit'))
-    if (!targetLine) {
-      scroller.scrollTop = 0
-      return undefined
-    }
-    const row = scroller.querySelector(`.mdr-cl[data-line="${targetLine}"]`)
-    if (!row) return undefined
-    const top = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop
-    scroller.scrollTop = Math.max(0, top - Math.floor(scroller.clientHeight * 0.35))
-    row.classList.add('hit')
-    const timer = setTimeout(() => row.classList.remove('hit'), 2400)
-    return () => clearTimeout(timer)
-  }, [tab.id, content, targetLine, html])
+    const root = viewRef.current
+    if (!root || typeof onOpen !== 'function') return undefined
+    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
+      if (!candidates.length) {
+        setDefState({ symbol, candidates: [], error: error || '' })
+        return
+      }
+      if (candidates.length === 1) {
+        onOpen(candidates[0].path, candidates[0].line)
+        return
+      }
+      setDefState({ symbol, candidates, error: '' })
+    })
+    return dispose
+  }, [tab.id, tab.path, onOpen])
+  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
+  // (branch switches), otherwise the workspace content the App loaded.
+  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
+  const diffRows = React.useMemo(
+    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
+    [view.commit, view.hunks, view.fileLines],
+  )
+  const rows = React.useMemo(() => {
+    if (diffRows) return diffRows
+    return baseContent.split('\n').map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+  }, [diffRows, baseContent])
+  const diffMode = !!diffRows
+  const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}`
+  const showInfo = !!view.commit || !!view.hint || !!view.loading
 
   return h(
     'div',
     { className: 'mdr-code' },
+    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS } }),
     h(
       'div',
       { className: 'mdr-code-head' },
       h(Icons.code, { size: 14 }),
       h('span', { className: 'mdr-code-path', title: tab.path }, tab.path),
       h('span', { className: 'mdr-spacer' }),
-      h('span', { className: 'mdr-tip' }, `${lang || 'text'} · ${lineCount} 行`),
+      view.git ? h(GitBar, { view, actions }) : null,
+      h('span', { className: 'mdr-tip', title: 'Ctrl/Cmd + 点击符号跳转到定义' }, `${lang || 'text'} · ${rows.length} 行 · Ctrl+点击跳定义`),
     ),
-    h('div', { className: 'mdr-code-body', ref: scrollerRef, dangerouslySetInnerHTML: { __html: html } }),
+    showInfo ? h(CodeGitInfo, { view }) : null,
+    h(
+      'div',
+      { className: 'mdr-code-viewwrap', ref: viewRef },
+      h(CodeBody, {
+        rows,
+        lang,
+        diffMode,
+        targetLine: tab.line || 0,
+        viewKey,
+      }),
+    ),
+    defState
+      ? h(DefinitionChooser, {
+          state: defState,
+          onPick: (candidate) => {
+            onOpen(candidate.path, candidate.line)
+            setDefState(null)
+          },
+          onClose: () => setDefState(null),
+        })
+      : null,
+  )
+}
+
+// ---- 22-defs.js ----
+/**
+ * Ctrl+click symbol lookup for the code view: extracts the symbol under the
+ * pointer, asks the Host for declaration candidates and shows a chooser when
+ * there is more than one.
+ */
+
+function symbolAtPoint(rootEl, event) {
+  let node = null
+  let offset = 0
+  if (document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(event.clientX, event.clientY)
+    if (position) {
+      node = position.offsetNode
+      offset = position.offset
+    }
+  } else if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(event.clientX, event.clientY)
+    if (range) {
+      node = range.startContainer
+      offset = range.startOffset
+    }
+  }
+  if (!node || node.nodeType !== 3) {
+    const element = event.target && event.target.closest ? event.target.closest('.mdr-cl-code') : null
+    if (!element) return null
+    const text = element.textContent || ''
+    const match = /[A-Za-z_$][\w$]*/.exec(text)
+    return match ? { symbol: match[0], lineText: text } : null
+  }
+  const text = node.textContent || ''
+  const isWord = (ch) => /[A-Za-z0-9_$]/.test(ch)
+  let start = offset
+  let end = offset
+  while (start > 0 && isWord(text[start - 1])) start -= 1
+  while (end < text.length && isWord(text[end])) end += 1
+  const symbol = text.slice(start, end)
+  if (!/^[A-Za-z_$][\w$]*$/.test(symbol)) return null
+  const row = node.parentElement && node.parentElement.closest ? node.parentElement.closest('.mdr-cl') : null
+  const lineText = row ? (row.querySelector('.mdr-cl-code') || {}).textContent || '' : ''
+  return { symbol, lineText: String(lineText).trim().slice(0, 300) }
+}
+
+/**
+ * Attach the Ctrl/Cmd+click listener. `onResult(candidates, symbol, clicked)`
+ * is called with a non-empty candidate list.
+ */
+function setupDefinitionClick(rootEl, tab, onResult) {
+  if (!rootEl) return () => {}
+  let busy = false
+  const handler = async (event) => {
+    if (!(event.ctrlKey || event.metaKey)) return
+    const hit = symbolAtPoint(rootEl, event)
+    if (!hit || hit.symbol.length < 2) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (busy) return
+    busy = true
+    rootEl.classList.add('mdr-def-busy')
+    try {
+      const payload = await postJson('/api/def', {
+        path: tab.path,
+        symbol: hit.symbol,
+        context: hit.lineText,
+      })
+      const candidates = (payload && payload.candidates) || []
+      if (candidates.length) onResult(candidates, hit.symbol)
+      else onResult([], hit.symbol)
+    } catch (err) {
+      onResult([], hit.symbol, String((err && err.message) || err))
+    } finally {
+      busy = false
+      rootEl.classList.remove('mdr-def-busy')
+    }
+  }
+  rootEl.addEventListener('click', handler)
+  return () => rootEl.removeEventListener('click', handler)
+}
+
+const KIND_LABELS = { type: '类型', method: '方法', field: '字段', function: '函数', export: '导出', class: '类' }
+
+function DefinitionChooser(props) {
+  const { state, onPick, onClose } = props
+  const candidates = (state && state.candidates) || []
+  const [active, setActive] = React.useState(0)
+  React.useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape') onClose()
+      else if (event.key === 'ArrowDown') {
+        event.preventDefault()
+        setActive((current) => Math.min(candidates.length - 1, current + 1))
+      } else if (event.key === 'ArrowUp') {
+        event.preventDefault()
+        setActive((current) => Math.max(0, current - 1))
+      } else if (event.key === 'Enter' && candidates[active]) {
+        event.preventDefault()
+        onPick(candidates[active])
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [candidates, active, onPick, onClose])
+
+  const missing = state && state.error ? state.error : ''
+  return h(
+    'div',
+    { className: 'mdr-overlay', onClick: onClose },
+    h(
+      'div',
+      { className: 'mdr-panel', style: { width: 'min(820px,90vw)' }, onClick: (event) => event.stopPropagation() },
+      h(
+        'div',
+        { className: 'mdr-panel-head' },
+        h(Icons.code, { size: 14 }),
+        h('span', null, `定义 · ${state ? state.symbol : ''}`),
+        h('span', { className: 'mdr-tip' }, missing ? missing : `${candidates.length} 个候选`),
+        h('span', { className: 'mdr-spacer' }),
+        h('span', { className: 'mdr-btn', onClick: onClose }, '✕'),
+      ),
+      h(
+        'div',
+        { className: 'mdr-panel-body' },
+        candidates.length === 0
+          ? h('div', { className: 'mdr-tip', style: { padding: '10px 12px' } }, missing || '未找到定义')
+          : candidates.map((candidate, index) =>
+              h(
+                'div',
+                {
+                  key: `${candidate.path}:${candidate.line}:${index}`,
+                  className: 'mdr-item-row' + (index === active ? ' on' : ''),
+                  onMouseEnter: () => setActive(index),
+                  onClick: () => onPick(candidate),
+                  title: `${candidate.path}:${candidate.line}`,
+                },
+                h('span', { className: 'mdr-badge' }, KIND_LABELS[candidate.kind] || candidate.kind),
+                h('span', { className: 'mdr-item-main' }, candidate.path),
+                h('span', { className: 'mdr-tip' }, `:${candidate.line}`),
+                h('span', { className: 'mdr-item-sub mdr-def-snippet', style: { marginLeft: 8 } }, candidate.snippet || ''),
+              ),
+            ),
+      ),
+    ),
   )
 }
 
 // ---- 25-search.js ----
 /** Global search panel + quick open (owned by the search slice). */
 
+const SEARCH_MIN_CHARS = 2
+const SEARCH_DEBOUNCE_MS = 250
+const SEARCH_LIMIT = 120
+const SEARCH_MAX_ROWS = 200
+const FILES_DEBOUNCE_MS = 160
+const FILES_LIMIT = 40
+
+/**
+ * Highlight every case-insensitive occurrence of `query` in a result line.
+ *
+ * The line text arrives as raw file text, so the match is located on the raw
+ * string and each slice is escaped separately. Doing it in this order means a
+ * query containing `<`, `>` or `&` cannot inject markup and cannot miss because
+ * the needle was escaped into `&lt;` before comparison.
+ */
+function highlightMatch(text, query) {
+  const source = String(text == null ? '' : text)
+  const needle = String(query || '')
+  if (!needle) return escapeHtml(source)
+  const haystack = source.toLowerCase()
+  const lower = needle.toLowerCase()
+  let html = ''
+  let from = 0
+  for (;;) {
+    const at = haystack.indexOf(lower, from)
+    if (at < 0) break
+    html += escapeHtml(source.slice(from, at))
+    html += `<mark>${escapeHtml(source.slice(at, at + needle.length))}</mark>`
+    from = at + Math.max(1, needle.length)
+  }
+  html += escapeHtml(source.slice(from))
+  return html
+}
+
+const SEARCH_CSS = `
+.mdr-search-panel{width:min(720px,88vw);height:min(78vh,660px);max-height:78vh}
+.mdr-search-head{gap:8px}
+.mdr-search-title{flex:0 0 auto}
+.mdr-search-close{padding:3px 5px}
+.mdr-search-body{display:flex;flex-direction:column;overflow:hidden;padding:0}
+.mdr-search-status{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);font-size:11.5px;white-space:nowrap}
+.mdr-search-status-text{overflow:hidden;text-overflow:ellipsis}
+.mdr-search-status-err .mdr-search-status-text{color:var(--dsw-alias-state-error-primary)}
+.mdr-search-keys{flex:0 0 auto;opacity:.75}
+.mdr-search-list{flex:1;min-height:0;overflow:auto;padding:2px 0 6px}
+.mdr-search-list .mdr-item-sub{flex:0 1 auto;min-width:0;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-search-list .mdr-item-main{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-search-row{display:block;padding:5px 12px;cursor:pointer;color:var(--dsw-alias-label-primary)}
+.mdr-search-row:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-search-row.on{background:var(--dsw-alias-bg-layer-2);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
+.mdr-search-row-head{display:flex;align-items:baseline;gap:6px;min-width:0;line-height:1.5}
+.mdr-search-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary);font-size:11.5px}
+.mdr-search-line{flex:0 0 auto;color:var(--dsw-alias-label-secondary);opacity:.8;font-family:"Cascadia Code",Consolas,monospace;font-size:11px}
+.mdr-search-row .mdr-hit-line{padding:1px 0 0;font-size:11.5px}
+@media (max-width:560px){.mdr-search-keys{display:none}}
+`
+
 function SearchPanel(props) {
-  const { mode, onClose } = props
+  const { mode, onClose, onOpen } = props
+  const isFiles = mode === 'files'
+  const inputRef = React.useRef(null)
+  const listRef = React.useRef(null)
+  const seqRef = React.useRef(0)
+  const [query, setQuery] = React.useState('')
+  const [status, setStatus] = React.useState('idle')
+  const [rows, setRows] = React.useState([])
+  const [meta, setMeta] = React.useState({ total: 0, truncated: false, query: '' })
+  const [error, setError] = React.useState('')
+  const [active, setActive] = React.useState(-1)
+
+  // Autofocus (and select any restored text) as soon as the panel appears.
+  React.useEffect(() => {
+    const input = inputRef.current
+    if (!input) return undefined
+    input.focus()
+    if (typeof input.select === 'function') input.select()
+    return undefined
+  }, [])
+
+  // Debounced loading. Every query change invalidates responses still in flight
+  // (seqRef), and unmounting clears the pending timer.
+  React.useEffect(() => {
+    const trimmed = query.trim()
+    const seq = ++seqRef.current
+    if (!isFiles && trimmed.length < SEARCH_MIN_CHARS) {
+      setStatus('idle')
+      setRows([])
+      setMeta({ total: 0, truncated: false, query: '' })
+      setError('')
+      setActive(-1)
+      return undefined
+    }
+    setStatus('loading')
+    setError('')
+    const timer = setTimeout(() => {
+      const endpoint = isFiles ? '/api/files' : '/api/search'
+      const params = isFiles ? { q: trimmed, limit: FILES_LIMIT } : { q: trimmed, limit: SEARCH_LIMIT }
+      fetchJson(endpoint, params)
+        .then((payload) => {
+          if (seqRef.current !== seq) return
+          let count = 0
+          if (isFiles) {
+            const items = Array.isArray(payload.items) ? payload.items : []
+            count = items.length
+            setRows(items)
+            setMeta({ total: Number(payload.total) || items.length, truncated: false, query: trimmed })
+          } else {
+            const all = Array.isArray(payload.results) ? payload.results : []
+            count = Math.min(all.length, SEARCH_MAX_ROWS)
+            setRows(all.slice(0, SEARCH_MAX_ROWS))
+            setMeta({
+              total: all.length,
+              truncated: !!payload.truncated,
+              query: typeof payload.query === 'string' ? payload.query : trimmed,
+            })
+          }
+          setStatus('ready')
+          setActive((current) => (count ? Math.min(current < 0 ? 0 : current, count - 1) : -1))
+        })
+        .catch((err) => {
+          if (seqRef.current !== seq) return
+          setRows([])
+          setError(String((err && err.message) || err))
+          setStatus('error')
+          setActive(-1)
+        })
+    }, isFiles ? FILES_DEBOUNCE_MS : SEARCH_DEBOUNCE_MS)
+    return () => {
+      clearTimeout(timer)
+      seqRef.current += 1
+    }
+  }, [query, isFiles])
+
+  // Keep the keyboard-selected row visible while arrowing through results.
+  React.useEffect(() => {
+    if (active < 0) return undefined
+    const list = listRef.current
+    if (!list) return undefined
+    const row = list.querySelector('.mdr-search-row.on, .mdr-item-row.on')
+    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
+    return undefined
+  }, [active, rows])
+
+  const openRow = (row) => {
+    if (!row || !row.path) return
+    if (isFiles) onOpen(row.path, null)
+    else onOpen(row.path, Number(row.line) || 1)
+    onClose()
+  }
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const row = rows[active >= 0 ? active : 0]
+      if (row) openRow(row)
+      return
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+    if (!rows.length) return
+    event.preventDefault()
+    const delta = event.key === 'ArrowDown' ? 1 : -1
+    setActive((current) => {
+      const base = current < 0 ? 0 : current
+      return (base + delta + rows.length) % rows.length
+    })
+  }
+
+  let statusText = ''
+  let statusError = false
+  if (status === 'error') {
+    statusText = `${isFiles ? '加载文件失败' : '搜索失败'}：${error}`
+    statusError = true
+  } else if (status === 'loading') {
+    statusText = isFiles ? '加载文件清单…' : '搜索中…'
+  } else if (isFiles) {
+    if (status === 'ready') {
+      if (!rows.length) statusText = meta.query ? `无匹配文件：「${meta.query}」` : '没有可打开的文件'
+      else statusText = `共 ${meta.total} 个文件${meta.total > rows.length ? `，显示前 ${rows.length} 个` : ''}`
+    } else {
+      statusText = '输入文件名或路径片段'
+    }
+  } else if (status === 'idle') {
+    statusText = `输入关键词，至少 ${SEARCH_MIN_CHARS} 个字符`
+  } else if (status === 'ready') {
+    if (!rows.length) {
+      // A truncated walk means "not found" is not authoritative: say so.
+      statusText = `无结果：未找到包含「${meta.query}」的内容` + (meta.truncated ? '（扫描被截断，可能未覆盖全部文件）' : '')
+    } else
+      statusText =
+        `找到 ${meta.total} 条匹配` +
+        (meta.total > rows.length ? `，显示前 ${rows.length} 条` : '') +
+        (meta.truncated ? ' · 结果过多，已截断' : '')
+  }
+
+  const rowNodes = isFiles
+    ? rows.map((item, index) =>
+        h(
+          'div',
+          {
+            key: item.path || `file-${index}`,
+            className: 'mdr-item-row' + (index === active ? ' on' : ''),
+            title: item.path || '',
+            onClick: () => openRow(item),
+          },
+          h('span', { className: 'mdr-item-main' }, item.name || String(item.path || '').split('/').pop()),
+          h('span', { className: 'mdr-item-sub' }, item.dir || ''),
+        ),
+      )
+    : rows.map((row, index) =>
+        h(
+          'div',
+          {
+            key: `${row.path}:${row.line}:${index}`,
+            className: 'mdr-search-row' + (index === active ? ' on' : ''),
+            title: `${row.path}:${row.line}`,
+            onClick: () => openRow(row),
+          },
+          h(
+            'div',
+            { className: 'mdr-search-row-head' },
+            h('span', { className: 'mdr-search-path' }, row.path),
+            h('span', { className: 'mdr-search-line' }, `:${row.line}`),
+          ),
+          h('div', { className: 'mdr-hit-line', dangerouslySetInnerHTML: { __html: highlightMatch(row.text, meta.query || query) } }),
+        ),
+      )
+
   return h(
     'div',
     { className: 'mdr-overlay', onClick: onClose },
     h(
       'div',
-      { className: 'mdr-panel', onClick: (event) => event.stopPropagation() },
-      h('div', { className: 'mdr-panel-head' }, h('span', null, mode === 'files' ? '快速打开' : '搜索'), h('span', { className: 'mdr-spacer' }), h('span', { className: 'mdr-btn', onClick: onClose }, '✕')),
-      h('div', { className: 'mdr-panel-body' }, h('div', { className: 'mdr-tip', style: { padding: '10px 12px' } }, '该面板由搜索分片实现。')),
+      {
+        className: 'mdr-panel mdr-search-panel',
+        onClick: (event) => event.stopPropagation(),
+      },
+      h('style', { dangerouslySetInnerHTML: { __html: SEARCH_CSS } }),
+      h(
+        'div',
+        { className: 'mdr-panel-head mdr-search-head' },
+        h('span', { className: 'mdr-search-title' }, isFiles ? '快速打开' : '搜索'),
+        h('input', {
+          ref: inputRef,
+          className: 'mdr-panel-input',
+          type: 'text',
+          value: query,
+          spellCheck: false,
+          autoComplete: 'off',
+          'aria-label': isFiles ? '按文件名或路径搜索' : '搜索关键词',
+          placeholder: isFiles ? '文件名 / 路径片段（↑↓ 选择，回车打开）' : '关键词（至少 2 个字符，回车打开首条结果）',
+          onChange: (event) => setQuery(event.target.value),
+          onKeyDown,
+        }),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn mdr-search-close', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
+          h(Icons.close, { size: 12 }),
+        ),
+      ),
+      h(
+        'div',
+        { className: 'mdr-panel-body mdr-search-body' },
+        h(
+          'div',
+          { className: 'mdr-search-status mdr-tip' + (statusError ? ' mdr-search-status-err' : '') },
+          h('span', { className: 'mdr-search-status-text' }, statusText),
+          h('span', { className: 'mdr-spacer' }),
+          h('span', { className: 'mdr-search-keys' }, '↑↓ 选择 · Enter 打开 · Esc 关闭'),
+        ),
+        h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
+      ),
     ),
   )
 }
@@ -710,16 +2110,324 @@ function TabBar(props) {
 // ---- 45-json.js ----
 /** JSON formatting tool (owned by the search slice). */
 
+const JSON_INDENT = 2
+
+/**
+ * Parse JSON and locate the first syntax error as line/column.
+ *
+ * Chrome's JSON.parse message carries no position (or, on newer versions, a
+ * "position N" suffix); Node/Firefox include a position. Prefer the message
+ * position and fall back to the hand scanner below.
+ */
+function jsonParse(text) {
+  try {
+    return { ok: true, value: JSON.parse(text) }
+  } catch (error) {
+    let line = 1
+    let col = 1
+    const match = /position (\d+)/.exec(String((error && error.message) || ''))
+    if (match) {
+      const pos = parseInt(match[1], 10)
+      const lines = text.slice(0, pos).split('\n')
+      line = lines.length
+      col = lines[lines.length - 1].length + 1
+    } else {
+      const loc = jsonLocateError(text)
+      if (loc) {
+        line = loc.line
+        col = loc.col
+      }
+    }
+    return { ok: false, line, col, message: String((error && error.message) || error) }
+  }
+}
+
+/**
+ * Lightweight JSON scanner used when the parse error carries no position.
+ * Walks characters tracking string/escape state and a bracket stack and returns
+ * the first structural problem; it never calls JSON.parse again.
+ */
+function jsonLocateError(text) {
+  let i = 0
+  let line = 1
+  let col = 1
+  const n = text.length
+  const stack = []
+  const adv = () => {
+    if (text[i] === '\n') {
+      line += 1
+      col = 1
+    } else col += 1
+    i += 1
+  }
+  const err = (message) => ({ line, col, message })
+  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r'
+  const isDigit = (c) => c >= '0' && c <= '9'
+
+  while (i < n) {
+    const ch = text[i]
+    if (isWs(ch)) {
+      adv()
+      continue
+    }
+    if (ch === '"') {
+      const startLine = line
+      const startCol = col
+      adv()
+      let closed = false
+      while (i < n) {
+        const c = text[i]
+        if (c === '\\') {
+          adv()
+          if (i < n) adv()
+          continue
+        }
+        if (c === '"') {
+          adv()
+          closed = true
+          break
+        }
+        if (c === '\n') break // unescaped newline inside a string
+        adv()
+      }
+      if (!closed) return { line: startLine, col: startCol, message: '字符串未闭合' }
+      continue
+    }
+    if (ch === '{' || ch === '[') {
+      stack.push(ch === '{' ? '}' : ']')
+      adv()
+      continue
+    }
+    if (ch === '}' || ch === ']') {
+      const expect = stack.pop()
+      if (expect !== ch) return err(expect ? `意外的 '${ch}'，期望 '${expect}'` : `多余的 '${ch}'`)
+      adv()
+      continue
+    }
+    if (ch === ':') {
+      adv()
+      continue
+    }
+    if (ch === ',') {
+      adv()
+      // trailing comma: [1,2,] / {"a":1,}
+      let j = i
+      while (j < n && isWs(text[j])) j += 1
+      if (text[j] === '}' || text[j] === ']') return { line, col, message: '尾随逗号' }
+      continue
+    }
+    if (isDigit(ch) || ch === '-') {
+      adv()
+      while (i < n && /[0-9.eE+\-]/.test(text[i])) adv()
+      continue
+    }
+    if (text.startsWith('true', i) || text.startsWith('false', i) || text.startsWith('null', i)) {
+      const len = text.startsWith('true', i) ? 4 : text.startsWith('false', i) ? 5 : 4
+      for (let k = 0; k < len; k += 1) adv()
+      continue
+    }
+    return err(`意外的字符 '${ch}'`)
+  }
+  if (stack.length) return { line, col, message: `缺少闭合符 '${stack[stack.length - 1]}'` }
+  return null
+}
+
+function highlightJson(text) {
+  try {
+    if (!window.hljs || typeof window.hljs.highlight !== 'function') return escapeHtml(text)
+    return window.hljs.highlight(text, { language: 'json', ignoreIllegals: true }).value
+  } catch {
+    return escapeHtml(text)
+  }
+}
+
+const JSON_CSS = `
+.mdr-json-panel{width:min(1100px,92vw);height:min(720px,88vh);max-height:88vh}
+.mdr-json-head{gap:8px}
+.mdr-json-subtitle{font-weight:400;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-json-body{flex:1;min-height:0;display:flex;overflow:hidden;padding:0}
+.mdr-json-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;background:#1e1e1e}
+.mdr-json-split{flex:0 0 1px;background:var(--dsw-alias-border-l1)}
+.mdr-json-label{flex:0 0 auto;padding:5px 12px;font-size:11.5px;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+.mdr-json-input{flex:1;min-height:0;padding:12px 14px;border:none;outline:none;resize:none;background:#1e1e1e;color:#c9d1d9;font:12.5px/1.55 "Cascadia Code",Consolas,"Courier New",monospace;white-space:pre;overflow:auto;tab-size:4}
+.mdr-json-input:focus-visible{box-shadow:inset 0 0 0 1px var(--dsw-alias-brand-primary)}
+.mdr-json-output{flex:1;min-height:0;overflow:auto;padding:12px 14px;background:#1e1e1e;color:#c9d1d9;font:12.5px/1.55 "Cascadia Code",Consolas,"Courier New",monospace;white-space:pre;tab-size:4}
+.mdr-json-error{color:var(--dsw-alias-state-error-primary);font-family:inherit;white-space:pre-wrap}
+.mdr-json-placeholder{color:var(--dsw-alias-label-secondary);font-family:inherit}
+.mdr-json-pre{margin:0;padding:0;background:transparent;font:inherit;white-space:pre;overflow:visible}
+.mdr-json-pre code.hljs{padding:0;background:transparent;font:inherit}
+.mdr-json-footer{padding:6px 12px;border-top:1px solid var(--dsw-alias-border-l1);font-size:12px;flex:0 0 auto;min-height:30px;box-sizing:border-box}
+.mdr-json-ok{color:#57A773}
+.mdr-json-bad{color:var(--dsw-alias-state-error-primary)}
+@media (max-width:720px){.mdr-json-subtitle{display:none}}
+`
+
 function JsonTool(props) {
   const { onClose } = props
+  const inputRef = React.useRef(null)
+  const outputRef = React.useRef(null)
+  const [source, setSource] = React.useState('')
+  const [output, setOutput] = React.useState(null)
+  const [status, setStatus] = React.useState({ kind: 'info', text: 'Ctrl+Enter 格式化' })
+
+  React.useEffect(() => {
+    const input = inputRef.current
+    if (input && typeof input.focus === 'function') input.focus()
+    return undefined
+  }, [])
+
+  const run = (kind) => {
+    const text = source
+    if (!text.trim()) {
+      setOutput(null)
+      setStatus({ kind: 'bad', text: '输入为空' })
+      return
+    }
+    const parsed = jsonParse(text)
+    if (!parsed.ok) {
+      setOutput({ text: '', html: '', error: `JSON 解析错误：${parsed.message}\n位置：第 ${parsed.line} 行，第 ${parsed.col} 列` })
+      setStatus({ kind: 'bad', text: `解析失败：第 ${parsed.line} 行，第 ${parsed.col} 列` })
+      return
+    }
+    let result
+    try {
+      result = kind === 'minify' ? JSON.stringify(parsed.value) : JSON.stringify(parsed.value, null, JSON_INDENT)
+    } catch (error) {
+      setOutput({ text: '', html: '', error: `序列化失败：${String((error && error.message) || error)}` })
+      setStatus({ kind: 'bad', text: '序列化失败' })
+      return
+    }
+    setOutput({ text: result, html: highlightJson(result), error: '' })
+    setStatus({ kind: 'ok', text: `解析成功（${kind === 'minify' ? '已压缩' : '已格式化'}，${result.length} 字符）` })
+  }
+
+  const selectOutput = () => {
+    const node = outputRef.current
+    if (!node) return false
+    try {
+      const range = document.createRange()
+      range.selectNodeContents(node)
+      const selection = window.getSelection ? window.getSelection() : null
+      if (!selection) return false
+      selection.removeAllRanges()
+      selection.addRange(range)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  const copyOutput = () => {
+    const text = output && output.text
+    if (!text) {
+      setStatus({ kind: 'bad', text: '无输出可复制' })
+      return
+    }
+    // http:// origins have no navigator.clipboard in Chromium: fall back to
+    // selecting the output (and execCommand, which needs a user gesture).
+    const fallback = () => {
+      const selected = selectOutput()
+      let copied = false
+      try {
+        copied = selected && document.execCommand ? document.execCommand('copy') : false
+      } catch {
+        copied = false
+      }
+      if (copied) setStatus({ kind: 'ok', text: '已复制到剪贴板' })
+      else if (selected) setStatus({ kind: 'ok', text: '已选中输出文本，按 Ctrl+C 复制' })
+      else setStatus({ kind: 'bad', text: '复制失败，请手动选择输出文本' })
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(
+        () => setStatus({ kind: 'ok', text: '已复制到剪贴板' }),
+        () => fallback(),
+      )
+    } else {
+      fallback()
+    }
+  }
+
+  const clearAll = () => {
+    setSource('')
+    setOutput(null)
+    setStatus({ kind: 'ok', text: '已清空' })
+    const input = inputRef.current
+    if (input && typeof input.focus === 'function') input.focus()
+  }
+
+  const onInputKeyDown = (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault()
+      run('format')
+    }
+  }
+
+  let outputNode
+  if (output == null) {
+    outputNode = h('span', { className: 'mdr-json-placeholder' }, '格式化 / 压缩后的结果会显示在这里')
+  } else if (output.error) {
+    outputNode = h('span', { className: 'mdr-json-error' }, output.error)
+  } else {
+    outputNode = h('pre', { className: 'mdr-json-pre' }, h('code', { className: 'hljs', dangerouslySetInnerHTML: { __html: output.html } }))
+  }
+
+  const statusClass = status.kind === 'ok' ? 'mdr-json-ok' : status.kind === 'bad' ? 'mdr-json-bad' : 'mdr-tip'
+
   return h(
     'div',
     { className: 'mdr-overlay', onClick: onClose },
     h(
       'div',
-      { className: 'mdr-panel', onClick: (event) => event.stopPropagation() },
-      h('div', { className: 'mdr-panel-head' }, h('span', null, 'JSON 工具'), h('span', { className: 'mdr-spacer' }), h('span', { className: 'mdr-btn', onClick: onClose }, '✕')),
-      h('div', { className: 'mdr-panel-body' }, h('div', { className: 'mdr-tip', style: { padding: '10px 12px' } }, '该面板由搜索分片实现。')),
+      {
+        className: 'mdr-panel mdr-json-panel',
+        onClick: (event) => event.stopPropagation(),
+      },
+      h('style', { dangerouslySetInnerHTML: { __html: JSON_CSS } }),
+      h(
+        'div',
+        { className: 'mdr-panel-head mdr-json-head' },
+        h(Icons.code, { size: 14 }),
+        h('span', null, 'JSON 工具'),
+        h('span', { className: 'mdr-json-subtitle mdr-tip' }, '粘贴 JSON → 格式化 / 压缩 / 校验'),
+        h('span', { className: 'mdr-spacer' }),
+        h('button', { type: 'button', className: 'mdr-btn', title: '格式化（2 空格缩进，Ctrl+Enter）', onClick: () => run('format') }, '格式化'),
+        h('button', { type: 'button', className: 'mdr-btn', title: '压缩为单行', onClick: () => run('minify') }, '压缩'),
+        h('button', { type: 'button', className: 'mdr-btn', title: '复制输出结果', onClick: copyOutput }, '复制结果'),
+        h('button', { type: 'button', className: 'mdr-btn', title: '清空输入和输出', onClick: clearAll }, '清空'),
+        h(
+          'button',
+          { type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
+          h(Icons.close, { size: 12 }),
+        ),
+      ),
+      h(
+        'div',
+        { className: 'mdr-json-body' },
+        h(
+          'div',
+          { className: 'mdr-json-col' },
+          h('div', { className: 'mdr-json-label' }, '输入'),
+          h('textarea', {
+            ref: inputRef,
+            className: 'mdr-json-input',
+            value: source,
+            spellCheck: false,
+            autoComplete: 'off',
+            'aria-label': 'JSON 输入',
+            placeholder: '{"key": "value", "list": [1, 2, 3]}',
+            onChange: (event) => setSource(event.target.value),
+            onKeyDown: onInputKeyDown,
+          }),
+        ),
+        h('div', { className: 'mdr-json-split' }),
+        h(
+          'div',
+          { className: 'mdr-json-col' },
+          h('div', { className: 'mdr-json-label' }, '输出'),
+          h('div', { className: 'mdr-json-output', ref: outputRef }, outputNode),
+        ),
+      ),
+      h('div', { className: 'mdr-json-footer' }, h('span', { className: statusClass }, status.text)),
     ),
   )
 }
@@ -779,8 +2487,18 @@ function App() {
   const [meta, setMeta] = React.useState(null)
   const [dirs, setDirs] = React.useState({})
   const [expanded, setExpanded] = React.useState(() => new Set(treeStorage.load()))
-  const [tabs, setTabs] = React.useState([])
-  const [activeId, setActiveId] = React.useState(null)
+  const restoredRef = React.useRef(tabsStorage.load())
+  const [tabs, setTabs] = React.useState(() =>
+    restoredRef.current
+      ? restoredRef.current.tabs.map((tab) => ({
+          ...tab,
+          content: null,
+          lang: tab.kind === 'code' ? langForPath(tab.path) : '',
+          error: '',
+        }))
+      : [],
+  )
+  const [activeId, setActiveId] = React.useState(() => (restoredRef.current ? restoredRef.current.activeId : null))
   const [error, setError] = React.useState('')
   const [pathInput, setPathInput] = React.useState('')
   const [rootsOpen, setRootsOpen] = React.useState(false)
@@ -850,6 +2568,18 @@ function App() {
       })
   }, [])
 
+  React.useEffect(() => {
+    if (!activeId) return
+    const tab = tabs.find((item) => item.id === activeId)
+    if (!tab || tab.content != null || loadedRef.current.has(tab.id)) return
+    loadedRef.current.add(tab.id)
+    loadTab(tab.id, tab.kind, tab.path)
+  }, [activeId, tabs, loadTab])
+
+  React.useEffect(() => {
+    tabsStorage.save(tabs, activeId)
+  }, [tabs, activeId])
+
   const openPath = React.useCallback(
     (rel, line) => {
       const value = String(rel || '').trim()
@@ -874,14 +2604,24 @@ function App() {
     [loadTab],
   )
 
-  const closeTab = React.useCallback((id) => {
-    loadedRef.current.delete(id)
-    setTabs((prev) => {
-      const next = prev.filter((tab) => tab.id !== id)
-      setActiveId((current) => (current === id ? (next.length ? next[next.length - 1].id : null) : current))
-      return next
-    })
-  }, [])
+  const closeTab = React.useCallback(
+    (id) => {
+      loadedRef.current.delete(id)
+      setTabs((prev) => {
+        const index = prev.findIndex((tab) => tab.id === id)
+        const next = prev.filter((tab) => tab.id !== id)
+        if (index >= 0) {
+          setActiveId((current) => {
+            if (current !== id) return current
+            if (!next.length) return null
+            return next[Math.min(index, next.length - 1)].id
+          })
+        }
+        return next
+      })
+    },
+    [],
+  )
 
   const toggleDir = React.useCallback(
     (rel) => {
@@ -930,6 +2670,7 @@ function App() {
 
   const activeTab = tabs.find((tab) => tab.id === activeId) || null
   const multi = !!(meta && !meta.single)
+  const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
 
   const onContentClick = (event) => {
     const target = event.target
@@ -1003,9 +2744,9 @@ function App() {
             ? h(EmptyState, { meta })
             : activeTab.kind === 'md'
               ? vendorReady
-                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi })
+                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames })
                 : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
-              : h(CodeView, { key: activeTab.id, tab: activeTab }),
+              : h(CodeView, { key: activeTab.id, tab: activeTab, onOpen: openPath }),
         ),
       ),
     ),

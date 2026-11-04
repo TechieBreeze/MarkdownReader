@@ -17,7 +17,7 @@ function findLineToken(anchor) {
   return null
 }
 
-function enhanceMarkdown(container, mdPath, multi) {
+function enhanceMarkdown(container, mdPath, multi, rootNames) {
   // 1) local images -> raw endpoint
   container.querySelectorAll('img[src]').forEach((img) => {
     const raw = img.getAttribute('src') || ''
@@ -29,7 +29,7 @@ function enhanceMarkdown(container, mdPath, multi) {
     } catch {
       decoded = href
     }
-    const resolved = resolveRel(mdPath, decoded, multi)
+    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
     img.src = `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}`
     img.loading = 'lazy'
     img.alt = img.alt || ''
@@ -51,7 +51,7 @@ function enhanceMarkdown(container, mdPath, multi) {
     } catch {
       decoded = href
     }
-    const resolved = resolveRel(mdPath, decoded, multi)
+    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
     const titlePath = resolved
     if (isCodeFile(resolved)) {
       let line = null
@@ -139,7 +139,7 @@ function enhanceMarkdown(container, mdPath, multi) {
 }
 
 function MarkdownView(props) {
-  const { tab, multi } = props
+  const { tab, multi, rootNames } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
 
@@ -156,7 +156,7 @@ function MarkdownView(props) {
             headerIds: false,
           })
           boxRef.current.innerHTML = html
-          enhanceMarkdown(boxRef.current, tab.path, multi)
+          enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
         } catch (err) {
           setError(String((err && err.message) || err))
@@ -166,7 +166,7 @@ function MarkdownView(props) {
     return () => {
       cancelled = true
     }
-  }, [tab.id, tab.content, tab.path, multi])
+  }, [tab.id, tab.content, tab.path, multi, rootNames])
 
   return h(
     'div',

@@ -52,8 +52,18 @@ function App() {
   const [meta, setMeta] = React.useState(null)
   const [dirs, setDirs] = React.useState({})
   const [expanded, setExpanded] = React.useState(() => new Set(treeStorage.load()))
-  const [tabs, setTabs] = React.useState([])
-  const [activeId, setActiveId] = React.useState(null)
+  const restoredRef = React.useRef(tabsStorage.load())
+  const [tabs, setTabs] = React.useState(() =>
+    restoredRef.current
+      ? restoredRef.current.tabs.map((tab) => ({
+          ...tab,
+          content: null,
+          lang: tab.kind === 'code' ? langForPath(tab.path) : '',
+          error: '',
+        }))
+      : [],
+  )
+  const [activeId, setActiveId] = React.useState(() => (restoredRef.current ? restoredRef.current.activeId : null))
   const [error, setError] = React.useState('')
   const [pathInput, setPathInput] = React.useState('')
   const [rootsOpen, setRootsOpen] = React.useState(false)
@@ -123,6 +133,18 @@ function App() {
       })
   }, [])
 
+  React.useEffect(() => {
+    if (!activeId) return
+    const tab = tabs.find((item) => item.id === activeId)
+    if (!tab || tab.content != null || loadedRef.current.has(tab.id)) return
+    loadedRef.current.add(tab.id)
+    loadTab(tab.id, tab.kind, tab.path)
+  }, [activeId, tabs, loadTab])
+
+  React.useEffect(() => {
+    tabsStorage.save(tabs, activeId)
+  }, [tabs, activeId])
+
   const openPath = React.useCallback(
     (rel, line) => {
       const value = String(rel || '').trim()
@@ -147,14 +169,24 @@ function App() {
     [loadTab],
   )
 
-  const closeTab = React.useCallback((id) => {
-    loadedRef.current.delete(id)
-    setTabs((prev) => {
-      const next = prev.filter((tab) => tab.id !== id)
-      setActiveId((current) => (current === id ? (next.length ? next[next.length - 1].id : null) : current))
-      return next
-    })
-  }, [])
+  const closeTab = React.useCallback(
+    (id) => {
+      loadedRef.current.delete(id)
+      setTabs((prev) => {
+        const index = prev.findIndex((tab) => tab.id === id)
+        const next = prev.filter((tab) => tab.id !== id)
+        if (index >= 0) {
+          setActiveId((current) => {
+            if (current !== id) return current
+            if (!next.length) return null
+            return next[Math.min(index, next.length - 1)].id
+          })
+        }
+        return next
+      })
+    },
+    [],
+  )
 
   const toggleDir = React.useCallback(
     (rel) => {
@@ -203,6 +235,7 @@ function App() {
 
   const activeTab = tabs.find((tab) => tab.id === activeId) || null
   const multi = !!(meta && !meta.single)
+  const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
 
   const onContentClick = (event) => {
     const target = event.target
@@ -276,9 +309,9 @@ function App() {
             ? h(EmptyState, { meta })
             : activeTab.kind === 'md'
               ? vendorReady
-                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi })
+                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames })
                 : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
-              : h(CodeView, { key: activeTab.id, tab: activeTab }),
+              : h(CodeView, { key: activeTab.id, tab: activeTab, onOpen: openPath }),
         ),
       ),
     ),
