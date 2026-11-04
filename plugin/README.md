@@ -73,9 +73,25 @@ plugin_manager install_bundle target=<本目录绝对路径>
 | GET | `/api/search?q=&limit=` | 项目内文本搜索（有界扫描/时间预算） |
 | GET | `/api/files?q=&limit=` | 文件名快速索引（60s 缓存） |
 | POST | `/api/def` | `{path, symbol}` → 定义候选 `{kind, path, line, snippet}` |
+| GET | `/api/sync/status?fetch=1` | 同步状态：仓库/分支/远程/落后领先/脏改动/待拉提交 |
+| POST | `/api/sync/pull` | `git fetch` + `pull --ff-only`（脏工作区拒绝） |
+| GET | `/api/git/repos` | 工作区下的 git 仓库清单（版本树用） |
+| GET | `/api/git/graph?path=&limit=` | 全分支提交图（parents/refs，供手绘 SVG） |
 | GET | `/vendor/*` | marked / highlight.js / mermaid / gitgraph |
 
-所有 git 命令都是只读的（`rev-parse` / `for-each-ref` / `log` / `show`），不 checkout、不改工作区。
+所有 git 命令都是只读的（`rev-parse` / `for-each-ref` / `log` / `show`），不 checkout、不改工作区；
+唯一的写操作是用户点击「拉取更新」时的 `git fetch` + `git pull --ff-only`。
+
+## 同步 / 检查更新
+
+插件的「同步」面板对应独立版的「检查更新」：把插件包所在 git 仓库的远程分支作为更新源。
+
+- 当前配置（`cordis.patch.yml`）：`syncRepo: git@github.com:TechieBreeze/MarkdownReader.git`、
+  `syncBranch: dsh-plugin` —— 本任务的插件分支已推送到
+  <https://github.com/TechieBreeze/MarkdownReader/tree/dsh-plugin>。
+- 工作流：在开发机 `git push origin master:dsh-plugin` → 本机插件面板「检查更新」看到落后 →
+  「拉取更新」fast-forward；Client 刷新页面生效，Host 代码在插件管理器里把 bundle 禁用→启用。
+- 未配置远程时面板会给出 `syncRepo/syncBranch` 或 `git remote add origin` 的操作提示。
 
 ## 开发
 
