@@ -142,8 +142,7 @@ function ensureVendor() {
 
 /* ----------------------------------------------------------------- storage */
 
-const treeStorage = {
-  load() {
+const treeStorage = {  load() {
     try {
       const value = JSON.parse(localStorage.getItem(TREE_KEY) || '[]')
       return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
@@ -161,6 +160,7 @@ const treeStorage = {
 }
 
 const TABS_KEY = 'mdreader.plugin.tabs.v1'
+const SCROLL_KEY = 'mdreader.plugin.scroll.v1'
 
 const tabsStorage = {
   load() {
@@ -188,6 +188,44 @@ const tabsStorage = {
     }
   },
 }
+
+/**
+ * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
+ * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
+ * is authoritative when storage is unavailable.
+ */
+const scrollStorage = (() => {
+  const cache = { value: null, timer: 0 }
+  const read = () => {
+    if (cache.value) return cache.value
+    try {
+      const parsed = JSON.parse(localStorage.getItem(SCROLL_KEY) || '{}')
+      cache.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch {
+      cache.value = {}
+    }
+    return cache.value
+  }
+  const flush = () => {
+    cache.timer = 0
+    try {
+      localStorage.setItem(SCROLL_KEY, JSON.stringify(read()))
+    } catch {
+      // quota / private mode: in-memory copy still works for this page
+    }
+  }
+  return {
+    get(key) {
+      const value = Number(read()[key])
+      return Number.isFinite(value) && value > 0 ? value : 0
+    },
+    set(key, value) {
+      if (!key) return
+      read()[key] = Math.max(0, Math.round(Number(value) || 0))
+      if (!cache.timer) cache.timer = setTimeout(flush, 350)
+    },
+  }
+})()
 
 /* ------------------------------------------------------------------- icons */
 

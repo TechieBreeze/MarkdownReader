@@ -83,6 +83,7 @@ export function createState(config = {}) {
 
   const state = {
     packageDir,
+    config: { ...config },
     _roots: dedupeVirtualNames(roots.map((r) => r.path)),
 
     roots() {
