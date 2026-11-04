@@ -40,7 +40,9 @@ plugin_manager install_bundle target=<本目录绝对路径>
 所以本目录不能删；移动后需重新安装。
 
 - **Client 改动**：`node build.mjs` → 刷新 Harness 页面即可。
-- **Host 改动**（`index.js` / `lib/*`）：需要 **重启 DSH 桌面端**（Node ESM 模块不热替换）。
+- **Host 改动**（`index.js` / `lib/*`）：在插件管理器里把本 bundle **禁用再启用**（`set_bundle` false → true）
+  即会重新加载 Host 模块，最新代码立刻生效（已验证：新增的 `/api/search`、`/api/def`、mermaid 资产白名单
+  在 toggle 后直接可用）。整机重启 DSH 也能达到同样效果，但通常不需要。
 
 ## 配置（cordis.patch.yml）
 
