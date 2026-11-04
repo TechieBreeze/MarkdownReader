@@ -189,7 +189,9 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   }
   if (candidates.length) {
     const unique = [...new Set(candidates.map((item) => item.text))]
-    fetchJson('/api/exists', { path: unique })
+    // `from` lets the Host prefer THIS document's project root when the same
+    // basename exists in several opened projects.
+    fetchJson('/api/exists', { path: unique, from: mdPath })
       .then((payload) => {
         const results = (payload && payload.results) || {}
         for (const item of candidates) {

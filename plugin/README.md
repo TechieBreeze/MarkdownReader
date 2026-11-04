@@ -65,22 +65,39 @@ plugin_manager install_bundle target=<本目录绝对路径>
 | POST | `/api/roots` | `{action:'add'\|'remove', path}` |
 | GET | `/api/list?path=` | 目录列表（隐藏 `.git`/`node_modules` 等）；空 path 多根时返回虚拟顶层 |
 | GET | `/api/markdown?path=` `/api/code?path=` | 文本内容（代码附 `lang`/`lineCount`） |
-| GET | `/api/exists?path=…&path=…` | 批量路径解析（带 basename 搜索兜底） |
-| GET | `/api/raw?path=` | 图片预览 |
+| GET | `/api/exists?path=…&path=…&from=` | 批量路径解析。裸文件名走**文件名索引**（懒建、90s TTL、深度 18、跨根）；`from=<当前文档>` 让同名的文件优先命中文档所在项目 |
+| GET | `/api/raw?path=` | 图片预览 / HTML 预览引用的静态资源（css/js/字体/媒体） |
+| GET | `/api/html?path=` | HTML 预览（注入 `<base>` 指向 `/api/raw`，相对资源可加载） |
 | GET | `/api/git/meta?path=&branch=` | 分支 + 该分支最近 20 条涉及该文件的提交 |
 | GET | `/api/git/diff?path=&commit=` | 解析后的 hunk（old_no/new_no 逐行） |
 | GET | `/api/git/file?path=&commit=` | `git show <commit>:<path>` 完整文件 |
 | GET | `/api/search?q=&limit=` | 项目内文本搜索（有界扫描/时间预算） |
 | GET | `/api/files?q=&limit=` | 文件名快速索引（60s 缓存） |
-| POST | `/api/def` | `{path, symbol}` → 定义候选 `{kind, path, line, snippet}` |
+| POST | `/api/def` | 单目标符号解析，见下 |
 | GET | `/api/sync/status?fetch=1` | 同步状态：仓库/分支/远程/落后领先/脏改动/待拉提交 |
 | POST | `/api/sync/pull` | `git fetch` + `pull --ff-only`（脏工作区拒绝） |
 | GET | `/api/git/repos` | 工作区下的 git 仓库清单（版本树用） |
 | GET | `/api/git/graph?path=&limit=` | 全分支提交图（parents/refs，供手绘 SVG） |
 | GET | `/vendor/*` | marked / highlight.js / mermaid / gitgraph |
 
-所有 git 命令都是只读的（`rev-parse` / `for-each-ref` / `log` / `show`），不 checkout、不改工作区；
+所有 git 命令都是只读的（`rev-parse` / `for-each-ref` / `log` / `show` / `cat-file`），不 checkout、不改工作区；
 唯一的写操作是用户点击「拉取更新」时的 `git fetch` + `git pull --ff-only`。
+
+### `POST /api/def`（v2 单目标解析）
+
+请求：`{path, line, col, name, kind?, text?, branch?, commit?}`
+
+- `line` 1-based、`col` 是该行源码内 1-based 字符列（不含行号列）；`kind` ∈ `method|type|variable|constant|''`
+  （空 = 按 method→type→variable 自动探测，对齐原版）。
+- `text` 是当前视图的完整文本（commit/branch 视图传该版本文本）；缺省时 Host 自己读盘或 `git cat-file`。
+- 成功：`200 {ok:true, file, line, kind, defName, impl:{file,line}|null}`；未找到：`400 {ok:false,error}`
+  （`未找到定义` / `外部/框架方法，无本地定义`）。
+
+实现：`lib/javasym.js`（Java 词法器 + 声明/作用域树：package/imports、类/接口/枚举/record、方法+参数、字段、
+局部变量、枚举常量，含 catch/for-each/lambda/try-with-resources/record 分量/`var`）+ `lib/defs.js`
+（逐条对齐原版 `server.py::_resolve_java_def`：接收者类型跨文件、接收者链 ≤3、继承链、Lombok getter/setter/is、
+Mapper 接口→XML 语句行、接口→impl、链尾 `a.b().c()`；另移植原版 `/api/web/def` 的 JS/TS/Vue 分支与 `.kt` 行级近似）。
+与原版 javalang 版对拍 46/46（`work/work-def-parity.mjs`）、1014 次真实点击 392/392（`work/defs-oracle-sweep.mjs`）。
 
 ## 同步 / 检查更新
 
@@ -112,20 +129,24 @@ node ../work/host-test.mjs            # http://127.0.0.1:8799
 | 能力 | 状态 |
 |---|---|
 | 目录树 / 标签页 / 多工作区根 / 项目前缀 | ✅ |
-| markdown 渲染、代码块高亮、图片 | ✅ |
+| 项目 → 任务（工作台 chip）分层、按项目持久化 | ✅ |
+| markdown 渲染、代码块高亮、图片、mermaid | ✅ |
 | 文档代码链接（`[x](path) \`123\``、`#L123`）→ 打开源码并行内高亮 | ✅ |
-| 文档里裸反引号路径自动变链接（`/api/exists` 批量解析） | ✅ |
-| 代码视图：行号、语法高亮、跳行 | ✅ |
-| 标签页与目录展开记忆（localStorage） | ✅ |
-| 分支/提交 diff（完整文件 + 增删行标记） | 🚧 |
-| 项目内搜索 / 快速打开 / JSON 工具 | 🚧 |
-| mermaid（懒渲染、串行、img 化） | 🚧 |
-| Ctrl+点击跳定义（Java/JS/TS/Vue/SOA） | 部分：Host 已支持，客户端待接 |
-| 工作台任务 chip / git graph / 同步检查更新 / SOA 适配层 | ⏳ 未移植 |
+| 文档里裸反引号路径自动变链接（`/api/exists` 文件名索引 + `from` 项目优先） | ✅ |
+| 仓库视角链接（GitLab/GitHub `/-/blob/<ref>/<path>#L`）→ 本地文件 + 对应 git 版本 | ✅ |
+| 代码视图：行号、语法高亮、跳行、虚拟滚动、常驻高亮、←返回/Alt+← | ✅ |
+| 分支/提交 diff（完整文件 + 增删行标记） | ✅ |
+| 项目内搜索 / 快速打开 / JSON 工具 | ✅ |
+| Ctrl+点击跳定义（Java/Kotlin/JS/TS/Vue，单目标：变量/参数/字段/枚举常量/类型/方法） | ✅（本轮对齐原版） |
+| 路径右键复制（复制路径 / 复制文件名） | ✅（本轮新增） |
+| 同步检查更新 / Git 版本树 | ✅ |
+| SOA（ody）适配层 | ⏳ 未移植（唯一功能缺失） |
+| 性能日志 / 行折叠 / 书签 / 大纲 | ⏳ 未移植 |
 
 ## 已知限制
 
-- 代码定义查找是**有界源码扫描**（不是 javalang AST）：Java 重载/同名方法会返回多个候选；
-  JS/TS 仅解析相对 import。
+- Java 符号解析用自写词法器 + 声明/作用域树（不是 javalang AST）：行为已与原版对拍到 46/46，但**原版解析失败的文件**
+  可能给出比原版更多的结果（超集）；多候选场景仍按原版规则取单目标。
+- Kotlin 只做行级近似解析（原版完全不支持 `.kt` 跳转）。
 - 搜索/快速打开有扫描上限与时间预算，巨型仓库可能截断（返回 `truncated`）。
 - 单文件超过 1500 行的虚拟滚动、mermaid 渲染效果需浏览器实测。

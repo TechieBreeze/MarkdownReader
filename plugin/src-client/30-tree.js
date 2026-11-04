@@ -36,6 +36,7 @@ function TreeNode(props) {
       {
         className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
         ref: rowRef,
+        'data-mdr-path': node.path,
         style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
         title: node.path,
         onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),

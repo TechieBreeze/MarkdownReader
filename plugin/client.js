@@ -138,6 +138,171 @@ function splitHref(href) {
   return { path: text.slice(0, hashAt), hash: text.slice(hashAt + 1) }
 }
 
+/* ------------------------------------------------------- clipboard & toast */
+
+/**
+ * Copy text with the same three-step ladder as the standalone reader:
+ * navigator.clipboard → execCommand → select for a manual Ctrl+C.
+ * `http://` origins have no navigator.clipboard in Chromium, so the fallback is
+ * the normal path when the harness UI is served over plain HTTP.
+ */
+function copyText(value) {
+  const text = String(value == null ? '' : value)
+  if (!text) return Promise.resolve(false)
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => copyTextFallback(text),
+    )
+  }
+  return Promise.resolve(copyTextFallback(text))
+}
+
+function copyTextFallback(text) {
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+    document.body.appendChild(area)
+    area.select()
+    const ok = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+    area.remove()
+    return ok
+  } catch {
+    return false
+  }
+}
+
+let toastTimer = null
+
+/** Transient status line at the bottom of the viewport (replaces the original's #toast). */
+function toast(message, kind) {
+  let node = document.getElementById('mdr-toast')
+  if (!node) {
+    node = document.createElement('div')
+    node.id = 'mdr-toast'
+    document.body.appendChild(node)
+  }
+  node.className = 'mdr-toast show' + (kind === 'err' ? ' err' : '')
+  node.textContent = String(message == null ? '' : message)
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    node.className = 'mdr-toast'
+  }, 2600)
+}
+
+function copyWithToast(value, okMessage) {
+  const text = String(value == null ? '' : value)
+  if (!text) {
+    toast('没有可复制的内容', 'err')
+    return
+  }
+  copyText(text).then((ok) => toast(ok ? okMessage || '已复制到剪贴板' : '复制失败：请手动选中后按 Ctrl+C', ok ? 'ok' : 'err'))
+}
+
+/* ------------------------------------------------- path right-click menu */
+
+/**
+ * Right-click a path (code modal head / code tab head / html tab head / image
+ * name / search hit / tree row / tab) → copy the path or the file name.
+ *
+ * The standalone reader only covered the four path labels; the tree row and the
+ * tab strip are included here because they are the same affordance shape and a
+ * file tree is the first place a path gets copied from.
+ */
+const PATH_MENU_SELECTOR = [
+  '.mdr-code-path',
+  '.mdr-cmodal-path',
+  '.mdr-html-path',
+  '.mdr-image-name',
+  '.mdr-search-path',
+  '.mdr-tr',
+  '.mdr-tab',
+].join(',')
+
+let pathMenu = null
+
+function pathMenuClose() {
+  if (pathMenu && pathMenu.parentNode) pathMenu.parentNode.removeChild(pathMenu)
+  pathMenu = null
+  document.removeEventListener('mousedown', pathMenuOnDocMouseDown, true)
+  document.removeEventListener('keydown', pathMenuOnKey, true)
+}
+
+function pathMenuOnDocMouseDown(event) {
+  if (pathMenu && pathMenu.contains(event.target)) return
+  pathMenuClose()
+}
+
+function pathMenuOnKey(event) {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  pathMenuClose()
+}
+
+function pathMenuOpen(x, y, items) {
+  pathMenuClose()
+  const menu = document.createElement('div')
+  menu.className = 'mdr-ctx'
+  menu.setAttribute('role', 'menu')
+  for (const item of items) {
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.className = 'mdr-ctx-item'
+    button.textContent = item.label
+    button.title = item.title || item.label
+    button.addEventListener('click', (event) => {
+      event.stopPropagation()
+      pathMenuClose()
+      item.action()
+    })
+    menu.appendChild(button)
+  }
+  document.body.appendChild(menu)
+  const rect = menu.getBoundingClientRect()
+  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 8))}px`
+  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 8))}px`
+  pathMenu = menu
+  // Defer so the very right-click that opened the menu cannot close it.
+  setTimeout(() => {
+    document.addEventListener('mousedown', pathMenuOnDocMouseDown, true)
+    document.addEventListener('keydown', pathMenuOnKey, true)
+  }, 0)
+}
+
+/** Path shown by an element: explicit attribute → title → text. */
+function pathOfElement(element) {
+  if (!element) return ''
+  const explicit = element.getAttribute('data-mdr-path') || element.getAttribute('data-path')
+  if (explicit) return explicit
+  const title = (element.getAttribute('title') || '').trim()
+  if (title) return title.split('\n')[0].replace(/:\d+$/, '')
+  return (element.textContent || '').trim()
+}
+
+function pathMenuTarget(event) {
+  if (!event.target || !event.target.closest) return null
+  const hit = event.target.closest(PATH_MENU_SELECTOR)
+  if (!hit) return null
+  const path = pathOfElement(hit)
+  if (!path || /\s/.test(path)) return null
+  return path
+}
+
+if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
+  document.addEventListener('contextmenu', (event) => {
+    const path = pathMenuTarget(event)
+    if (!path) return
+    event.preventDefault()
+    const fileName = path.split(/[\\/]/).pop()
+    pathMenuOpen(event.clientX, event.clientY, [
+      { label: '复制路径', title: path, action: () => copyWithToast(path, '已复制路径') },
+      { label: '复制文件名', title: fileName, action: () => copyWithToast(fileName, '已复制文件名') },
+    ])
+  })
+}
+
 /* ------------------------------------------------------------------ vendor */
 
 let vendorPromise = null
@@ -466,6 +631,12 @@ const APP_CSS = `
 .mdr-root .hljs-title{color:#dcdcaa}
 .mdr-def-busy{cursor:progress}
 .mdr-def-snippet{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-ctx{position:fixed;z-index:2147483000;min-width:148px;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.mdr-ctx-item{display:block;width:100%;text-align:left;padding:6px 10px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
+.mdr-ctx-item:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-toast{position:fixed;left:50%;bottom:38px;z-index:2147483000;transform:translateX(-50%) translateY(8px);padding:7px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.mdr-toast.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
 `
 
 // ---- 10-markdown.js ----
@@ -660,7 +831,9 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   }
   if (candidates.length) {
     const unique = [...new Set(candidates.map((item) => item.text))]
-    fetchJson('/api/exists', { path: unique })
+    // `from` lets the Host prefer THIS document's project root when the same
+    // basename exists in several opened projects.
+    fetchJson('/api/exists', { path: unique, from: mdPath })
       .then((payload) => {
         const results = (payload && payload.results) || {}
         for (const item of candidates) {
@@ -1294,7 +1467,7 @@ function enhanceMermaid(container, scroller) {
 }
 
 // ---- 15-git.js ----
-﻿/**
+/**
  * Code-tab git viewer (owned by the git slice): branch/commit selection, the
  * commit-version diff view, and the per-file view state / metadata caches.
  *
@@ -1709,15 +1882,20 @@ const GIT_CSS = `
 .mdr-code .mdr-cl.hit .mdr-cl-no{background:rgba(255,214,102,.22);color:#ffd33d}
 .mdr-code .mdr-cl.mdr-git-add.hit,.mdr-code .mdr-cl.mdr-git-del.hit,.mdr-code .mdr-cl.mdr-git-ctx.hit{box-shadow:inset 3px 0 0 #ffd33d}
 /* Ctrl+点击可跳转 token 的 hover 提示：仅 Java/Kotlin 视图挂 .jump-hover 时生效
-   （与原版一致：下划线 + 轻微变亮 + pointer）。删除行不给提示——它的行号是旧文件
-   的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
+   （与原版一致：下划线 + 轻微变亮 + pointer）。覆盖所有会产生跳转的 token class：
+   function_（方法）/ hljs-type、class_（类型；泛型头与泛型实参也是 hljs-type）/
+   hljs-variable（变量、字段、参数名）/ hljs-constant（枚举值、大写常量）+
+   hljs-params 里的复合 class（参数列表整段是 hljs-params，签名里的类型/变量/常量
+   都带这个前缀，复合选择器优先级更高才能拿到类型色/下划线）。删除行不给提示——
+   它的行号是旧文件的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
 .mdr-code .mdr-code-body.jump-hover span.hljs-title.function_:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-variable:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-type:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-title.class_:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-constant:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-type:hover,
-.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-variable:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-variable:hover,
+.mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-constant:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
 .mdr-code .mdr-code-body.jump-hover .mdr-cl.mdr-git-del span:hover{text-decoration:none;cursor:default;filter:none}
 `
 
@@ -2537,31 +2715,95 @@ function CodeGitInfo(props) {
 /** Tab id -> `${branch}\0${commit}` already applied (so remount does not re-apply). */
 const gitTabViewApplied = new Map()
 
+/** 「实现: XxxImpl」entry bar CSS (the original's _jumpDefbar), code-tab scoped. */
+const DEFBAR_CSS = `
+.mdr-code .mdr-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:3px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mdr-code .mdr-defbar-lbl{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}
+.mdr-code .mdr-defbar-btn{padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.mdr-code .mdr-defbar-btn:hover{border-color:var(--dsw-alias-brand-primary)}
+`
+
+/** Does the git view recorded on an impl entry bar still match what is rendered? */
+function defBarViewMatches(defView, view) {
+  if (!defView) return !view.commit && view.branchContent == null
+  if (defView.commit) return defView.commit === view.commit
+  if (defView.branch) return defView.branch === view.branch && !view.commit && view.branchContent != null
+  return !view.commit && view.branchContent == null
+}
+
 function CodeView(props) {
   const { tab, onOpen, onBack } = props
   const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
   const workspaceContent = String(tab.content == null ? '' : tab.content)
   const viewRef = React.useRef(null)
-  const [defState, setDefState] = React.useState(null)
 
-  // Ctrl/Cmd+click anywhere in the code body looks the symbol up and opens the
-  // chooser (or the only candidate directly).
+  const { rows, diffMode } = useCodeRows(view, workspaceContent)
+  // Text + git version that the jump request must carry: exactly what is
+  // rendered (commit version in a diff view, branch version in a branch view,
+  // workspace content otherwise).
+  const defText = React.useMemo(
+    () =>
+      diffMode && Array.isArray(view.fileLines)
+        ? view.fileLines.join('\n')
+        : view.branchContent != null
+          ? String(view.branchContent)
+          : workspaceContent,
+    [diffMode, view.fileLines, view.branchContent, workspaceContent],
+  )
+  // A commit only counts as the rendered version when its diff rows are shown.
+  const defView = view.commit && diffMode ? { commit: view.commit } : view.branchContent != null ? { branch: view.branch } : null
+  const defSourceRef = React.useRef({})
+  defSourceRef.current = {
+    path: tab.path,
+    text: defText,
+    branch: defView && defView.branch ? defView.branch : '',
+    commit: defView && defView.commit ? defView.commit : '',
+    line: tab.line || 0,
+  }
+
+  // Ctrl/Cmd+click → one definition, then jump (same file → line highlight;
+  // another file → open it; no candidate chooser). getSource is a ref read so the
+  // listener stays bound while branch/commit/text change under it.
   React.useEffect(() => {
     const root = viewRef.current
     if (!root || typeof onOpen !== 'function') return undefined
-    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
-      if (!candidates.length) {
-        setDefState({ symbol, candidates: [], error: error || '' })
-        return
-      }
-      if (candidates.length === 1) {
-        onOpen(candidates[0].path, candidates[0].line)
-        return
-      }
-      setDefState({ symbol, candidates, error: '' })
-    })
-    return dispose
+    return setupDefinitionClick(
+      root,
+      () => defSourceRef.current,
+      (result, source, hit) => {
+        const target = String(result.file || '').replace(/\\/g, '/')
+        if (!target) return
+        const line = Math.max(0, Number(result.line) || 0)
+        const opts = { kind: 'code' }
+        if (source.commit) opts.commit = source.commit
+        else if (source.branch) opts.branch = source.branch
+        // Push the clicked position onto the nav history first (the original's
+        // ctrlJump pushNav(src.path, lineNo) before opening the target), so the
+        // ← 返回 button / Alt+← return to the token that was clicked.
+        opts.from = {
+          path: source.path,
+          line: Math.max(0, Number(hit && hit.line) || 0),
+          branch: source.branch || '',
+          commit: source.commit || '',
+        }
+        // Interface hit → carry the 「实现: XxxImpl」entry bar onto the target tab
+        // (the original's openTargetTab/_jumpDefbar behaviour).
+        if (result.impl && result.impl.file) {
+          const implFile = String(result.impl.file)
+          opts.defBar = {
+            impl: { file: implFile, line: Math.max(0, Number(result.impl.line) || 0) },
+            label: implFile.split('/').pop().replace(/\.java$/, '') || implFile,
+            view: source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null,
+          }
+        } else {
+          opts.defBar = null
+        }
+        // Def results always open in the CODE view, even when the target file is
+        // .html/.vue/... (linkKindFor must not be applied to definitions).
+        onOpen(target, line, opts)
+      },
+    )
   }, [tab.id, tab.path, onOpen])
 
   // git-adapted code link: tab.branch / tab.commit must be applied to this tab's
@@ -2576,7 +2818,6 @@ function CodeView(props) {
     void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
   }, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
 
-  const { rows, diffMode } = useCodeRows(view, workspaceContent)
   const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
     view.branchContent == null ? 'ws' : 'branch'
   }`
@@ -2586,10 +2827,13 @@ function CodeView(props) {
   const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
   const contentReady = tab.content != null || view.branchContent != null
 
+  const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null
+  const showDefBar = !!defBar && defBarViewMatches(defBar.view, view)
+
   return h(
     'div',
     { className: 'mdr-code' },
-    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS } }),
+    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + DEFBAR_CSS } }),
     h(
       'div',
       { className: 'mdr-code-head' },
@@ -2606,6 +2850,24 @@ function CodeView(props) {
       view.git ? h(GitBar, { view, actions }) : null,
       h('span', { className: 'mdr-tip', title: 'Ctrl/Cmd + 点击符号跳转到定义' }, `${lang || 'text'} · ${rows.length} 行 · Ctrl+点击跳定义`),
     ),
+    showDefBar
+      ? h(
+          'div',
+          { className: 'mdr-defbar' },
+          h('span', { className: 'mdr-defbar-lbl' }, '实现:'),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'mdr-defbar-btn',
+              title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+              onClick: () =>
+                onOpen(defBar.impl.file, defBar.impl.line, { kind: 'code', ...(defBar.view || {}), defBar: null }),
+            },
+            defBar.label,
+          ),
+        )
+      : null,
     showInfo ? h(CodeGitInfo, { view }) : null,
     h(
       'div',
@@ -2624,169 +2886,312 @@ function CodeView(props) {
         freshOpen: tab.content == null,
       }),
     ),
-    defState
-      ? h(DefinitionChooser, {
-          state: defState,
-          onPick: (candidate) => {
-            onOpen(candidate.path, candidate.line)
-            setDefState(null)
-          },
-          onClose: () => setDefState(null),
-        })
-      : null,
   )
 }
 
 // ---- 22-defs.js ----
 /**
- * Ctrl+click symbol lookup for the code view: extracts the symbol under the
- * pointer, asks the Host for declaration candidates and shows a chooser when
- * there is more than one.
+ * Ctrl+click "jump to definition" for the code views (code tab + code modal).
+ *
+ * Replaces the old candidate-list chooser with the original's single-target flow:
+ * resolve one definition on the Host and navigate straight to it (same file →
+ * scroll + persistent highlight; another file → open it), mirroring the
+ * standalone reader's `ctrlTokenInfo` + `ctrlJump` + `openTarget`.
+ *
+ * Frozen Host contract (round 7): POST {ROUTE}/api/def
+ *   request  { path, line, col, name, kind, text, branch, commit }
+ *            line/col are 1-based (col inside the line's CODE TEXT)
+ *            text = the full text currently rendered (workspace / branch / commit)
+ *            branch/commit = the git version currently rendered (null otherwise)
+ *   success  { ok: true, file, line, kind, defName, impl: {file,line}|null }
+ *   failure  HTTP 400 { ok: false, error: "..." }  → postJson throws → toast(error)
+ *
+ * kind comes from the highlight.js token class exactly like the original:
+ *   function_ → method, hljs-type / class_ → type, hljs-constant → constant
+ *   (Java/Kotlin), hljs-variable → variable. Identifiers with no hljs span at all
+ *   (common in JS/TS/Vue and for a couple of Java shapes) are resolved column-wise
+ *   and sent as variable, so web files keep jumping too.
+ *
+ * Deleted rows of the commit-diff view (`.mdr-git-del`) stay non-jumpable: their
+ * line number is the OLD file's and the rendered text is the new version.
  */
 
-function symbolAtPoint(rootEl, event) {
-  let node = null
-  let offset = 0
-  if (document.caretPositionFromPoint) {
-    const position = document.caretPositionFromPoint(event.clientX, event.clientY)
-    if (position) {
-      node = position.offsetNode
-      offset = position.offset
-    }
-  } else if (document.caretRangeFromPoint) {
-    const range = document.caretRangeFromPoint(event.clientX, event.clientY)
-    if (range) {
-      node = range.startContainer
-      offset = range.startOffset
-    }
+/** The rendered row prefixes every code line with a 2-char diff/gutter marker. */
+const DEF_GUTTER_LEN = 2
+const DEF_IDENT_RE = /^[A-Za-z_$][\w$]*$/
+const DEF_WEB_PATH_RE = /\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts|vue)$/i
+const DEF_JAVA_LIKE_PATH_RE = /\.(?:java|kt|kts)$/i
+/** Web grammars have no Java/Kotlin post-pass: these hljs token classes were
+    treated as variables by the original web resolver (strings excluded). */
+const DEF_WEB_VARIABLE_CLASS_RE =
+  /^hljs-(?:keyword|title|attr|property|function|params|literal|number|regexp|built_in|symbol|selector|prompt|section|meta|subst|doctag|type|class|name|variable)(?:$|\s)/
+
+function defIsWebPath(rel) {
+  return DEF_WEB_PATH_RE.test(String(rel || ''))
+}
+
+function defIsJavaLikePath(rel) {
+  return DEF_JAVA_LIKE_PATH_RE.test(String(rel || ''))
+}
+
+/** The Host has a local-definition resolver only for Java/Kotlin and web sources. */
+function canJumpInFile(rel) {
+  return defIsJavaLikePath(rel) || defIsWebPath(rel)
+}
+
+/** kind for a clicked token from its hljs class list; '' = not a jump target. */
+function defKindFromClass(className, rel) {
+  const cls = String(className || '')
+  if (!cls) return ''
+  if (cls.includes('function_')) return 'method'
+  if (cls.includes('hljs-type') || cls.includes('class_')) return 'type'
+  if (cls.includes('hljs-constant')) return defIsJavaLikePath(rel) ? 'constant' : 'variable'
+  if (cls.includes('hljs-variable')) return 'variable'
+  if (defIsWebPath(rel) && !cls.includes('hljs-string') && DEF_WEB_VARIABLE_CLASS_RE.test(cls)) return 'variable'
+  return ''
+}
+
+/* ------------------------------------------------------------- DOM helpers */
+
+function defParentElement(node) {
+  if (!node) return null
+  return node.nodeType === 3 ? node.parentElement || null : node
+}
+
+function defElementClosest(node, selector) {
+  const element = defParentElement(node)
+  if (!element) return null
+  if (typeof element.closest === 'function') return element.closest(selector)
+  // Minimal fallback (harnesses): walk parents and compare a single class name.
+  const className = selector.startsWith('.') ? selector.slice(1) : ''
+  let current = element
+  while (current) {
+    if (className && current.classList && current.classList.contains && current.classList.contains(className)) return current
+    current = current.parentElement || null
   }
-  if (!node || node.nodeType !== 3) {
-    const element = event.target && event.target.closest ? event.target.closest('.mdr-cl-code') : null
-    if (!element) return null
-    const text = element.textContent || ''
-    const match = /[A-Za-z_$][\w$]*/.exec(text)
-    return match ? { symbol: match[0], lineText: text } : null
-  }
-  const text = node.textContent || ''
-  const isWord = (ch) => /[A-Za-z0-9_$]/.test(ch)
-  let start = offset
-  let end = offset
-  while (start > 0 && isWord(text[start - 1])) start -= 1
-  while (end < text.length && isWord(text[end])) end += 1
-  const symbol = text.slice(start, end)
-  if (!/^[A-Za-z_$][\w$]*$/.test(symbol)) return null
-  const row = node.parentElement && node.parentElement.closest ? node.parentElement.closest('.mdr-cl') : null
-  const lineText = row ? (row.querySelector('.mdr-cl-code') || {}).textContent || '' : ''
-  return { symbol, lineText: String(lineText).trim().slice(0, 300) }
+  return null
+}
+
+/** The `.mdr-cl` row containing `node`, but only when it belongs to this view root. */
+function defRowOf(node, rootEl) {
+  const row = defElementClosest(node, '.mdr-cl')
+  if (!row) return null
+  if (rootEl && typeof rootEl.contains === 'function' && !rootEl.contains(row)) return null
+  if (rootEl && typeof rootEl.contains !== 'function') return null
+  return row
+}
+
+function defLineOfRow(row) {
+  if (!row) return 0
+  let raw = ''
+  if (row.dataset && row.dataset.line != null) raw = String(row.dataset.line)
+  else if (typeof row.getAttribute === 'function') raw = String(row.getAttribute('data-line') || '')
+  const line = parseInt(raw, 10)
+  return Number.isFinite(line) ? line : 0
 }
 
 /**
- * Attach the Ctrl/Cmd+click listener. `onResult(candidates, symbol, clicked)`
- * is called with a non-empty candidate list.
- *
- * Deleted rows of the commit-diff view (`.mdr-git-del`) are NOT jumpable: their
- * `data-line` is the OLD file's line number and the rendered text is the new
- * version, so a jump would land in the wrong place (the original disables the
- * affordance and the click for these rows too).
+ * 1-based column of (node, offset) inside the row's code text. The sticky
+ * line-number column is not part of `.mdr-cl-code`; the 2-char diff/gutter
+ * marker is stripped so the column matches the real source line.
  */
-function setupDefinitionClick(rootEl, tab, onResult) {
-  if (!rootEl) return () => {}
+function defCodeColumn(row, node, offset) {
+  if (!row || typeof row.querySelector !== 'function') return 0
+  const codeEl = row.querySelector('.mdr-cl-code')
+  if (!codeEl) return 0
+  let total = 0
+  let found = -1
+  let stop = false
+  const walk = (parent) => {
+    for (const child of parent.childNodes || []) {
+      if (stop) return
+      if (child === node) {
+        found = child.nodeType === 3 ? total + Math.max(0, Number(offset) || 0) : total
+        stop = true
+        return
+      }
+      if (child.nodeType === 3) total += (child.textContent || '').length
+      else if (child.nodeType === 1) {
+        if (child.contains && child.contains(node)) {
+          walk(child)
+          return
+        }
+        total += (child.textContent || '').length
+      }
+    }
+  }
+  walk(codeEl)
+  if (found < 0) return 0
+  return Math.max(1, found + 1 - DEF_GUTTER_LEN)
+}
+
+/** Word under (textNode, offset): identifier plus its start offset in that node. */
+function defWordFromTextNode(node, offset) {
+  if (!node || node.nodeType !== 3) return null
+  const text = String(node.textContent || '')
+  const isWord = (ch) => /[A-Za-z0-9_$]/.test(ch)
+  let at = Math.max(0, Math.min(Number(offset) || 0, text.length))
+  // A click exactly at the end of a word still means that word (caret offset).
+  if ((at >= text.length || !isWord(text[at])) && at > 0 && isWord(text[at - 1])) at -= 1
+  let start = at
+  let end = at
+  while (start > 0 && isWord(text[start - 1])) start -= 1
+  while (end < text.length && isWord(text[end])) end += 1
+  const name = text.slice(start, end)
+  if (!DEF_IDENT_RE.test(name)) return null
+  return { name, start }
+}
+
+function defCaretAt(event) {
+  if (typeof document === 'undefined') return null
+  try {
+    if (typeof document.caretPositionFromPoint === 'function') {
+      const position = document.caretPositionFromPoint(event.clientX, event.clientY)
+      if (position && position.offsetNode) return { node: position.offsetNode, offset: position.offset || 0 }
+    }
+    if (typeof document.caretRangeFromPoint === 'function') {
+      const range = document.caretRangeFromPoint(event.clientX, event.clientY)
+      if (range && range.startContainer) return { node: range.startContainer, offset: range.startOffset || 0 }
+    }
+  } catch {
+    // caret lookup is best-effort; fall back to the event target span
+  }
+  return null
+}
+
+/**
+ * Resolve the token under a Ctrl+click. Returns
+ * { name, kind, line, col } or null when the click is not on a resolvable token.
+ */
+function definitionHitAt(rootEl, event, relPath) {
+  const target = event && event.target
+  if (!target) return null
+  // Deleted diff rows are old-file lines rendered inside the new file: no jump.
+  // (Direct closest() here keeps the fast path obvious; the helper below covers
+  // nodes without Element.closest in harnesses.)
+  if (target.closest && target.closest('.mdr-git-del')) return null
+  if (defElementClosest(target, '.mdr-git-del')) return null
+  const row = defRowOf(target, rootEl)
+  if (!row) return null
+  const line = defLineOfRow(row)
+  if (!line) return null
+  const codeEl = defElementClosest(target, '.mdr-cl-code')
+  if (!codeEl) return null // clicks on the line-number column do nothing
+
+  // 1) Caret-based word extraction: exact under the pointer, works for tokens
+  //    without any hljs span (JS/TS/Vue plain identifiers) as well.
+  const caret = defCaretAt(event)
+  if (caret && caret.node && caret.node.nodeType === 3) {
+    const word = defWordFromTextNode(caret.node, caret.offset)
+    if (word) {
+      const span = defElementClosest(caret.node, 'span')
+      // `.mdr-cl-code` itself is a span: only an inner token span counts.
+      const tokenSpan = span && span !== codeEl && codeEl.contains(span) ? span : null
+      const kind = tokenSpan ? defKindFromClass(tokenSpan.className, relPath) : 'variable'
+      if (kind) {
+        const col = defCodeColumn(row, caret.node, word.start)
+        if (col > 0) return { name: word.name, kind, line, col }
+      }
+      // A non-jumpable token (keyword/punctuation/string/comment) gets no request.
+      if (tokenSpan) return null
+    }
+  }
+
+  // 2) Fallback when the caret API is unavailable: use the hljs span itself.
+  const span = defElementClosest(target, 'span')
+  if (!span || span === codeEl || !codeEl.contains(span)) return null
+  const kind = defKindFromClass(span.className, relPath)
+  if (!kind) return null
+  const name = String(span.textContent || '').trim()
+  if (!DEF_IDENT_RE.test(name)) return null
+  const col = defCodeColumn(row, span, 0)
+  if (!col) return null
+  return { name, kind, line, col }
+}
+
+/* --------------------------------------------------------- Host contract */
+
+/** POST /api/def body from the clicked token + the current view source. */
+function definitionRequestBody(source, hit) {
+  const path = String((source && source.path) || '')
+  const line = Math.max(0, Number(hit && hit.line) || 0)
+  const col = Math.max(0, Number(hit && hit.col) || 0)
+  const name = String((hit && hit.name) || '')
+  if (!path || !line || !col || !name) return null
+  return {
+    path,
+    line,
+    col,
+    name,
+    kind: (hit && hit.kind) || 'variable',
+    text: String(source && source.text != null ? source.text : ''),
+    branch: (source && source.branch) || null,
+    commit: (source && source.commit) || null,
+  }
+}
+
+/** Ask the Host for one definition; failures surface as the Host's own message. */
+async function requestDefinition(source, hit) {
+  const body = definitionRequestBody(source, hit)
+  if (!body) return null
+  try {
+    const payload = await postJson('/api/def', body)
+    // The oracle-style resolver may report a failure in the body with HTTP 200
+    // (e.g. "外部/框架方法，无本地定义"); the plan's contract uses 400 (postJson
+    // throws instead). Surface the message either way.
+    if (payload && payload.error) {
+      toast(String(payload.error), 'err')
+      return null
+    }
+    if (!payload || !payload.file || !(Number(payload.line) > 0)) {
+      toast('未找到定义', 'err')
+      return null
+    }
+    return payload
+  } catch (err) {
+    toast(String((err && err.message) || err), 'err')
+    return null
+  }
+}
+
+/**
+ * Attach the Ctrl/Cmd+click listener. `getSource()` is called at click time so
+ * the request always carries the text / branch / commit currently rendered (the
+ * view can switch branch or commit without remounting). `onJump(result, source,
+ * hit)` navigates: same file → line jump, another file → open it (the caller
+ * decides modal in-place vs new tab); `hit` carries the clicked line so the
+ * caller can push it onto the navigation history like the original ctrlJump.
+ * Returns a dispose function.
+ */
+function setupDefinitionClick(rootEl, getSource, onJump) {
+  if (!rootEl || typeof getSource !== 'function' || typeof onJump !== 'function') return () => {}
   let busy = false
   const handler = async (event) => {
-    if (!(event.ctrlKey || event.metaKey)) return
-    const target = event.target
-    if (target && target.closest && target.closest('.mdr-git-del')) return
-    const hit = symbolAtPoint(rootEl, event)
-    if (!hit || hit.symbol.length < 2) return
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+    let source = null
+    try {
+      source = getSource() || null
+    } catch {
+      source = null
+    }
+    if (!source || !source.path || !canJumpInFile(source.path)) return
+    const hit = definitionHitAt(rootEl, event, source.path)
+    if (!hit) return
     event.preventDefault()
     event.stopPropagation()
     if (busy) return
     busy = true
-    rootEl.classList.add('mdr-def-busy')
+    if (rootEl.classList && rootEl.classList.add) rootEl.classList.add('mdr-def-busy')
     try {
-      const payload = await postJson('/api/def', {
-        path: tab.path,
-        symbol: hit.symbol,
-        context: hit.lineText,
-      })
-      const candidates = (payload && payload.candidates) || []
-      if (candidates.length) onResult(candidates, hit.symbol)
-      else onResult([], hit.symbol)
-    } catch (err) {
-      onResult([], hit.symbol, String((err && err.message) || err))
+      const result = await requestDefinition(source, hit)
+      if (result) onJump(result, source, hit)
     } finally {
       busy = false
-      rootEl.classList.remove('mdr-def-busy')
+      if (rootEl.classList && rootEl.classList.remove) rootEl.classList.remove('mdr-def-busy')
     }
   }
   rootEl.addEventListener('click', handler)
   return () => rootEl.removeEventListener('click', handler)
-}
-
-const KIND_LABELS = { type: '类型', method: '方法', field: '字段', function: '函数', export: '导出', class: '类' }
-
-function DefinitionChooser(props) {
-  const { state, onPick, onClose } = props
-  const candidates = (state && state.candidates) || []
-  const [active, setActive] = React.useState(0)
-  React.useEffect(() => {
-    const onKey = (event) => {
-      if (event.key === 'Escape') onClose()
-      else if (event.key === 'ArrowDown') {
-        event.preventDefault()
-        setActive((current) => Math.min(candidates.length - 1, current + 1))
-      } else if (event.key === 'ArrowUp') {
-        event.preventDefault()
-        setActive((current) => Math.max(0, current - 1))
-      } else if (event.key === 'Enter' && candidates[active]) {
-        event.preventDefault()
-        onPick(candidates[active])
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [candidates, active, onPick, onClose])
-
-  const missing = state && state.error ? state.error : ''
-  return h(
-    'div',
-    { className: 'mdr-overlay', onClick: onClose },
-    h(
-      'div',
-      { className: 'mdr-panel', style: { width: 'min(820px,90vw)' }, onClick: (event) => event.stopPropagation() },
-      h(
-        'div',
-        { className: 'mdr-panel-head' },
-        h(Icons.code, { size: 14 }),
-        h('span', null, `定义 · ${state ? state.symbol : ''}`),
-        h('span', { className: 'mdr-tip' }, missing ? missing : `${candidates.length} 个候选`),
-        h('span', { className: 'mdr-spacer' }),
-        h('span', { className: 'mdr-btn', onClick: onClose }, '✕'),
-      ),
-      h(
-        'div',
-        { className: 'mdr-panel-body' },
-        candidates.length === 0
-          ? h('div', { className: 'mdr-tip', style: { padding: '10px 12px' } }, missing || '未找到定义')
-          : candidates.map((candidate, index) =>
-              h(
-                'div',
-                {
-                  key: `${candidate.path}:${candidate.line}:${index}`,
-                  className: 'mdr-item-row' + (index === active ? ' on' : ''),
-                  onMouseEnter: () => setActive(index),
-                  onClick: () => onPick(candidate),
-                  title: `${candidate.path}:${candidate.line}`,
-                },
-                h('span', { className: 'mdr-badge' }, KIND_LABELS[candidate.kind] || candidate.kind),
-                h('span', { className: 'mdr-item-main' }, candidate.path),
-                h('span', { className: 'mdr-tip' }, `:${candidate.line}`),
-                h('span', { className: 'mdr-item-sub mdr-def-snippet', style: { marginLeft: 8 } }, candidate.snippet || ''),
-              ),
-            ),
-      ),
-    ),
-  )
 }
 
 // ---- 24-modal.js ----
@@ -2809,10 +3214,12 @@ function DefinitionChooser(props) {
  *     with its own view key) and the ← 返回 / 开成标签页 / ✕ buttons;
  *   - request.branch / request.commit (git-adapted link): that branch/commit view
  *     is applied inside the modal and 开成标签页 carries it to the new tab;
- *   - Ctrl/Cmd+click navigates IN PLACE with a back stack (single candidate auto
- *     navigates, several reuse DefinitionChooser, none keeps the view + a note);
+ *   - Ctrl/Cmd+click jumps straight to the ONE definition resolved by /api/def
+ *     (no candidate list): same file → in-place line jump, another file →
+ *     in-place navigation that keeps the ← 返回 stack (same branch/commit view),
+ *     and an interface hit shows the 「实现: XxxImpl」entry bar;
  *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
- *     not; Esc with the definition chooser open closes only the chooser.
+ *     not.
  */
 
 const CMODAL_CSS = `
@@ -2827,6 +3234,8 @@ const CMODAL_CSS = `
 .mdr-cmodal-body{flex:1;min-height:0;display:flex;flex-direction:column}
 .mdr-cmodal-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
 .mdr-cmodal-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(226,192,141,.08);color:#e2c08d;font-size:12px;white-space:pre-wrap;word-break:break-all}
+.mdr-cmodal-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:4px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mdr-cmodal-defbar .mdr-cmodal-btn{color:var(--dsw-alias-brand-primary)}
 `
 
 /** Read the current scroll offset of the modal's code viewport (for the back stack). */
@@ -2861,17 +3270,17 @@ function CodeModalInner(props) {
   const [history, setHistory] = React.useState([])
   const [restoreScroll, setRestoreScroll] = React.useState(null)
   const [note, setNote] = React.useState('')
-  const [chooser, setChooser] = React.useState(null)
+  const [defBar, setDefBar] = React.useState(null)
   const cardRef = React.useRef(null)
   const seqRef = React.useRef(0)
   const handledReqRef = React.useRef('')
   const pendingGitRef = React.useRef('')
+  const pendingNavViewRef = React.useRef(null)
+  const currentGitRef = React.useRef(null)
   const currentRef = React.useRef({ path: requestPath, line: requestLine })
-  const chooserRef = React.useRef(null)
-  chooserRef.current = chooser
   const maskDownRef = React.useRef(false)
 
-  const loadFile = React.useCallback((path, line) => {
+  const loadFile = React.useCallback((path, line, gitView) => {
     const seq = (seqRef.current += 1)
     const targetLine = Math.max(0, Number(line) || 0)
     setView({
@@ -2883,6 +3292,17 @@ function CodeModalInner(props) {
       loading: true,
       error: '',
     })
+    const applyViewFile = (content, realPath) => {
+      setView({
+        path: realPath,
+        line: targetLine,
+        content: String(content == null ? '' : content),
+        lang: langForPath(realPath) || langForPath(path),
+        lineCount: 0,
+        loading: false,
+        error: '',
+      })
+    }
     fetchJson('/api/code', { path })
       .then((payload) => {
         if (seqRef.current !== seq) return
@@ -2899,8 +3319,25 @@ function CodeModalInner(props) {
       })
       .catch((err) => {
         if (seqRef.current !== seq) return
-        const message = String((err && err.message) || err)
-        setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+        // Jump targets can exist only in the branch/commit version (workspace
+        // file removed/renamed): fall back to the git view file like the original
+        // fetchJumpFiles did.
+        const rev = gitView && (gitView.commit || gitView.branch)
+        if (!rev) {
+          const message = String((err && err.message) || err)
+          setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+          return
+        }
+        fetchJson('/api/git/file', { path, commit: rev })
+          .then((payload) => {
+            if (seqRef.current !== seq) return
+            applyViewFile(payload && payload.content, path)
+          })
+          .catch(() => {
+            if (seqRef.current !== seq) return
+            const message = String((err && err.message) || err)
+            setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+          })
       })
   }, [])
 
@@ -2911,33 +3348,48 @@ function CodeModalInner(props) {
     setHistory([])
     setRestoreScroll(null)
     setNote('')
-    setChooser(null)
+    setDefBar(null)
+    pendingGitRef.current = ''
     // The git-adapted request view is applied once, when THIS request's file
     // text is in. In-place Ctrl+click navigation later must not re-apply it.
     pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
-    loadFile(requestPath, requestLine)
+    loadFile(
+      requestPath,
+      requestLine,
+      requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
+    )
   }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
   const navigateInPlace = React.useCallback(
-    (path, line) => {
-      const nextPath = String(path || '')
+    (path, line, gitView) => {
+      const nextPath = String(path || '').replace(/\\/g, '/')
       const nextLine = Math.max(0, Number(line) || 0)
       if (!nextPath) return
       const current = currentRef.current
       if (nextPath === current.path && nextLine === current.line) return
-      const snapshot = { path: current.path, line: current.line, scrollTop: readModalScroll(cardRef.current) }
+      const snapshot = {
+        path: current.path,
+        line: current.line,
+        scrollTop: readModalScroll(cardRef.current),
+        // Remember which git version this position was showing: ← 返回 must restore
+        // it too (and the file may only exist in that version).
+        view: currentGitRef.current,
+      }
       setHistory((prev) => [...prev, snapshot])
       setRestoreScroll(null)
       setNote('')
-      setChooser(null)
+      // A cross-file jump inside a branch/commit view keeps that version for the
+      // target file too (the original's modalOpenPath passes src.view).
+      pendingNavViewRef.current =
+        nextPath === current.path ? null : { path: nextPath, view: gitView || null }
       if (nextPath === current.path) {
         // Same file, another line: no refetch, just move the jump target.
         setView((prev) => (prev ? { ...prev, line: nextLine } : prev))
         return
       }
-      loadFile(nextPath, nextLine)
+      loadFile(nextPath, nextLine, gitView)
     },
     [loadFile],
   )
@@ -2946,60 +3398,22 @@ function CodeModalInner(props) {
     if (!history.length) return
     const snapshot = history[history.length - 1]
     setHistory(history.slice(0, -1))
-    setChooser(null)
+    setDefBar(null)
     setNote('')
     setRestoreScroll({ top: snapshot.scrollTop })
     if (snapshot.path === currentRef.current.path) {
       setView((prev) => (prev ? { ...prev, line: snapshot.line } : prev))
       return
     }
-    loadFile(snapshot.path, snapshot.line)
+    // Restore the previous file with its git version too (may only exist there).
+    pendingNavViewRef.current = snapshot.view ? { path: snapshot.path, view: snapshot.view } : null
+    loadFile(snapshot.path, snapshot.line, snapshot.view)
   }, [history, loadFile])
 
-  // Ctrl/Cmd+click inside the modal navigates in place instead of opening a tab.
+  // Ctrl/Cmd+click inside the modal jumps straight to the resolved definition and
+  // navigates IN PLACE (the ← 返回 stack keeps the previous position).
   const displayPath = view ? view.path : requestPath
   const displayContent = view && view.content != null ? view.content : null
-  React.useEffect(() => {
-    const root = cardRef.current
-    if (!root || !displayPath || displayContent == null) return undefined
-    const tab = { id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }
-    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
-      if (!candidates || !candidates.length) {
-        setNote(error ? `未找到定义：${symbol} · ${error}` : `未找到定义：${symbol}`)
-        return
-      }
-      if (candidates.length === 1) {
-        const only = candidates[0]
-        const current = currentRef.current
-        if (only && only.path === current.path && (Number(only.line) || 0) === current.line) {
-          setNote(`已在当前位置：${symbol}`)
-          return
-        }
-        navigateInPlace(only.path, only.line)
-        return
-      }
-      setChooser({ symbol, candidates, error: '' })
-    })
-    return dispose
-  }, [displayPath, displayContent, navigateInPlace])
-
-  // Esc closes the modal; with the definition chooser open it closes the chooser
-  // only (stop immediate propagation keeps the App's global Esc handler out).
-  React.useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      if (chooserRef.current) {
-        setChooser(null)
-        return
-      }
-      if (typeof onClose === 'function') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
   const gitTab = React.useMemo(
     () => ({
       id: 'modal:' + displayPath,
@@ -3013,6 +3427,80 @@ function CodeModalInner(props) {
     [displayPath, displayContent],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
+  const workspaceContent = view && view.content != null ? view.content : ''
+  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
+  // Text + git version carried by a jump request: exactly what this modal renders
+  // (commit version while viewing a commit's diff, branch version in a branch view,
+  // workspace content otherwise).
+  const defText =
+    diffMode && Array.isArray(gitView.fileLines)
+      ? gitView.fileLines.join('\n')
+      : gitView.branchContent != null
+        ? String(gitView.branchContent)
+        : workspaceContent
+  const defView =
+    gitView.commit && diffMode
+      ? { commit: gitView.commit }
+      : gitView.branchContent != null
+        ? { branch: gitView.branch }
+        : null
+  currentGitRef.current = defView
+  const defSourceRef = React.useRef({})
+  defSourceRef.current = {
+    path: displayPath || '',
+    text: defText,
+    branch: defView && defView.branch ? defView.branch : '',
+    commit: defView && defView.commit ? defView.commit : '',
+    line: view ? view.line : 0,
+  }
+  React.useEffect(() => {
+    const root = cardRef.current
+    if (!root || !displayPath || displayContent == null) return undefined
+    return setupDefinitionClick(
+      root,
+      () => defSourceRef.current,
+      (result, source) => {
+        const target = String(result.file || '').replace(/\\/g, '/')
+        if (!target) return
+        const line = Math.max(0, Number(result.line) || 0)
+        const nextView = source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null
+        // Interface hit → 「实现: XxxImpl」entry bar inside the popup.
+        setDefBar(
+          result.impl && result.impl.file
+            ? {
+                impl: { file: String(result.impl.file), line: Math.max(0, Number(result.impl.line) || 0) },
+                label: String(result.impl.file).split('/').pop().replace(/\.java$/, '') || String(result.impl.file),
+                view: nextView,
+              }
+            : null,
+        )
+        navigateInPlace(target, line, nextView)
+      },
+    )
+  }, [displayPath, displayContent, navigateInPlace])
+
+  // Apply the source view's branch/commit to a file reached by an in-place jump
+  // (once its text is loaded). Keeps 「弹窗内跳转」 consistent with the original.
+  React.useEffect(() => {
+    const pending = pendingNavViewRef.current
+    if (!pending || !view || view.loading || view.content == null) return
+    if (String(view.path) !== pending.path) return
+    pendingNavViewRef.current = null
+    const target = pending.view
+    if (target && (target.branch || target.commit)) gitActions.applyTarget(target.branch || null, target.commit || null)
+  }, [view, gitActions])
+
+  // Esc closes the modal.
+  React.useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (typeof onClose === 'function') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
 
   // Apply the git-adapted request view (branch/commit) once the file text is in.
   // In-place Ctrl+click navigation loads another file: the opener's branch/commit
@@ -3025,8 +3513,6 @@ function CodeModalInner(props) {
     gitActions.applyTarget(requestBranch || null, requestCommit || null)
   }, [reqKey, requestBranch, requestCommit, view, gitActions])
 
-  const workspaceContent = view && view.content != null ? view.content : ''
-  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   const lang = (view && view.lang) || langForPath(displayPath)
   const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
     gitView.branchContent == null ? 'ws' : 'branch'
@@ -3123,16 +3609,26 @@ function CodeModalInner(props) {
         onClick: (event) => event.stopPropagation(),
       },
       h('div', { className: 'mdr-cmodal-head' }, headChildren),
+      defBar
+        ? h(
+            'div',
+            { className: 'mdr-cmodal-defbar' },
+            h('span', null, '实现:'),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'mdr-cmodal-btn',
+                title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+                onClick: () => navigateInPlace(defBar.impl.file, defBar.impl.line, defBar.view),
+              },
+              defBar.label,
+            ),
+          )
+        : null,
       showInfo ? h(CodeGitInfo, { view: gitView }) : null,
       note ? h('div', { className: 'mdr-cmodal-note' }, note) : null,
       body,
-      chooser
-        ? h(DefinitionChooser, {
-            state: chooser,
-            onPick: (candidate) => navigateInPlace(candidate.path, candidate.line),
-            onClose: () => setChooser(null),
-          })
-        : null,
       h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
     ),
   )
@@ -3367,7 +3863,7 @@ function SearchPanel(props) {
           h(
             'div',
             { className: 'mdr-search-row-head' },
-            h('span', { className: 'mdr-search-path' }, row.path),
+            h('span', { className: 'mdr-search-path', 'data-mdr-path': row.path }, row.path),
             h('span', { className: 'mdr-search-line' }, `:${row.line}`),
           ),
           h('div', { className: 'mdr-hit-line', dangerouslySetInnerHTML: { __html: highlightMatch(row.text, meta.query || query) } }),
@@ -4700,6 +5196,7 @@ function TreeNode(props) {
       {
         className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
         ref: rowRef,
+        'data-mdr-path': node.path,
         style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
         title: node.path,
         onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),
@@ -6084,6 +6581,7 @@ function TabBar(props) {
         {
           key: tab.id,
           className: 'mdr-tab' + (tab.id === activeId ? ' on' : ''),
+          'data-mdr-path': tab.path,
           title:
             tab.path +
             (tab.branch ? ` @ ${tab.branch}` : '') +
@@ -6734,6 +7232,7 @@ function App() {
         line: entry.line || 0,
         branch: entry.branch || '',
         commit: entry.commit || '',
+        kind: entry.kind || '',
         taskId: entry.taskId || '',
       })
       if (stack.length > 200) stack.shift()
@@ -6748,7 +7247,9 @@ function App() {
    */
   const applyNavEntry = React.useCallback((entry) => {
     if (!entry || !entry.path) return
-    const kind = kindForPath(entry.path)
+    // Definition jumps may open a non-code extension as a code tab; the entry
+    // remembers the intended kind so Alt+← restores the same tab.
+    const kind = entry.kind === 'code' || entry.kind === 'md' ? entry.kind : kindForPath(entry.path)
     const id = `${kind}:${entry.path}`
     const wb = workbenchRef.current
     const candidates = wb.tasks.filter((task) => task.tabs.some((tab) => tab.id === id))
@@ -6889,7 +7390,9 @@ function App() {
         .replace(/^\/+/, '')
         .trim()
       if (!value) return
-      const kind = kindForPath(value)
+      // A definition jump always opens in the CODE view, even when the target is
+      // .html/.vue/... (opts.kind overrides the extension-based tab kind).
+      const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
       const id = `${kind}:${value}`
       const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
       saveActiveScroll()
@@ -6906,6 +7409,8 @@ function App() {
                     branch: options.branch || tab.branch || '',
                     commit: options.commit || tab.commit || '',
                     navFrom: options.jump ? true : !!tab.navFrom,
+                    // undefined = leave the existing entry bar alone
+                    ...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
                   }
                 : tab,
             )
@@ -6922,6 +7427,7 @@ function App() {
             commit: options.commit || '',
             htmlMode: 'render',
             navFrom: !!options.jump,
+            defBar: options.defBar !== undefined ? options.defBar : null,
             error: '',
             scroll: 0,
           }
@@ -6935,11 +7441,24 @@ function App() {
         })
         return { ...prev, tasks }
       })
+      // Definition jumps first record the clicked source position (the original's
+      // ctrlJump pushNav(src.path, lineNo)) so ← 返回 / Alt+← return to the token.
+      if (options.from && options.from.path) {
+        pushNav({
+          path: options.from.path,
+          line: Math.max(0, Number(options.from.line) || 0),
+          branch: options.from.branch || '',
+          commit: options.from.commit || '',
+          kind: 'code',
+          taskId: workbenchRef.current.activeTaskId,
+        })
+      }
       pushNav({
         path: value,
         line: targetLine,
         branch: options.branch || '',
         commit: options.commit || '',
+        kind,
         taskId: workbenchRef.current.activeTaskId,
       })
     },
@@ -7568,7 +8087,10 @@ function App() {
                 ? h(CodeView, {
                     key: activeTab.id,
                     tab: activeTab,
-                    onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+                    // Definition jumps pass {kind:'code', branch, commit, defBar}
+                    // so a .vue/.html target still opens as code and keeps the
+                    // rendered git version + 「实现」 entry bar.
+                    onOpen: (rel, line, opts) => openPath(rel, line, { ...(opts || {}), jump: true }),
                     onBack: () => goNav(-1),
                   })
                 : activeTab.kind === 'html'

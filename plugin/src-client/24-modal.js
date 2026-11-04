@@ -17,10 +17,12 @@
  *     with its own view key) and the ← 返回 / 开成标签页 / ✕ buttons;
  *   - request.branch / request.commit (git-adapted link): that branch/commit view
  *     is applied inside the modal and 开成标签页 carries it to the new tab;
- *   - Ctrl/Cmd+click navigates IN PLACE with a back stack (single candidate auto
- *     navigates, several reuse DefinitionChooser, none keeps the view + a note);
+ *   - Ctrl/Cmd+click jumps straight to the ONE definition resolved by /api/def
+ *     (no candidate list): same file → in-place line jump, another file →
+ *     in-place navigation that keeps the ← 返回 stack (same branch/commit view),
+ *     and an interface hit shows the 「实现: XxxImpl」entry bar;
  *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
- *     not; Esc with the definition chooser open closes only the chooser.
+ *     not.
  */
 
 const CMODAL_CSS = `
@@ -35,6 +37,8 @@ const CMODAL_CSS = `
 .mdr-cmodal-body{flex:1;min-height:0;display:flex;flex-direction:column}
 .mdr-cmodal-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
 .mdr-cmodal-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(226,192,141,.08);color:#e2c08d;font-size:12px;white-space:pre-wrap;word-break:break-all}
+.mdr-cmodal-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:4px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
+.mdr-cmodal-defbar .mdr-cmodal-btn{color:var(--dsw-alias-brand-primary)}
 `
 
 /** Read the current scroll offset of the modal's code viewport (for the back stack). */
@@ -69,17 +73,17 @@ function CodeModalInner(props) {
   const [history, setHistory] = React.useState([])
   const [restoreScroll, setRestoreScroll] = React.useState(null)
   const [note, setNote] = React.useState('')
-  const [chooser, setChooser] = React.useState(null)
+  const [defBar, setDefBar] = React.useState(null)
   const cardRef = React.useRef(null)
   const seqRef = React.useRef(0)
   const handledReqRef = React.useRef('')
   const pendingGitRef = React.useRef('')
+  const pendingNavViewRef = React.useRef(null)
+  const currentGitRef = React.useRef(null)
   const currentRef = React.useRef({ path: requestPath, line: requestLine })
-  const chooserRef = React.useRef(null)
-  chooserRef.current = chooser
   const maskDownRef = React.useRef(false)
 
-  const loadFile = React.useCallback((path, line) => {
+  const loadFile = React.useCallback((path, line, gitView) => {
     const seq = (seqRef.current += 1)
     const targetLine = Math.max(0, Number(line) || 0)
     setView({
@@ -91,6 +95,17 @@ function CodeModalInner(props) {
       loading: true,
       error: '',
     })
+    const applyViewFile = (content, realPath) => {
+      setView({
+        path: realPath,
+        line: targetLine,
+        content: String(content == null ? '' : content),
+        lang: langForPath(realPath) || langForPath(path),
+        lineCount: 0,
+        loading: false,
+        error: '',
+      })
+    }
     fetchJson('/api/code', { path })
       .then((payload) => {
         if (seqRef.current !== seq) return
@@ -107,8 +122,25 @@ function CodeModalInner(props) {
       })
       .catch((err) => {
         if (seqRef.current !== seq) return
-        const message = String((err && err.message) || err)
-        setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+        // Jump targets can exist only in the branch/commit version (workspace
+        // file removed/renamed): fall back to the git view file like the original
+        // fetchJumpFiles did.
+        const rev = gitView && (gitView.commit || gitView.branch)
+        if (!rev) {
+          const message = String((err && err.message) || err)
+          setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+          return
+        }
+        fetchJson('/api/git/file', { path, commit: rev })
+          .then((payload) => {
+            if (seqRef.current !== seq) return
+            applyViewFile(payload && payload.content, path)
+          })
+          .catch(() => {
+            if (seqRef.current !== seq) return
+            const message = String((err && err.message) || err)
+            setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+          })
       })
   }, [])
 
@@ -119,33 +151,48 @@ function CodeModalInner(props) {
     setHistory([])
     setRestoreScroll(null)
     setNote('')
-    setChooser(null)
+    setDefBar(null)
+    pendingGitRef.current = ''
     // The git-adapted request view is applied once, when THIS request's file
     // text is in. In-place Ctrl+click navigation later must not re-apply it.
     pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
-    loadFile(requestPath, requestLine)
+    loadFile(
+      requestPath,
+      requestLine,
+      requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
+    )
   }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
   const navigateInPlace = React.useCallback(
-    (path, line) => {
-      const nextPath = String(path || '')
+    (path, line, gitView) => {
+      const nextPath = String(path || '').replace(/\\/g, '/')
       const nextLine = Math.max(0, Number(line) || 0)
       if (!nextPath) return
       const current = currentRef.current
       if (nextPath === current.path && nextLine === current.line) return
-      const snapshot = { path: current.path, line: current.line, scrollTop: readModalScroll(cardRef.current) }
+      const snapshot = {
+        path: current.path,
+        line: current.line,
+        scrollTop: readModalScroll(cardRef.current),
+        // Remember which git version this position was showing: ← 返回 must restore
+        // it too (and the file may only exist in that version).
+        view: currentGitRef.current,
+      }
       setHistory((prev) => [...prev, snapshot])
       setRestoreScroll(null)
       setNote('')
-      setChooser(null)
+      // A cross-file jump inside a branch/commit view keeps that version for the
+      // target file too (the original's modalOpenPath passes src.view).
+      pendingNavViewRef.current =
+        nextPath === current.path ? null : { path: nextPath, view: gitView || null }
       if (nextPath === current.path) {
         // Same file, another line: no refetch, just move the jump target.
         setView((prev) => (prev ? { ...prev, line: nextLine } : prev))
         return
       }
-      loadFile(nextPath, nextLine)
+      loadFile(nextPath, nextLine, gitView)
     },
     [loadFile],
   )
@@ -154,60 +201,22 @@ function CodeModalInner(props) {
     if (!history.length) return
     const snapshot = history[history.length - 1]
     setHistory(history.slice(0, -1))
-    setChooser(null)
+    setDefBar(null)
     setNote('')
     setRestoreScroll({ top: snapshot.scrollTop })
     if (snapshot.path === currentRef.current.path) {
       setView((prev) => (prev ? { ...prev, line: snapshot.line } : prev))
       return
     }
-    loadFile(snapshot.path, snapshot.line)
+    // Restore the previous file with its git version too (may only exist there).
+    pendingNavViewRef.current = snapshot.view ? { path: snapshot.path, view: snapshot.view } : null
+    loadFile(snapshot.path, snapshot.line, snapshot.view)
   }, [history, loadFile])
 
-  // Ctrl/Cmd+click inside the modal navigates in place instead of opening a tab.
+  // Ctrl/Cmd+click inside the modal jumps straight to the resolved definition and
+  // navigates IN PLACE (the ← 返回 stack keeps the previous position).
   const displayPath = view ? view.path : requestPath
   const displayContent = view && view.content != null ? view.content : null
-  React.useEffect(() => {
-    const root = cardRef.current
-    if (!root || !displayPath || displayContent == null) return undefined
-    const tab = { id: 'modal:' + displayPath, kind: 'code', path: displayPath, content: displayContent }
-    const dispose = setupDefinitionClick(root, tab, (candidates, symbol, error) => {
-      if (!candidates || !candidates.length) {
-        setNote(error ? `未找到定义：${symbol} · ${error}` : `未找到定义：${symbol}`)
-        return
-      }
-      if (candidates.length === 1) {
-        const only = candidates[0]
-        const current = currentRef.current
-        if (only && only.path === current.path && (Number(only.line) || 0) === current.line) {
-          setNote(`已在当前位置：${symbol}`)
-          return
-        }
-        navigateInPlace(only.path, only.line)
-        return
-      }
-      setChooser({ symbol, candidates, error: '' })
-    })
-    return dispose
-  }, [displayPath, displayContent, navigateInPlace])
-
-  // Esc closes the modal; with the definition chooser open it closes the chooser
-  // only (stop immediate propagation keeps the App's global Esc handler out).
-  React.useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      if (chooserRef.current) {
-        setChooser(null)
-        return
-      }
-      if (typeof onClose === 'function') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
   const gitTab = React.useMemo(
     () => ({
       id: 'modal:' + displayPath,
@@ -221,6 +230,80 @@ function CodeModalInner(props) {
     [displayPath, displayContent],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
+  const workspaceContent = view && view.content != null ? view.content : ''
+  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
+  // Text + git version carried by a jump request: exactly what this modal renders
+  // (commit version while viewing a commit's diff, branch version in a branch view,
+  // workspace content otherwise).
+  const defText =
+    diffMode && Array.isArray(gitView.fileLines)
+      ? gitView.fileLines.join('\n')
+      : gitView.branchContent != null
+        ? String(gitView.branchContent)
+        : workspaceContent
+  const defView =
+    gitView.commit && diffMode
+      ? { commit: gitView.commit }
+      : gitView.branchContent != null
+        ? { branch: gitView.branch }
+        : null
+  currentGitRef.current = defView
+  const defSourceRef = React.useRef({})
+  defSourceRef.current = {
+    path: displayPath || '',
+    text: defText,
+    branch: defView && defView.branch ? defView.branch : '',
+    commit: defView && defView.commit ? defView.commit : '',
+    line: view ? view.line : 0,
+  }
+  React.useEffect(() => {
+    const root = cardRef.current
+    if (!root || !displayPath || displayContent == null) return undefined
+    return setupDefinitionClick(
+      root,
+      () => defSourceRef.current,
+      (result, source) => {
+        const target = String(result.file || '').replace(/\\/g, '/')
+        if (!target) return
+        const line = Math.max(0, Number(result.line) || 0)
+        const nextView = source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null
+        // Interface hit → 「实现: XxxImpl」entry bar inside the popup.
+        setDefBar(
+          result.impl && result.impl.file
+            ? {
+                impl: { file: String(result.impl.file), line: Math.max(0, Number(result.impl.line) || 0) },
+                label: String(result.impl.file).split('/').pop().replace(/\.java$/, '') || String(result.impl.file),
+                view: nextView,
+              }
+            : null,
+        )
+        navigateInPlace(target, line, nextView)
+      },
+    )
+  }, [displayPath, displayContent, navigateInPlace])
+
+  // Apply the source view's branch/commit to a file reached by an in-place jump
+  // (once its text is loaded). Keeps 「弹窗内跳转」 consistent with the original.
+  React.useEffect(() => {
+    const pending = pendingNavViewRef.current
+    if (!pending || !view || view.loading || view.content == null) return
+    if (String(view.path) !== pending.path) return
+    pendingNavViewRef.current = null
+    const target = pending.view
+    if (target && (target.branch || target.commit)) gitActions.applyTarget(target.branch || null, target.commit || null)
+  }, [view, gitActions])
+
+  // Esc closes the modal.
+  React.useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      if (typeof onClose === 'function') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
 
   // Apply the git-adapted request view (branch/commit) once the file text is in.
   // In-place Ctrl+click navigation loads another file: the opener's branch/commit
@@ -233,8 +316,6 @@ function CodeModalInner(props) {
     gitActions.applyTarget(requestBranch || null, requestCommit || null)
   }, [reqKey, requestBranch, requestCommit, view, gitActions])
 
-  const workspaceContent = view && view.content != null ? view.content : ''
-  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   const lang = (view && view.lang) || langForPath(displayPath)
   const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
     gitView.branchContent == null ? 'ws' : 'branch'
@@ -331,16 +412,26 @@ function CodeModalInner(props) {
         onClick: (event) => event.stopPropagation(),
       },
       h('div', { className: 'mdr-cmodal-head' }, headChildren),
+      defBar
+        ? h(
+            'div',
+            { className: 'mdr-cmodal-defbar' },
+            h('span', null, '实现:'),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'mdr-cmodal-btn',
+                title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+                onClick: () => navigateInPlace(defBar.impl.file, defBar.impl.line, defBar.view),
+              },
+              defBar.label,
+            ),
+          )
+        : null,
       showInfo ? h(CodeGitInfo, { view: gitView }) : null,
       note ? h('div', { className: 'mdr-cmodal-note' }, note) : null,
       body,
-      chooser
-        ? h(DefinitionChooser, {
-            state: chooser,
-            onPick: (candidate) => navigateInPlace(candidate.path, candidate.line),
-            onClose: () => setChooser(null),
-          })
-        : null,
       h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
     ),
   )

@@ -220,7 +220,7 @@ function SearchPanel(props) {
           h(
             'div',
             { className: 'mdr-search-row-head' },
-            h('span', { className: 'mdr-search-path' }, row.path),
+            h('span', { className: 'mdr-search-path', 'data-mdr-path': row.path }, row.path),
             h('span', { className: 'mdr-search-line' }, `:${row.line}`),
           ),
           h('div', { className: 'mdr-hit-line', dangerouslySetInnerHTML: { __html: highlightMatch(row.text, meta.query || query) } }),

@@ -14,6 +14,7 @@ function TabBar(props) {
         {
           key: tab.id,
           className: 'mdr-tab' + (tab.id === activeId ? ' on' : ''),
+          'data-mdr-path': tab.path,
           title:
             tab.path +
             (tab.branch ? ` @ ${tab.branch}` : '') +
