@@ -51,6 +51,68 @@ function highlightLineHtml(text, lang) {
   }
 }
 
+/* -------------------------------------------------------------- code scroll */
+
+/**
+ * Per-file scroll positions of the code viewport, shared by all mounted code
+ * views (code tab + modal would normally fight over one memory; the modal keeps
+ * its own stack instead and passes no key). The reported bug was "switch tab and
+ * the code scroll jumps back to the top / to the link line", so the position is
+ * persisted per file and restored on remount — a *fresh* jump request (open a
+ * link with a line number) still wins over the memory.
+ */
+const CODE_SCROLL_KEY = 'mdreader.plugin.codescroll.v1'
+
+/** file key -> line that was explicitly jumped to this session (restore vs jump). */
+const codeJumpSeen = new Map()
+
+const codeScrollStore = (() => {
+  const MAX_ENTRIES = 400
+  let data = null
+  let timer = 0
+  const read = () => {
+    if (data) return data
+    data = {}
+    try {
+      const value = JSON.parse(localStorage.getItem(CODE_SCROLL_KEY) || '{}')
+      if (value && typeof value === 'object') {
+        for (const key of Object.keys(value)) {
+          const top = Number(value[key])
+          if (Number.isFinite(top) && top > 0) data[key] = Math.round(top)
+        }
+      }
+    } catch {
+      data = {}
+    }
+    return data
+  }
+  const flush = () => {
+    timer = 0
+    try {
+      const keys = Object.keys(data || {})
+      // Bounded store: drop the oldest inserted entries first.
+      for (let index = 0; index < keys.length - MAX_ENTRIES; index += 1) delete data[keys[index]]
+      localStorage.setItem(CODE_SCROLL_KEY, JSON.stringify(data || {}))
+    } catch {
+      // quota / private mode: the in-memory map still works for this session
+    }
+  }
+  return {
+    get(key) {
+      const top = read()[String(key)]
+      return typeof top === 'number' ? top : 0
+    },
+    save(key, top) {
+      const value = Number(top)
+      const name = String(key)
+      const map = read()
+      if (!Number.isFinite(value) || value <= 0) delete map[name]
+      else map[name] = Math.round(value)
+      if (!timer) timer = setTimeout(flush, 250)
+    },
+  }
+})()
+
 /** One row's HTML. diffMode adds the +/-/space gutter sign and diff row classes. */
 function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
   const classes = ['mdr-cl']
@@ -64,11 +126,39 @@ function gitRowHtml(row, index, lang, diffMode, hitLine, codeHtml, top) {
 }
 
 /**
+ * Rows + diff flag for the current git view of a file. Shared by the code tab
+ * and the code modal so branch/commit rendering can never drift apart.
+ */
+function useCodeRows(view, workspaceContent) {
+  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
+  // (branch switches), otherwise the workspace content the App loaded.
+  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
+  const diffRows = React.useMemo(
+    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
+    [view.commit, view.hunks, view.fileLines],
+  )
+  const rows = React.useMemo(() => {
+    if (diffRows) return diffRows
+    return String(baseContent == null ? '' : baseContent)
+      .split('\n')
+      .map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+  }, [diffRows, baseContent])
+  return { rows, diffMode: !!diffRows, baseContent }
+}
+
+/**
  * Rows viewport. Files over GIT_V_THRESHOLD rows keep full highlighting but only
  * paint the viewport +/- GIT_BUFFER rows (20px absolute rows inside a spacer).
+ *
+ * Optional props (code tab + modal):
+ *   scrollKey      file key for the persisted scroll memory (omit = no persistence)
+ *   contentReady   false while the file text is still loading: defer the
+ *                  jump/restore decision instead of deciding against 1 empty row
+ *   restoreScroll  { top } — exactly restore this position (modal ← 返回), takes
+ *                  precedence over the line jump and the scroll memory
  */
 function CodeBody(props) {
-  const { rows, lang, diffMode, targetLine, viewKey } = props
+  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll } = props
   const total = rows.length
   const virtual = total > GIT_V_THRESHOLD
   const scrollerRef = React.useRef(null)
@@ -77,6 +167,15 @@ function CodeBody(props) {
   const rafRef = React.useRef(0)
   const rowsRef = React.useRef(rows)
   rowsRef.current = rows
+  const firstPaintRef = React.useRef(true)
+  const lastTopRef = React.useRef(0)
+  const saveTimerRef = React.useRef(0)
+  const scrollMetaRef = React.useRef({ key: '', diff: false, ready: true })
+  scrollMetaRef.current = {
+    key: scrollKey == null ? '' : String(scrollKey),
+    diff: !!diffMode,
+    ready: contentReady !== false,
+  }
   const hlRef = React.useRef(null)
   if (!hlRef.current || hlRef.current.rows !== rows || hlRef.current.lang !== lang) {
     hlRef.current = { rows, lang, map: new Map() }
@@ -101,36 +200,84 @@ function CodeBody(props) {
     setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
   }
 
+  const flushScroll = () => {
+    const meta = scrollMetaRef.current
+    if (!meta.key || meta.diff || !meta.ready) return
+    codeScrollStore.save(meta.key, lastTopRef.current)
+  }
+
+  const scheduleScrollSave = () => {
+    if (saveTimerRef.current) return
+    saveTimerRef.current = setTimeout(() => {
+      saveTimerRef.current = 0
+      flushScroll()
+    }, 220)
+  }
+
   React.useEffect(() => {
+    // The file text has not arrived yet: the placeholder rows would make every
+    // restore decision look like "scroll to top", so wait for the real content.
+    if (contentReady === false) return undefined
     const el = scrollerRef.current
     if (!el) return undefined
+    const firstPaint = firstPaintRef.current
+    firstPaintRef.current = false
     setHitLine(0)
-    // Base view: honor tab.line (transient .mdr-cl.hit at the target line). Diff
-    // view: start at the top; deleted rows have no meaningful workspace line no.
+    const storeKey = scrollKey == null ? '' : String(scrollKey)
+    const savedTop = !diffMode && storeKey ? codeScrollStore.get(storeKey) : 0
+    const restoreTop =
+      restoreScroll && Number.isFinite(restoreScroll.top) ? Math.max(0, Math.round(restoreScroll.top)) : null
+    // Base view: honor the requested line, the scroll memory or the explicit
+    // restore. Diff view: start at the top (deleted rows have no workspace line).
     let rowIndex = -1
     if (!diffMode && targetLine > 0) {
       rowIndex = rows.findIndex((row) => row.no === targetLine)
       if (rowIndex < 0) rowIndex = Math.min(targetLine - 1, Math.max(0, total - 1))
     }
-    el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
+    let mode = 'top'
+    if (diffMode) mode = 'top'
+    else if (restoreTop != null) mode = 'restore'
+    else if (rowIndex >= 0) {
+      // A remount (switch away and back) keeps the scroll position; an explicit
+      // jump request for this line wins over the remembered position.
+      const seen = !!storeKey && codeJumpSeen.get(storeKey) === targetLine
+      mode = firstPaint && seen && savedTop > 0 ? 'saved' : 'jump'
+    } else if (firstPaint && savedTop > 0) {
+      mode = 'saved'
+    }
+    if (mode === 'restore') el.scrollTop = restoreTop
+    else if (mode === 'saved') el.scrollTop = savedTop
+    else if (mode === 'jump') el.scrollTop = rowIndex > 0 ? Math.max(0, rowIndex * GIT_LINE_H - Math.floor(el.clientHeight * 0.35)) : 0
+    else el.scrollTop = 0
+    lastTopRef.current = el.scrollTop
     paintWindow()
-    if (rowIndex >= 0) {
+    if (mode === 'jump' && storeKey) codeJumpSeen.set(storeKey, targetLine)
+    const markHit = targetLine > 0 && rowIndex >= 0 && (mode === 'jump' || mode === 'restore')
+    if (markHit) {
       setHitLine(targetLine)
       const timer = setTimeout(() => setHitLine(0), 2400)
       return () => clearTimeout(timer)
     }
     return undefined
     // rows identity changes whenever the rendered content (commit/branch/file) changes.
-  }, [viewKey, targetLine, diffMode, rows, total])
+  }, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll])
 
   React.useEffect(
     () => () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+      flushScroll()
     },
     [],
   )
 
   const onScroll = () => {
+    const el = scrollerRef.current
+    if (el) {
+      lastTopRef.current = el.scrollTop
+      scheduleScrollSave()
+    }
+    paintWindow()
     if (!virtual) return
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(() => {
@@ -221,20 +368,13 @@ function CodeView(props) {
     })
     return dispose
   }, [tab.id, tab.path, onOpen])
-  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
-  // (branch switches), otherwise the workspace content the App loaded.
-  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
-  const diffRows = React.useMemo(
-    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
-    [view.commit, view.hunks, view.fileLines],
-  )
-  const rows = React.useMemo(() => {
-    if (diffRows) return diffRows
-    return baseContent.split('\n').map((text, index) => ({ no: index + 1, kind: 'plain', text }))
-  }, [diffRows, baseContent])
-  const diffMode = !!diffRows
+  const { rows, diffMode } = useCodeRows(view, workspaceContent)
   const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}`
   const showInfo = !!view.commit || !!view.hint || !!view.loading
+  // Scroll memory is per file; the commit view gets its own slot so switching
+  // back from a diff does not restore a diff scroll position into the file view.
+  const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
+  const contentReady = tab.content != null || view.branchContent != null
 
   return h(
     'div',
@@ -259,6 +399,8 @@ function CodeView(props) {
         diffMode,
         targetLine: tab.line || 0,
         viewKey,
+        scrollKey,
+        contentReady,
       }),
     ),
     defState
