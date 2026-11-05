@@ -98,3 +98,5 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | 原版 oracle 重建（`input/reference` → `work/oracle`，gitignored） | `work/oracle-setup.mjs` |
 | 与原版 /api/git/resolve 逐条对照 | `work/compare-link-resolve.mjs` |
 | 目录树同级行左侧对齐（headless Chrome 实测 x 偏移） | `work/tree-layout-probe.mjs` |
+| HTML 预览是否真的画出图表（headless Chrome + CDP，canvas/控制台） | `work/html-preview-probe.mjs` |
+| HTML 预览重写契约（脚本正文必须逐字节不变） | `work/harnesses/html-preview-check.mjs` |
