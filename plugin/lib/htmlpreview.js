@@ -21,6 +21,37 @@ function joinRel(dirRel, target) {
   return parts.join('/')
 }
 
+/**
+ * Inline `<script>` bodies must never be rewritten.
+ *
+ * The resource rewrite below works on raw text, so it also hits JavaScript:
+ * `url(...)` in minified code (`getDataURL(t)`, `new URL(...)`) and `src=` /
+ * `href=` inside string literals were turned into `/api/raw?path=…`, which
+ * broke the inline library (a self-contained page with an inlined ECharts build
+ * then died with `echarts missing` + a SyntaxError and painted zero charts).
+ *
+ * The script bodies are masked out before the rewrite and restored afterwards;
+ * the `<script>` OPENING tag is still rewritten, so `<script src="app.js">`
+ * keeps working.
+ */
+const SCRIPT_MASK_PREFIX = '\u0000mdrScript'
+const SCRIPT_MASK_SUFFIX = '\u0000'
+
+function maskScripts(html) {
+  const blocks = []
+  const masked = html.replace(/(<script\b[^>]*>)([\s\S]*?)(<\/script\s*>)/gi, (match, open, body, close) => {
+    blocks.push(body)
+    return `${open}${SCRIPT_MASK_PREFIX}${blocks.length - 1}${SCRIPT_MASK_SUFFIX}${close}`
+  })
+  return { masked, blocks }
+}
+
+function unmaskScripts(html, blocks) {
+  if (!blocks.length) return html
+  const pattern = new RegExp(`${SCRIPT_MASK_PREFIX}(\\d+)${SCRIPT_MASK_SUFFIX}`, 'g')
+  return html.replace(pattern, (match, index) => (blocks[Number(index)] == null ? match : blocks[Number(index)]))
+}
+
 export function renderHtmlPreview(state, rel) {
   const input = String(rel || '')
   if (!input) throw new Error('缺少 path')
@@ -69,7 +100,8 @@ export function renderHtmlPreview(state, rel) {
     return `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}${query ? `&${query}` : ''}${frag}`
   }
 
-  let html = raw.replace(/<base\b[^>]*>/gi, '')
+  const { masked, blocks } = maskScripts(raw)
+  let html = masked.replace(/<base\b[^>]*>/gi, '')
   html = html.replace(/(\b(src|href|poster|data-src)\s*=\s*)(["'])([\s\S]*?)\3/gi, (match, prefix, attr, quote, url) => {
     return `${prefix}${quote}${resolveTarget(url, String(attr).toLowerCase() === 'href')}${quote}`
   })
@@ -92,5 +124,5 @@ export function renderHtmlPreview(state, rel) {
       ? html.replace(/<head[^>]*>/i, (m) => `${m}\n<meta charset="utf-8">`)
       : `<meta charset="utf-8">\n${html}`
   }
-  return html
+  return unmaskScripts(html, blocks)
 }
