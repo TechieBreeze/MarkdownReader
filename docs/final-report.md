@@ -168,6 +168,36 @@ flexbox 会按「各子项基准宽度比例」压缩它 —— 压缩量取决�
 **回归**：`load` / `boot` / `code 177/177` / `html 159/159` / `panels 100/100` / `copy-menu 66/66` / `defs 63/63` 全绿；
 `node build.mjs` → `client.js` 322.4 KB / 16 parts，`node --check` 通过。
 
+## 附录：第 9 轮（HTML 预览：自包含页面的图表不渲染）
+
+**反馈**：`20260917-微服务/docs/公众号身份重复门店8888-stage数据全景.html` 里有些图表渲染不出来。
+
+**实测（headless Chrome + CDP，`work/html-preview-probe.mjs`）**：
+
+| 加载方式 | canvas | 尺寸正常的 canvas | `window.echarts` | 控制台 |
+|---|---|---|---|---|
+| `file://` 直接打开（原文件） | 3 | **3** | 有 | 无报错 |
+| 插件预览 `/api/html?path=…`（修复前） | **0** | **0** | **无** | `echarts missing` + `SyntaxError: Invalid regular expression flags` |
+
+**根因**：HTML 预览的资源重写是**按原始文本**做的，于是 CSS 风格的 `url(...)` 规则和 `src=`/`href=` 规则
+也命中了 JavaScript。该页面把 ECharts 整库内联在 `<script>` 里，压缩后的 `getDataURL(t)` 被改写成
+`getDataurl(/markdown-reader/api/raw?path=…/docs/t)`，同一规则还把一个正则字面量改坏 →
+库在**解析期**就报错 → 所有图表全空。
+
+对照原版：原版**根本不做重写**，只注入 `<base>`（其 docstring 写明「自包含 HTML（内联 echarts 等）无需重写也能正常渲染」）。
+我们为了「相对资源可加载」做得更宽，代价是误伤了脚本。
+
+**修复**（`plugin/lib/htmlpreview.js`）：重写前先把内联 `<script>` **正文**遮蔽，重写后再还原；
+`<script>` 开标签仍然重写（`<script src="app.js">` 照常可用），脚本外的 `img` / `href` / `srcset` / CSS `url()`
+仍然重写到 raw 代理。
+
+**修复后实测**：该文档的预览与磁盘文件**逐字节一致**（头部、2 段脚本正文、尾部均相同），
+渲染出 **3 个尺寸正常的 canvas**（与 `file://` 基线一致），控制台无报错。
+
+**回归**：新增 `work/harnesses/html-preview-check.mjs`（合成文档 + 该真实文档各验一遍「脚本正文逐字节不变、
+img/href/css url() 仍被重写」）；load/boot、code 177/177、html 159/159、panels 100/100、copy-menu 66/66、
+defs 63/63 全绿。
+
 ## 验收结论（2026-11-04）
 
 用户共提出 3 批反馈（17 项），全部回归通过，用户确认「没有其它问题了」：
