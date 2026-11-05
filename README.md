@@ -97,3 +97,4 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | 线上 Host 验收（文档裸路径 9/9 + 13 个点击与原版一致） | `work/live-acceptance.mjs` |
 | 原版 oracle 重建（`input/reference` → `work/oracle`，gitignored） | `work/oracle-setup.mjs` |
 | 与原版 /api/git/resolve 逐条对照 | `work/compare-link-resolve.mjs` |
+| 目录树同级行左侧对齐（headless Chrome 实测 x 偏移） | `work/tree-layout-probe.mjs` |

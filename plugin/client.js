@@ -560,15 +560,17 @@ const APP_CSS = `
 .mdr-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;height:100%;color:var(--dsw-alias-label-secondary)}
 .mdr-empty h2{margin:0;font-size:16px;font-weight:600;color:var(--dsw-alias-label-primary)}
 .mdr-err{position:absolute;left:16px;right:16px;top:8px;z-index:5;padding:7px 10px;border-radius:6px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.18)}
-.mdr-tree-toolbar{display:flex;align-items:center;gap:6px;padding:4px 10px 6px;position:sticky;top:0;background:var(--dsw-alias-bg-layer-1);z-index:1}
+.mdr-tree-toolbar{display:flex;align-items:center;gap:6px;padding:4px 10px 6px;position:sticky;top:0;left:0;background:var(--dsw-alias-bg-layer-1);z-index:1}
 .mdr-tree-tip{font-size:11.5px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mdr-tr{display:flex;align-items:center;gap:4px;padding:2px 8px;cursor:pointer;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
+/* 行宽跟内容 + 横向滚动（对齐原版）：每行至少铺满树宽，文件名不截断；
+   前导列（缩进箭头 / 图标）固定宽度，保证同级行的左侧严格对齐。 */
+.mdr-tr{display:flex;align-items:center;gap:4px;padding:2px 8px;cursor:pointer;white-space:nowrap;color:var(--dsw-alias-label-secondary);width:max-content;min-width:100%}
 .mdr-tr:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .mdr-tr.on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
-.mdr-caret{display:inline-flex;width:12px;justify-content:center;transition:transform .12s;color:var(--dsw-alias-label-secondary);font-size:10px}
+.mdr-caret{display:inline-flex;flex:0 0 12px;width:12px;justify-content:center;transition:transform .12s;color:var(--dsw-alias-label-secondary);font-size:10px}
 .mdr-caret.open{transform:rotate(90deg)}
 .mdr-ticon{display:inline-flex;flex:0 0 auto}
-.mdr-tname{overflow:hidden;text-overflow:ellipsis}
+.mdr-tname{flex:none;overflow:visible;text-overflow:clip;white-space:nowrap}
 .mdr-tip{font-size:11.5px;color:var(--dsw-alias-label-secondary)}
 .mdr-roots{position:absolute;right:12px;top:42px;z-index:20;width:360px;padding:10px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 8px 28px rgba(0,0,0,.28)}
 .mdr-roots h3{margin:0 0 8px;font-size:12.5px;font-weight:600}
