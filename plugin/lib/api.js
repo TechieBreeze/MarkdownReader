@@ -594,6 +594,15 @@ async function apiGitDiff(res, state, url) {
   return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: parseDiff(patch) })
 }
 
+/**
+ * Parse a unified diff into hunks.
+ *
+ * The hunk header declares how many old/new lines the hunk contains, and those
+ * counts are authoritative: `git show` output ends with a newline, so splitting
+ * it yields a trailing empty line, and reading that as a context line invented
+ * a phantom row (it consumed a real line of the commit-version file, so the
+ * line right after the hunk rendered empty instead of its content).
+ */
 export function parseDiff(patch) {
   const hunks = []
   let current = null
@@ -605,25 +614,57 @@ export function parseDiff(patch) {
     if (header) {
       oldNo = Number(header[1])
       newNo = Number(header[3])
-      current = { old_start: oldNo, new_start: newNo, old_count: header[2] === undefined ? 1 : Number(header[2]), new_count: header[4] === undefined ? 1 : Number(header[4]), lines: [] }
+      const oldCount = header[2] === undefined ? 1 : Number(header[2])
+      const newCount = header[4] === undefined ? 1 : Number(header[4])
+      current = {
+        old_start: oldNo,
+        new_start: newNo,
+        old_count: oldCount,
+        new_count: newCount,
+        lines: [],
+        _oldLeft: oldCount,
+        _newLeft: newCount,
+      }
       hunks.push(current)
       continue
     }
     if (!current) continue
     if (line.startsWith('\\')) continue
-    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ')) continue
+    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ')) {
+      current = null
+      continue
+    }
     const kind = line[0]
-    if (kind === '+') {
+    if (kind === '+' && current._newLeft > 0) {
       current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
       newNo += 1
-    } else if (kind === '-') {
+      current._newLeft -= 1
+      continue
+    }
+    if (kind === '-' && current._oldLeft > 0) {
       current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
       oldNo += 1
-    } else if (kind === ' ' || line === '') {
+      current._oldLeft -= 1
+      continue
+    }
+    // A context line is " " + content; some tools strip the trailing space of an
+    // empty content line, so an empty line counts as context too - but only
+    // while the hunk still expects lines on both sides.
+    if ((kind === ' ' || line === '') && current._oldLeft > 0 && current._newLeft > 0) {
       current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
       oldNo += 1
       newNo += 1
+      current._oldLeft -= 1
+      current._newLeft -= 1
+      continue
     }
+    // The hunk is complete (its declared counts are exhausted) or the line does
+    // not belong to it: stop here instead of inventing rows.
+    current = null
+  }
+  for (const hunk of hunks) {
+    delete hunk._oldLeft
+    delete hunk._newLeft
   }
   return hunks
 }
