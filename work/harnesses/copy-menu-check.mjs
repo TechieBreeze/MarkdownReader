@@ -152,6 +152,28 @@ function findById(node, id, out = null) {
   return out
 }
 
+function findByClass(node, className, out = null) {
+  if (out) return out
+  if (!node || typeof node !== 'object') return out
+  if (String(node.className || '').split(/\s+/).includes(className)) return node
+  for (const child of node.children || []) {
+    const hit = findByClass(child, className, out)
+    if (hit) return hit
+  }
+  return out
+}
+
+function findByTag(node, tagName, out = null) {
+  if (out) return out
+  if (!node || typeof node !== 'object') return out
+  if (String(node.tagName || '').toUpperCase() === String(tagName).toUpperCase()) return node
+  for (const child of node.children || []) {
+    const hit = findByTag(child, tagName, out)
+    if (hit) return hit
+  }
+  return out
+}
+
 function createDocument() {
   const doc = {
     body: null,
@@ -166,8 +188,12 @@ function createDocument() {
     getElementById(id) {
       return findById(doc.body, id)
     },
-    querySelector() {
-      return null
+    querySelector(selector) {
+      const sel = String(selector || '').trim()
+      if (!sel) return null
+      if (sel.startsWith('.')) return findByClass(doc.body, sel.slice(1))
+      if (sel.startsWith('#')) return findById(doc.body, sel.slice(1))
+      return findByTag(doc.body, sel)
     },
     addEventListener(type, handler) {
       const list = doc.listeners[type] || (doc.listeners[type] = [])
@@ -219,7 +245,7 @@ function installEnvironment(doc) {
 function loadCore() {
   const source = fs.readFileSync(CORE, 'utf8')
   const factory = new Function(
-    `const React = null; const h = null;\n${source}\nreturn { copyText, copyTextFallback, toast, copyWithToast, pathMenuTarget, pathMenuOpen, pathMenuClose, pathOfElement, PATH_MENU_SELECTOR };`,
+    `const React = null; const h = null;\n${source}\nreturn { copyText, copyTextFallback, copyWithFeedback, toast, pathMenuTarget, pathMenuOpen, pathMenuClose, pathOfElement, PATH_MENU_SELECTOR };`,
   )
   return factory()
 }
@@ -288,7 +314,7 @@ function clickMenuItem(doc, label) {
     stat ? `client=${new Date(stat.mtimeMs).toISOString()} newestSrc=${new Date(newestSource).toISOString()}` : 'missing',
   )
   const bundle = stat ? fs.readFileSync(CLIENT, 'utf8') : ''
-  for (const marker of ['复制路径', '复制文件名', 'pathMenuOpen', 'copyTextFallback', 'copyWithToast', 'mdr-ctx']) {
+  for (const marker of ['复制路径', '复制文件名', 'pathMenuOpen', 'copyTextFallback', 'copyWithFeedback', 'mdr-ctx']) {
     check(`bundle contains ${marker}`, bundle.includes(marker))
   }
 }
@@ -339,7 +365,7 @@ let mod
 /* ======================================================= [3] copy actions */
 
 {
-  console.log('\n[3] 复制路径 / 复制文件名 writes clipboard + toast')
+  console.log('\n[3] 复制路径 / 复制文件名 writes clipboard, confirms INSIDE the menu (no toast)')
   const writes = []
   setClipboard({
     writeText(text) {
@@ -352,16 +378,28 @@ let mod
   clickMenuItem(doc, '复制路径')
   await flush()
   check('复制路径 writes the path', writes[0] === 'gits/user/src/main/java/com/pvh/user/model/po/UserCookiePO.java', writes)
-  check('复制路径 closes the menu', !menuOf(doc))
-  const toastNode = toastOf(doc)
-  check('复制路径 toast text', !!toastNode && toastNode.textContent === '已复制路径', toastNode && toastNode.textContent)
-  check('复制路径 toast is ok style', !!toastNode && toastNode.classList.contains('show') && !toastNode.classList.contains('err'), toastNode && toastNode.className)
+  const menuAfterCopy = menuOf(doc)
+  check('复制路径 keeps the menu open for the confirmation', !!menuAfterCopy)
+  check(
+    '复制路径 confirms in the menu item',
+    !!menuAfterCopy && menuAfterCopy.children[0].textContent === '复制路径 ✓' && menuAfterCopy.children[0].classList.contains('mdr-ctx-ok'),
+    menuAfterCopy && menuAfterCopy.children[0].textContent,
+  )
+  check('复制路径 shows NO toast (no overlay on the Harness window)', !toastOf(doc), toastOf(doc) && toastOf(doc).textContent)
+  await sleep(1000)
+  check('menu closes after the confirmation', !menuOf(doc))
 
   await openMenu(doc, label)
   clickMenuItem(doc, '复制文件名')
   await flush()
   check('复制文件名 writes the basename', writes[1] === 'UserCookiePO.java', writes)
-  check('复制文件名 toast text', toastOf(doc).textContent === '已复制文件名', toastOf(doc).textContent)
+  check(
+    '复制文件名 confirms in the menu item',
+    menuOf(doc) && menuOf(doc).children[1].textContent === '复制文件名 ✓',
+    menuOf(doc) && menuOf(doc).children[1].textContent,
+  )
+  check('复制文件名 shows NO toast', !toastOf(doc))
+  await sleep(1000)
 }
 
 /* ============================================= [4] pathOfElement precedence */
@@ -472,32 +510,32 @@ let mod
   doc.execCommands = []
   doc.execResult = false
   check('no clipboard + execCommand false -> false', (await mod.copyText('manual')) === false)
-  mod.copyWithToast('manual', '已复制路径')
-  await flush()
-  const errToast = toastOf(doc)
-  check('manual fallback toast is err', errToast.classList.contains('show') && errToast.classList.contains('err'), errToast.className)
-  check('manual fallback toast text', errToast.textContent === '复制失败：请手动选中后按 Ctrl+C', errToast.textContent)
+  check('copyWithFeedback reports err', (await mod.copyWithFeedback('manual')) === 'err')
+  check('copyWithFeedback shows no toast', !toastOf(doc))
 
   setClipboard(undefined)
   doc.execCommands = []
   doc.execResult = true
-  mod.copyWithToast('manual-ok', '已复制路径')
-  await flush()
-  check('no clipboard + execCommand true -> ok toast', toastOf(doc).textContent === '已复制路径' && !toastOf(doc).classList.contains('err'), toastOf(doc).className)
+  check('copyWithFeedback reports ok', (await mod.copyWithFeedback('manual-ok')) === 'ok')
+  check('copyWithFeedback still shows no toast', !toastOf(doc))
 
-  mod.copyWithToast('', '已复制路径')
-  await flush()
-  check('empty value -> err toast', toastOf(doc).textContent === '没有可复制的内容' && toastOf(doc).classList.contains('err'), toastOf(doc).textContent)
+  check('copyWithFeedback reports empty for an empty value', (await mod.copyWithFeedback('')) === 'empty')
   check('copyText empty resolves false', (await mod.copyText('')) === false)
 }
 
 /* ============================================================== [7] toast */
 
 {
-  console.log('\n[7] toast singleton + auto-hide')
+  console.log('\n[7] toast: anchored inside the panel, singleton, auto-hide')
+  // The panel root is the toast host, so the status line never lands on the
+  // bottom layer of the Harness window.
+  const panel = doc.createElement('div')
+  panel.className = 'mdr-root'
+  doc.body.appendChild(panel)
   mod.toast('第一条', 'ok')
   await flush()
   const first = toastOf(doc)
+  check('toast is mounted inside the panel root', !!first && first.parentNode === panel, first && first.parentNode && first.parentNode.className)
   mod.toast('第二条', 'err')
   await flush()
   const second = toastOf(doc)
@@ -506,6 +544,7 @@ let mod
   check('toast err class', second.classList.contains('err') && second.classList.contains('show'), second.className)
   await sleep(2750)
   check('toast auto-hides after 2.6s', !toastOf(doc).classList.contains('show'), toastOf(doc).className)
+  panel.remove()
 }
 
 /* ============================================================ [8] summary */

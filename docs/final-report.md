@@ -198,6 +198,28 @@ flexbox 会按「各子项基准宽度比例」压缩它 —— 压缩量取决�
 img/href/css url() 仍被重写」）；load/boot、code 177/177、html 159/159、panels 100/100、copy-menu 66/66、
 defs 63/63 全绿。
 
+## 附录：第 10 轮（去掉压在 Harness 窗口底层的「已复制路径」提示）
+
+**反馈**：「已复制路径」提示显示在 Harness 窗口最底层，去掉。
+
+**根因**：第 7 轮加的提示条 `toast()` 挂在 `document.body` 上、`position:fixed; bottom:38px`，
+所以它落在 **Harness 窗口底部**（压在宿主 UI 上，而不是阅读器面板里）；复制动作还额外弹一条
+「已复制路径」，对用户就是一层没必要的浮层。
+
+**修复**（`plugin/src-client/00-core.js`）：
+
+- **复制不再有任何浮层**：确认信息留在用户刚打开的**菜单项本身**
+  （`复制路径 ✓`，0.9 秒后菜单自动收起；失败则显示「复制失败，请手动复制」，1.8 秒后收起）；
+  新增 `copyWithFeedback()` 返回 `ok` / `err` / `empty`，删除 `copyWithToast()`。
+- **其余提示（跳转失败等）改为锚在插件面板内**：`toast()` 现在挂到 `.mdr-root`
+  （面板根是 `position:relative`）并用 `position:absolute`，不再落到 Harness 窗口底部；
+  没有面板时回退到 `document.body` + `mdr-toast-fixed`。
+- 菜单增加 `.mdr-ctx-ok` / `.mdr-ctx-err` 两种状态色。
+
+**回归**：`work/harnesses/copy-menu-check.mjs` 随契约更新（70/70）——断言复制**不产生任何 toast**、
+确认文字出现在菜单项里、toast 挂在 `.mdr-root` 内且仍会 2.6 秒自动消失；
+其余 harness 全绿：load/boot、code 177/177、html 159/159、panels 100/100、defs 63/63、html-preview 全通过。
+
 ## 验收结论（2026-11-04）
 
 用户共提出 3 批反馈（17 项），全部回归通过，用户确认「没有其它问题了」：

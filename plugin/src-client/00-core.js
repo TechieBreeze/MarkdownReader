@@ -167,30 +167,51 @@ function copyTextFallback(text) {
 }
 
 let toastTimer = null
+let toastNode = null
 
-/** Transient status line at the bottom of the viewport (replaces the original's #toast). */
+/**
+ * Transient status line INSIDE the reader panel.
+ *
+ * It used to be appended to `document.body` with `position:fixed`, which put it
+ * at the very bottom of the Harness window - over the host UI instead of over
+ * the reader. The panel root is `position:relative`, so anchoring the toast
+ * there keeps the feedback inside the reader and off the rest of the app.
+ */
+function toastHost() {
+  const root = document.querySelector('.mdr-root')
+  return root || document.body
+}
+
 function toast(message, kind) {
-  let node = document.getElementById('mdr-toast')
-  if (!node) {
+  const host = toastHost()
+  let node = toastNode
+  if (!node || node.parentNode !== host) {
+    if (node && node.parentNode) node.parentNode.removeChild(node)
     node = document.createElement('div')
     node.id = 'mdr-toast'
-    document.body.appendChild(node)
+    host.appendChild(node)
+    toastNode = node
   }
-  node.className = 'mdr-toast show' + (kind === 'err' ? ' err' : '')
+  node.className =
+    'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '') + ' show' + (kind === 'err' ? ' err' : '')
   node.textContent = String(message == null ? '' : message)
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
-    node.className = 'mdr-toast'
+    node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '')
   }, 2600)
 }
 
-function copyWithToast(value, okMessage) {
+/**
+ * Copy text and report the result to the caller.
+ *
+ * No floating toast here on purpose: a "已复制路径" line at the bottom of the
+ * Harness window was reported as noise, so the confirmation stays inside the
+ * menu the user just opened.
+ */
+function copyWithFeedback(value) {
   const text = String(value == null ? '' : value)
-  if (!text) {
-    toast('没有可复制的内容', 'err')
-    return
-  }
-  copyText(text).then((ok) => toast(ok ? okMessage || '已复制到剪贴板' : '复制失败：请手动选中后按 Ctrl+C', ok ? 'ok' : 'err'))
+  if (!text) return Promise.resolve('empty')
+  return copyText(text).then((ok) => (ok ? 'ok' : 'err'))
 }
 
 /* ------------------------------------------------- path right-click menu */
@@ -244,10 +265,24 @@ function pathMenuOpen(x, y, items) {
     button.className = 'mdr-ctx-item'
     button.textContent = item.label
     button.title = item.title || item.label
-    button.addEventListener('click', (event) => {
+    button.addEventListener('click', async (event) => {
       event.stopPropagation()
-      pathMenuClose()
-      item.action()
+      const result = await item.action()
+      // The confirmation stays inside the menu item: no floating toast over
+      // the Harness window.
+      if (result === 'ok') {
+        button.textContent = `${item.label} ✓`
+        button.classList.add('mdr-ctx-ok')
+        button.disabled = true
+        setTimeout(pathMenuClose, 900)
+      } else if (result === 'err') {
+        button.textContent = '复制失败，请手动复制'
+        button.classList.add('mdr-ctx-err')
+        button.disabled = true
+        setTimeout(pathMenuClose, 1800)
+      } else {
+        pathMenuClose()
+      }
     })
     menu.appendChild(button)
   }
@@ -289,8 +324,8 @@ if (typeof document !== 'undefined' && document && typeof document.addEventListe
     event.preventDefault()
     const fileName = path.split(/[\\/]/).pop()
     pathMenuOpen(event.clientX, event.clientY, [
-      { label: '复制路径', title: path, action: () => copyWithToast(path, '已复制路径') },
-      { label: '复制文件名', title: fileName, action: () => copyWithToast(fileName, '已复制文件名') },
+      { label: '复制路径', title: path, action: () => copyWithFeedback(path) },
+      { label: '复制文件名', title: fileName, action: () => copyWithFeedback(fileName) },
     ])
   })
 }
@@ -628,7 +663,12 @@ const APP_CSS = `
 .mdr-ctx{position:fixed;z-index:2147483000;min-width:148px;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;flex-direction:column}
 .mdr-ctx-item{display:block;width:100%;text-align:left;padding:6px 10px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
 .mdr-ctx-item:hover{background:var(--dsw-alias-bg-layer-2)}
-.mdr-toast{position:fixed;left:50%;bottom:38px;z-index:2147483000;transform:translateX(-50%) translateY(8px);padding:7px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-ctx-item:disabled{cursor:default}
+.mdr-ctx-ok{color:#7ee787}
+.mdr-ctx-err{color:#ff9a9a}
+/* 提示条锚在插件面板内（面板根是 position:relative），不再压到 Harness 窗口底部 */
+.mdr-toast{position:absolute;left:50%;bottom:18px;z-index:2147483000;transform:translateX(-50%) translateY(8px);padding:7px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mdr-toast-fixed{position:fixed;bottom:38px}
 .mdr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .mdr-toast.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
 `
