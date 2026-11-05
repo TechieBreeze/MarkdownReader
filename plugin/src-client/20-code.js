@@ -454,6 +454,19 @@ const FENCE_CSS = `
 .mdr-md pre code .hljs-params.hljs-variable{color:#9cdcfe}
 .mdr-md pre code .hljs-params.hljs-keyword{color:#569cd6}
 .mdr-md pre code .hljs-params.hljs-constant{color:#b5cea8}
+.mdr-md .mdr-md-diff{margin:1em 0;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:#1e1e1e;overflow:auto}
+.mdr-md .mdr-md-diff .mdr-cl{font-size:12.5px}
+.mdr-md .mdr-md-diff .mdr-cl-no{flex:0 0 62px;text-align:right;padding-right:14px;color:#858585;background:#252526;border-right:1px solid #3e3e42;user-select:none;position:sticky;left:0;z-index:1}
+.mdr-md .mdr-md-diff .mdr-cl-code{flex:1;padding-left:16px;color:#d4d4d4;white-space:pre;tab-size:4}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-add{background:rgba(46,160,67,.15)}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-add .mdr-cl-no{background:rgba(46,160,67,.25);color:#3fb950}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del{background:rgba(248,81,73,.12)}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-cl-no{background:rgba(248,81,73,.2);color:#f48771}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-cl-code{text-decoration:line-through;opacity:.72}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx .mdr-cl-no{color:#6e7681}
+.mdr-md .mdr-md-diff .mdr-diff-meta .mdr-cl-code{color:#6e7681}
+.mdr-md .mdr-md-diff .mdr-diff-hunk .mdr-cl-code{color:#79c0ff}
 `
 
 /** Inject the md-fence palette once; safe to call on every fence render. */
@@ -483,6 +496,102 @@ function renderFenceCodeHtml(source, langHint) {
   } catch {
     return escapeHtml(text)
   }
+}
+
+/* ------------------------------------------------------------- diff fences */
+
+/**
+ * Fence languages that render as a diff view instead of highlighted source.
+ * `patch` is an alias of `diff` (the same alias the code view uses for .patch).
+ */
+const DIFF_FENCE_LANGS = new Set(['diff', 'git-diff', 'patch'])
+
+function isDiffFenceLang(lang) {
+  return DIFF_FENCE_LANGS.has(String(lang == null ? '' : lang).trim().toLowerCase())
+}
+
+/**
+ * Rows of a unified diff pasted into a ```diff fence.
+ *
+ * The row contract is the commit-diff view's: ONE line-number column where a
+ * deleted row carries the OLD file number and every other row the NEW one, and
+ * a +/- gutter sign. File headers and hunk headers become meta rows.
+ *
+ * The hunk header's declared counts are authoritative (same rule as the Host's
+ * diff parser): a patch ends with a newline, so splitting it yields a trailing
+ * empty line that must not become a row.
+ */
+function parseDiffFenceRows(source) {
+  const rows = []
+  const text = String(source == null ? '' : source)
+  let oldNo = 0
+  let newNo = 0
+  let oldLeft = 0
+  let newLeft = 0
+  let inHunk = false
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/\r$/, '')
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+    if (header) {
+      oldNo = Number(header[1])
+      newNo = Number(header[3])
+      oldLeft = header[2] === undefined ? 1 : Number(header[2])
+      newLeft = header[4] === undefined ? 1 : Number(header[4])
+      inHunk = true
+      rows.push({ kind: 'hunk', no: null, text: line })
+      continue
+    }
+    if (inHunk) {
+      const kind = line[0]
+      if (kind === '+' && newLeft > 0) {
+        rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
+        newNo += 1
+        newLeft -= 1
+        continue
+      }
+      if (kind === '-' && oldLeft > 0) {
+        rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
+        oldNo += 1
+        oldLeft -= 1
+        continue
+      }
+      if ((kind === ' ' || line === '') && oldLeft > 0 && newLeft > 0) {
+        rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
+        oldNo += 1
+        newNo += 1
+        oldLeft -= 1
+        newLeft -= 1
+        continue
+      }
+      // The hunk is complete (counts exhausted) or the line is not part of it.
+      inHunk = false
+    }
+    if (line.startsWith('\\')) {
+      rows.push({ kind: 'meta', no: null, text: line })
+      continue
+    }
+    if (line.trim() === '') continue
+    rows.push({ kind: 'meta', no: null, text: line })
+  }
+  return rows
+}
+
+/** HTML for a ```diff fence - same row markup as the commit-diff view. */
+function renderDiffFenceHtml(source) {
+  const rows = parseDiffFenceRows(source)
+  if (!rows.length) return escapeHtml(String(source == null ? '' : source))
+  const parts = []
+  for (const row of rows) {
+    if (row.kind === 'meta' || row.kind === 'hunk') {
+      const cls = row.kind === 'hunk' ? 'mdr-diff-hunk' : 'mdr-diff-meta'
+      parts.push(`<div class="mdr-cl ${cls}"><span class="mdr-cl-no"></span><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+      continue
+    }
+    const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
+    const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
+    parts.push(`<div class="mdr-cl ${cls}"><span class="mdr-cl-no">${row.no}</span><span class="mdr-cl-code">${sign}${escapeHtml(row.text)}</span></div>`)
+  }
+  return parts.join('')
 }
 
 /* -------------------------------------------------------------- code scroll */

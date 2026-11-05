@@ -231,14 +231,31 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       for (; index < fenceBlocks.length; index += 1) {
         const { code, lang } = fenceBlocks[index]
         const source = code.textContent || ''
-        try {
-          code.innerHTML =
-            typeof renderFenceCodeHtml === 'function'
-              ? renderFenceCodeHtml(source, lang)
-              : escapeHtml(source)
-          code.classList.add('hljs')
-        } catch {
-          code.innerHTML = escapeHtml(source)
+        if (typeof isDiffFenceLang === 'function' && isDiffFenceLang(lang)) {
+          // ```diff → the commit-diff view inside the document: hunk headers,
+          // +/- gutter, one line-number column (old number for deletions).
+          try {
+            const html = typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source)
+            if (typeof ensureFenceCss === 'function') ensureFenceCss()
+            const wrap = document.createElement('div')
+            wrap.className = 'mdr-md-diff'
+            wrap.innerHTML = html
+            const pre = code.parentElement
+            if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
+            else code.innerHTML = html
+          } catch {
+            code.innerHTML = escapeHtml(source)
+          }
+        } else {
+          try {
+            code.innerHTML =
+              typeof renderFenceCodeHtml === 'function'
+                ? renderFenceCodeHtml(source, lang)
+                : escapeHtml(source)
+            code.classList.add('hljs')
+          } catch {
+            code.innerHTML = escapeHtml(source)
+          }
         }
         if (performance.now() - started > 60) {
           index += 1
