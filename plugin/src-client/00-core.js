@@ -202,6 +202,35 @@ function splitHref(href) {
 /* ------------------------------------------------------- clipboard & toast */
 
 /**
+ * Remove overlay nodes left behind by an EARLIER bundle.
+ *
+ * The Harness hot-swaps the client module when the bundle is rebuilt, so a
+ * window can carry DOM nodes created by an older version of this plugin (the
+ * round-7 copy menu, whose toast said 「已复制路径」). Such a node lives on
+ * document.body, OUTSIDE the panel: it keeps no stylesheet and shows up as a
+ * stray line at the bottom of the window - in the conversation view, where the
+ * content is shorter, it becomes visible.
+ *
+ * The current code never creates such a node (its overlays live inside the
+ * panel), so everything found there is stale: remove it.
+ */
+function cleanupStaleOverlays() {
+  try {
+    if (typeof document === 'undefined' || !document.body) return
+    if (typeof document.querySelectorAll !== 'function') return
+    const panel = panelRoot()
+    const nodes = document.querySelectorAll('#mdr-toast, .mdr-ctx')
+    for (const node of nodes) {
+      if (!node || node === toastNode) continue
+      if (panel && panel.contains && panel.contains(node)) continue
+      if (node.parentNode) node.parentNode.removeChild(node)
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
  * The plugin's own root element (the reader panel), captured from the React
  * tree.
  *
@@ -238,6 +267,9 @@ function setPanelRoot(element) {
   if (element && typeof element.addEventListener === 'function') {
     element.addEventListener('contextmenu', onPathContextMenu)
   }
+  // A window that hot-swapped an older bundle may still carry its overlay
+  // nodes on document.body: drop them as soon as the panel is mounted.
+  cleanupStaleOverlays()
 }
 
 /**
@@ -464,12 +496,68 @@ if (typeof document !== 'undefined' && document && typeof document.addEventListe
 }
 
 /**
+ * Find every node in the window whose text is a copy confirmation.
+ *
+ * This is a DIAGNOSTIC, not a feature: the user reported a 「已复制路径」 line
+ * that shows up at the bottom of the Harness window when the conversation view
+ * is shown (and not while the plugin panel is open). The plugin cannot own that
+ * text (its current build does not contain it), so the app has to say WHO does -
+ * the scan reports the tag, class, id and position of every matching node.
+ */
+function findCopyConfirmationNodes() {
+  const hits = []
+  const roots = []
+  try {
+    if (typeof document !== 'undefined' && document.body) roots.push(document.body)
+  } catch {
+    /* ignore */
+  }
+  const panel = panelRoot()
+  if (panel && roots.indexOf(panel) < 0) roots.push(panel)
+  for (const root of roots) {
+    let walker = null
+    try {
+      walker = document.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */)
+    } catch {
+      continue
+    }
+    let node = walker.nextNode()
+    while (node) {
+      const text = String(node.textContent || '').trim()
+      if (text && text.length <= 40 && /已复制|复制路径|复制文件名/.test(text)) {
+        const element = node.parentElement
+        if (element) {
+          let rect = { top: 0, left: 0, width: 0, height: 0 }
+          try {
+            rect = element.getBoundingClientRect()
+          } catch {
+            /* ignore */
+          }
+          hits.push({
+            text,
+            tag: element.tagName,
+            cls: String(element.className || '').slice(0, 90),
+            id: element.id || '',
+            top: Math.round(rect.top),
+            left: Math.round(rect.left),
+            inPanel: !!(panel && panel.contains && panel.contains(element)),
+          })
+          if (hits.length >= 8) return hits
+        }
+      }
+      node = walker.nextNode()
+    }
+  }
+  return hits
+}
+
+/**
  * Report what the DOM around the panel looks like.
  *
  * "Why does this overlay end up at the bottom of the Harness window?" is a
  * question about the DOM scope, so the client answers it instead of guessing:
  * whether the panel root is reachable from the document, which scope it lives
- * in, and where the overlays are mounted.
+ * in, and which nodes carry a copy confirmation.
  */
 function reportClientDom() {
   try {
@@ -489,9 +577,32 @@ function reportClientDom() {
         reachable,
         inPanel: !!root,
         host: overlayHost() === root,
-        href: typeof location !== 'undefined' ? String(location.href).slice(0, 120) : '',
+        view: typeof location !== 'undefined' ? String(location.href).slice(0, 120) : '',
+        copyTexts: findCopyConfirmationNodes(),
       },
     }).catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Keep the DOM report fresh.
+ *
+ * The copy confirmation the user reported only appears in the CONVERSATION
+ * view (the plugin panel is not shown then), so the report has to run while
+ * the panel is unmounted as well - hence the interval, not a one-shot call.
+ */
+let domReportTimer = null
+function startDomReport() {
+  if (domReportTimer) return
+  try {
+    domReportTimer = setInterval(() => {
+      cleanupStaleOverlays()
+      reportClientDom()
+    }, 8000)
+    // A harness (Node) must not be held open by this timer.
+    if (domReportTimer && typeof domReportTimer.unref === 'function') domReportTimer.unref()
   } catch {
     /* ignore */
   }
