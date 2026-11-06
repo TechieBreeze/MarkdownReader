@@ -82,7 +82,14 @@ export async function handleRequest(req, res, state) {
 
     if (pathname.startsWith('/vendor/')) return serveVendor(res, state, pathname.slice('/vendor/'.length))
     if (pathname === '/api/ping') {
-      return sendJson(res, 200, { ok: true, version: VERSION, route: ROUTE, packageDir: state.packageDir })
+      return sendJson(res, 200, {
+        ok: true,
+        version: VERSION,
+        route: ROUTE,
+        packageDir: state.packageDir,
+        startedAt: state.startedAt || '',
+        clientBuild: clientBuild(state).build,
+      })
     }
     if (!pathname.startsWith('/api/')) return sendError(res, 404, 'not found')
 
