@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "09af55c35e1f";
+    const BUILD_ID = "831cd291b899";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -2764,6 +2764,17 @@ function highlightDiffFragment(rows, lang) {
   }
 }
 
+/** 高亮后的 HTML → 纯文本（用来校验这一行和 diff 里的那一行是否一致）。 */
+function diffPlainText(html) {
+  return String(html == null ? '' : html)
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+}
+
 /**
  * HTML for a ```diff fence: the code part only (NO line-number column),
  * highlighted with the language of the file the diff belongs to, with added
@@ -2777,18 +2788,31 @@ function renderDiffFenceHtml(source) {
   for (const section of diffFenceSections(rows)) {
     const newSide = []
     const oldSide = []
+    // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
+    // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
+    // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
+    // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
+    const slots = []
     for (const row of section.rows) {
+      const slot = { old: -1, new: -1 }
       if (row.kind === 'ctx') {
+        slot.new = newSide.length
         newSide.push(row)
+        slot.old = oldSide.length
         oldSide.push(row)
-      } else if (row.kind === 'add') newSide.push(row)
-      else if (row.kind === 'del') oldSide.push(row)
+      } else if (row.kind === 'add') {
+        slot.new = newSide.length
+        newSide.push(row)
+      } else if (row.kind === 'del') {
+        slot.old = oldSide.length
+        oldSide.push(row)
+      }
+      slots.push(slot)
     }
     const newHtml = highlightDiffFragment(newSide, section.lang)
     const oldHtml = highlightDiffFragment(oldSide, section.lang)
-    let newIndex = 0
-    let oldIndex = 0
-    for (const row of section.rows) {
+    for (let index = 0; index < section.rows.length; index += 1) {
+      const row = section.rows[index]
       if (row.kind === 'meta') {
         parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
         continue
@@ -2799,7 +2823,11 @@ function renderDiffFenceHtml(source) {
       }
       const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
       const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
-      const code = row.kind === 'del' ? oldHtml[oldIndex++] : newHtml[newIndex++]
+      const slot = slots[index]
+      const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
+      // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
+      // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
+      const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
       parts.push(
         `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
       )

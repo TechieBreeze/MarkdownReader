@@ -56,7 +56,7 @@ function constOf(file, name) {
 const core = lift('00-core.js', ['escapeHtml', 'extOf'])
 const code = lift(
   '20-code.js',
-  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment'],
+  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment', 'diffPlainText'],
   `${constOf('20-code.js', 'DIFF_FENCE_LANGS')}\n${constOf('20-code.js', 'LANG_MAP')}\nconst escapeHtml = ${core.escapeHtml.toString()}\nconst extOf = ${core.extOf.toString()}`,
 )
 
@@ -190,6 +190,44 @@ if (fs.existsSync(fixtureDoc)) {
 } else {
   check('the fixture is reachable', false, fixtureDoc)
 }
+
+console.log('\n[9] every rendered row shows ITS OWN line (no old/new side drift)')
+// The real case: docs/设计/20261106/preSync游标翻页改造详细设计说明书.md,
+// first "改后" block. The deleted rows were rendered from the OLD side block,
+// which also holds the context rows, so the old-side index drifted by the
+// number of preceding context rows: the first deleted row showed
+// `@XxlJob("preSyncEzrStoreChangeHandler")` again - "the same line twice".
+const MIXED = [
+  'diff --git a/src/main/java/com/pvh/datax/job/CkDataXXxlJob.java b/src/main/java/com/pvh/datax/job/CkDataXXxlJob.java',
+  '--- a/src/main/java/com/pvh/datax/job/CkDataXXxlJob.java',
+  '+++ b/src/main/java/com/pvh/datax/job/CkDataXXxlJob.java',
+  '@@ -412,18 +412,28 @@',
+  '     @XxlJob("preSyncEzrStoreChangeHandler")',
+  '     public void preSyncEzrStoreChangeHandler() {',
+  '         XxlJobHelper.log("start");',
+  '-        int page = 1;',
+  '         List<Date> dateList = parseJobParam(XxlJobHelper.getJobParam());',
+  '-        Page<SyncDataDTO> syncDataDTOS;',
+  '+        final int pageSize = 5000;',
+  '     }',
+].join('\n')
+const rowRe = /<div class="mdr-cl ([^"]+)"><span class="mdr-cl-code"><span class="mdr-diff-sign">([+− ])<\/span>([\s\S]*?)<\/span><\/div>/g
+const rendered = [...code.renderDiffFenceHtml(MIXED).matchAll(rowRe)].map((match) => ({
+  cls: match[1],
+  sign: match[2],
+  text: code.diffPlainText(match[3]),
+}))
+const expected = code.parseDiffFenceRows(MIXED).filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
+check('one rendered row per diff row', rendered.length === expected.length, `${rendered.length} vs ${expected.length}`)
+let mismatched = 0
+expected.forEach((row, index) => {
+  const got = rendered[index]
+  if (!got || got.text !== row.text) mismatched += 1
+})
+check('every row shows exactly its own line', mismatched === 0, `${mismatched} row(s) drifted`)
+const delRows = rendered.filter((row) => row.cls.includes('mdr-git-del'))
+check('the deleted rows are the deleted lines', JSON.stringify(delRows.map((row) => row.text)) === JSON.stringify(['        int page = 1;', '        Page<SyncDataDTO> syncDataDTOS;']), JSON.stringify(delRows.map((row) => row.text)))
+check('the annotation line is NOT repeated as a deleted row', !delRows.some((row) => row.text.includes('@XxlJob')), JSON.stringify(delRows.map((row) => row.text)))
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
 if (failures) process.exitCode = 1
