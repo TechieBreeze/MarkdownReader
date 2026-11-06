@@ -47,6 +47,8 @@ let mmdMountSeq = 0
 /** Serial render queue: at most one mermaid.render() in flight. */
 const mmdQueue = []
 let mmdPumping = false
+/** A pump is already scheduled on idle time. */
+let mmdPumpScheduled = false
 /** Live observers, pruned whenever their container has been detached. */
 const mmdLiveRecs = new Set()
 const mmdContainerRecs = new WeakMap()
@@ -265,7 +267,25 @@ async function mmdRenderOne(entry) {
 function mmdEnqueue(entry) {
   if (!entry || !entry.el || !entry.el.isConnected) return
   mmdQueue.push(entry)
-  mmdPump()
+  mmdSchedulePump()
+}
+
+/** Start the render queue when the browser is idle.
+ *
+ * mermaid's parse + layout is a long main-thread task (hundreds of ms) and its
+ * library is ~3 MB. Rendering it the moment the diagram intersects stole the
+ * main thread from the document's own code highlighting, and the page froze
+ * for seconds right around the diagram. On idle time the browser can finish
+ * the pending work (and paint) first. */
+function mmdSchedulePump() {
+  if (mmdPumpScheduled) return
+  mmdPumpScheduled = true
+  const run = () => {
+    mmdPumpScheduled = false
+    mmdPump()
+  }
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 })
+  else window.setTimeout(run, 120)
 }
 
 async function mmdPump() {

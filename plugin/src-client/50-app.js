@@ -1193,7 +1193,18 @@ function App() {
 }
 
 function Page() {
-  return h('div', { className: 'mdr-root' }, h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }), h(App))
+  // The fence palette (hljs colours + the diff row colours) lives NEXT TO the
+  // app stylesheet, inside the plugin's own root: a <style> in <head> only
+  // reaches the document if the panel is rendered there, and the diff rows
+  // must keep their colours wherever the harness mounts the panel.
+  const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+  return h(
+    'div',
+    { className: 'mdr-root' },
+    h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
+    fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+    h(App),
+  )
 }
 
 function MarkdownReaderIcon(props) {

@@ -139,6 +139,33 @@ function syncClientBuild() {
     /* ignore */
   }
 }
+
+/**
+ * Report what the markdown view actually did with a document.
+ *
+ * The diff fence renders in the CLIENT, so "the block did not render" can only
+ * be answered by the client itself: how many fences it saw, how many became
+ * diff views, how long it took, and whether something threw. The Host keeps the
+ * last report, so the behaviour of the running app can be read instead of
+ * guessed.
+ */
+function reportMdRender(stats) {
+  try {
+    postJson('/api/client-ping', {
+      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+      md: {
+        path: String((stats && stats.path) || ''),
+        fences: Number((stats && stats.fences) || 0),
+        diffBlocks: Number((stats && stats.diffBlocks) || 0),
+        ms: Number((stats && stats.ms) || 0),
+        error: String((stats && stats.error) || ''),
+        at: new Date().toISOString(),
+      },
+    }).catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
 function resolveRel(mdPath, href, multi, rootNames) {
   const raw = String(href || '').replace(/\\/g, '/')
   const clean = raw.replace(/^\/+/, '')
@@ -675,7 +702,12 @@ const APP_CSS = `
 .mdr-md code{font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:.92em;padding:.15em .35em;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .mdr-md pre{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;line-height:1.55}
 .mdr-md pre code{padding:0;background:transparent;color:#d4d4d4;font-size:12.5px}
-.mdr-md blockquote{margin:1em 0;padding:.2em 1em;border-left:3px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.mdr-md blockquote{margin:1.1em 0;padding:.75em 1.1em;border-left:3px solid var(--dsw-alias-brand-primary,#4e9bd6);border-radius:0 8px 8px 0;background:var(--dsw-alias-bg-layer-2,rgba(139,148,158,.08));color:var(--dsw-alias-label-secondary,#9aa4b2)}
+.mdr-md blockquote p{margin:.3em 0}
+.mdr-md blockquote p:first-child{margin-top:0}
+.mdr-md blockquote p:last-child{margin-bottom:0}
+.mdr-md blockquote strong{color:var(--dsw-alias-label-primary,#d4d4d4)}
+.mdr-md blockquote code{background:rgba(139,148,158,.14)}
 .mdr-md table{border-collapse:collapse;margin:1em 0;display:block;overflow:auto;max-width:100%}
 .mdr-md th,.mdr-md td{border:1px solid var(--dsw-alias-border-l1);padding:6px 10px}
 .mdr-md th{background:var(--dsw-alias-bg-layer-2);font-weight:600}

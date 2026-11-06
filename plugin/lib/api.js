@@ -156,7 +156,17 @@ function clientBuild(state) {
 /** Remember which client build a browser actually loaded. */
 async function apiClientPing(req, res, state) {
   const body = JSON.parse((await readBody(req)) || '{}')
-  state.lastClientBuild = { build: String(body.build || ''), at: new Date().toISOString() }
+  const last = {
+    build: String(body.build || ''),
+    at: new Date().toISOString(),
+  }
+  if (body.md) {
+    // What the markdown view did with a document: fence count, diff blocks,
+    // duration and any error. The diff rendering happens in the client, so
+    // this is the only way to see what the running app actually did.
+    last.md = body.md
+  }
+  state.lastClientBuild = last
   return sendJson(res, 200, { ok: true, last: state.lastClientBuild })
 }
 

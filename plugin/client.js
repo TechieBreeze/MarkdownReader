@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "f2ea8b7da5d1";
+    const BUILD_ID = "b7d3a654f574";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -144,6 +144,33 @@ function syncClientBuild() {
         window.location.reload()
       })
       .catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Report what the markdown view actually did with a document.
+ *
+ * The diff fence renders in the CLIENT, so "the block did not render" can only
+ * be answered by the client itself: how many fences it saw, how many became
+ * diff views, how long it took, and whether something threw. The Host keeps the
+ * last report, so the behaviour of the running app can be read instead of
+ * guessed.
+ */
+function reportMdRender(stats) {
+  try {
+    postJson('/api/client-ping', {
+      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+      md: {
+        path: String((stats && stats.path) || ''),
+        fences: Number((stats && stats.fences) || 0),
+        diffBlocks: Number((stats && stats.diffBlocks) || 0),
+        ms: Number((stats && stats.ms) || 0),
+        error: String((stats && stats.error) || ''),
+        at: new Date().toISOString(),
+      },
+    }).catch(() => {})
   } catch {
     /* ignore */
   }
@@ -684,7 +711,12 @@ const APP_CSS = `
 .mdr-md code{font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:.92em;padding:.15em .35em;border-radius:4px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .mdr-md pre{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;line-height:1.55}
 .mdr-md pre code{padding:0;background:transparent;color:#d4d4d4;font-size:12.5px}
-.mdr-md blockquote{margin:1em 0;padding:.2em 1em;border-left:3px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.mdr-md blockquote{margin:1.1em 0;padding:.75em 1.1em;border-left:3px solid var(--dsw-alias-brand-primary,#4e9bd6);border-radius:0 8px 8px 0;background:var(--dsw-alias-bg-layer-2,rgba(139,148,158,.08));color:var(--dsw-alias-label-secondary,#9aa4b2)}
+.mdr-md blockquote p{margin:.3em 0}
+.mdr-md blockquote p:first-child{margin-top:0}
+.mdr-md blockquote p:last-child{margin-bottom:0}
+.mdr-md blockquote strong{color:var(--dsw-alias-label-primary,#d4d4d4)}
+.mdr-md blockquote code{background:rgba(139,148,158,.14)}
 .mdr-md table{border-collapse:collapse;margin:1em 0;display:block;overflow:auto;max-width:100%}
 .mdr-md th,.mdr-md td{border:1px solid var(--dsw-alias-border-l1);padding:6px 10px}
 .mdr-md th{background:var(--dsw-alias-bg-layer-2);font-weight:600}
@@ -816,6 +848,23 @@ function applyLocalLink(anchor, resolved, line, branch, commit) {
 }
 
 function enhanceMarkdown(container, mdPath, multi, rootNames) {
+  // The diff fence renders in the CLIENT, so "the block did not render" can
+  // only be answered by the client: how many fences it saw, how many became
+  // diff views, how long it took. The Host keeps the last report.
+  const renderStarted = performance.now()
+  let fenceCount = 0
+  let diffCount = 0
+  let renderError = ''
+  const report = () => {
+    if (typeof reportMdRender !== 'function') return
+    reportMdRender({
+      path: mdPath,
+      fences: fenceCount,
+      diffBlocks: diffCount,
+      ms: Math.round(performance.now() - renderStarted),
+      error: renderError,
+    })
+  }
   // 1) local images -> raw endpoint
   container.querySelectorAll('img[src]').forEach((img) => {
     const raw = img.getAttribute('src') || ''
@@ -951,16 +1000,28 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     }
     fenceBlocks.push({ code, lang })
   }
+  fenceCount = fenceBlocks.length
   if (fenceBlocks.length) {
     let index = 0
+    // Run the slices on IDLE time with a small budget.
+    // A document with ~90 fences (plus the diff fences, which highlight two
+    // sides each) otherwise monopolises the main thread in 60ms chunks: the
+    // page stopped responding exactly where a mermaid diagram rendered (its
+    // parse+layout is a long task of its own), which the user reported as
+    // "卡在 §10 时序与协作 那个 mermaid 图前后".
+    const schedule =
+      typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
+        ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
+        : (fn) => window.setTimeout(fn, 16)
     const step = () => {
       const started = performance.now()
       for (; index < fenceBlocks.length; index += 1) {
         const { code, lang } = fenceBlocks[index]
         const source = code.textContent || ''
         if (typeof isDiffFenceLang === 'function' && isDiffFenceLang(lang)) {
-          // ```diff → the commit-diff view inside the document: hunk headers,
-          // +/- gutter, one line-number column (old number for deletions).
+          // ```diff → the commit-diff view inside the document: the code part
+          // only, highlighted with the language of the file the diff belongs
+          // to, added rows green and deleted rows red + strike-through.
           try {
             const html = typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
@@ -970,8 +1031,10 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             const pre = code.parentElement
             if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
             else code.innerHTML = html
+            diffCount += 1
           } catch {
             code.innerHTML = escapeHtml(source)
+            renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
           }
         } else {
           try {
@@ -984,14 +1047,17 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             code.innerHTML = escapeHtml(source)
           }
         }
-        if (performance.now() - started > 60) {
+        if (performance.now() - started > 12) {
           index += 1
           break
         }
       }
-      if (index < fenceBlocks.length) setTimeout(step, 16)
+      if (index < fenceBlocks.length) schedule(step)
+      else report()
     }
-    setTimeout(step, 0)
+    schedule(step)
+  } else {
+    report()
   }
 
   // 5) mermaid fences are rendered lazily by the mermaid slice
@@ -1140,6 +1206,8 @@ let mmdMountSeq = 0
 /** Serial render queue: at most one mermaid.render() in flight. */
 const mmdQueue = []
 let mmdPumping = false
+/** A pump is already scheduled on idle time. */
+let mmdPumpScheduled = false
 /** Live observers, pruned whenever their container has been detached. */
 const mmdLiveRecs = new Set()
 const mmdContainerRecs = new WeakMap()
@@ -1358,7 +1426,25 @@ async function mmdRenderOne(entry) {
 function mmdEnqueue(entry) {
   if (!entry || !entry.el || !entry.el.isConnected) return
   mmdQueue.push(entry)
-  mmdPump()
+  mmdSchedulePump()
+}
+
+/** Start the render queue when the browser is idle.
+ *
+ * mermaid's parse + layout is a long main-thread task (hundreds of ms) and its
+ * library is ~3 MB. Rendering it the moment the diagram intersects stole the
+ * main thread from the document's own code highlighting, and the page froze
+ * for seconds right around the diagram. On idle time the browser can finish
+ * the pending work (and paint) first. */
+function mmdSchedulePump() {
+  if (mmdPumpScheduled) return
+  mmdPumpScheduled = true
+  const run = () => {
+    mmdPumpScheduled = false
+    mmdPump()
+  }
+  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 })
+  else window.setTimeout(run, 120)
 }
 
 async function mmdPump() {
@@ -8479,7 +8565,18 @@ function App() {
 }
 
 function Page() {
-  return h('div', { className: 'mdr-root' }, h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }), h(App))
+  // The fence palette (hljs colours + the diff row colours) lives NEXT TO the
+  // app stylesheet, inside the plugin's own root: a <style> in <head> only
+  // reaches the document if the panel is rendered there, and the diff rows
+  // must keep their colours wherever the harness mounts the panel.
+  const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+  return h(
+    'div',
+    { className: 'mdr-root' },
+    h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
+    fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+    h(App),
+  )
 }
 
 function MarkdownReaderIcon(props) {

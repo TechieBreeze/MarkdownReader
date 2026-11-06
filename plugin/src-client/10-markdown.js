@@ -89,6 +89,23 @@ function applyLocalLink(anchor, resolved, line, branch, commit) {
 }
 
 function enhanceMarkdown(container, mdPath, multi, rootNames) {
+  // The diff fence renders in the CLIENT, so "the block did not render" can
+  // only be answered by the client: how many fences it saw, how many became
+  // diff views, how long it took. The Host keeps the last report.
+  const renderStarted = performance.now()
+  let fenceCount = 0
+  let diffCount = 0
+  let renderError = ''
+  const report = () => {
+    if (typeof reportMdRender !== 'function') return
+    reportMdRender({
+      path: mdPath,
+      fences: fenceCount,
+      diffBlocks: diffCount,
+      ms: Math.round(performance.now() - renderStarted),
+      error: renderError,
+    })
+  }
   // 1) local images -> raw endpoint
   container.querySelectorAll('img[src]').forEach((img) => {
     const raw = img.getAttribute('src') || ''
@@ -224,16 +241,28 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     }
     fenceBlocks.push({ code, lang })
   }
+  fenceCount = fenceBlocks.length
   if (fenceBlocks.length) {
     let index = 0
+    // Run the slices on IDLE time with a small budget.
+    // A document with ~90 fences (plus the diff fences, which highlight two
+    // sides each) otherwise monopolises the main thread in 60ms chunks: the
+    // page stopped responding exactly where a mermaid diagram rendered (its
+    // parse+layout is a long task of its own), which the user reported as
+    // "卡在 §10 时序与协作 那个 mermaid 图前后".
+    const schedule =
+      typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
+        ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
+        : (fn) => window.setTimeout(fn, 16)
     const step = () => {
       const started = performance.now()
       for (; index < fenceBlocks.length; index += 1) {
         const { code, lang } = fenceBlocks[index]
         const source = code.textContent || ''
         if (typeof isDiffFenceLang === 'function' && isDiffFenceLang(lang)) {
-          // ```diff → the commit-diff view inside the document: hunk headers,
-          // +/- gutter, one line-number column (old number for deletions).
+          // ```diff → the commit-diff view inside the document: the code part
+          // only, highlighted with the language of the file the diff belongs
+          // to, added rows green and deleted rows red + strike-through.
           try {
             const html = typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
@@ -243,8 +272,10 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             const pre = code.parentElement
             if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
             else code.innerHTML = html
+            diffCount += 1
           } catch {
             code.innerHTML = escapeHtml(source)
+            renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
           }
         } else {
           try {
@@ -257,14 +288,17 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             code.innerHTML = escapeHtml(source)
           }
         }
-        if (performance.now() - started > 60) {
+        if (performance.now() - started > 12) {
           index += 1
           break
         }
       }
-      if (index < fenceBlocks.length) setTimeout(step, 16)
+      if (index < fenceBlocks.length) schedule(step)
+      else report()
     }
-    setTimeout(step, 0)
+    schedule(step)
+  } else {
+    report()
   }
 
   // 5) mermaid fences are rendered lazily by the mermaid slice

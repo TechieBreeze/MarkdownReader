@@ -165,24 +165,30 @@ const wrongHtml = code.renderDiffFenceHtml(
 )
 check('the tail still renders as diff rows', wrongHtml.includes('mdr-git-ctx') && wrongHtml.includes('context three'), wrongHtml.slice(-200))
 
-console.log('\n[8] the real design document with hand-written diffs')
-const designDoc = 'C:/Users/1/Desktop/work/tasks/20260917-微服务/docs/设计/20261105/preSync游标翻页改造详细设计说明书.md'
-if (fs.existsSync(designDoc)) {
-  const md = fs.readFileSync(designDoc, 'utf8')
+console.log('\n[8] a document with hand-written diffs (counts wrong) loses no line')
+// The real case was a 19-block design document (now deleted); the fixture keeps
+// the same traits: hand-written hunks whose counts are all wrong.
+const fixtureDoc = path.join(ROOT, 'work', 'fixtures', 'diff-fence-doc.md')
+if (fs.existsSync(fixtureDoc)) {
+  const md = fs.readFileSync(fixtureDoc, 'utf8')
   const blocks = [...md.matchAll(/```diff\r?\n([\s\S]*?)```/g)].map((match) => match[1])
-  check('the document has diff blocks', blocks.length >= 10, blocks.length)
+  check('the fixture has diff blocks', blocks.length >= 3, blocks.length)
   let lost = 0
   for (const block of blocks) {
+    // The body is everything after the hunk header, minus the file headers and
+    // the trailing blank line a patch ends with. An EMPTY line inside the body
+    // is a context line with empty content and counts.
     const bodyLines = block
       .split('\n')
-      .filter((line) => line !== '')
-      .filter((line) => !/^(--- |\+\+\+ |diff --git |index |@@ )/.test(line))
+      .filter((line) => !/^(--- |\+\+\+ |diff --git |index )/.test(line))
+      .filter((line) => !/^@@ /.test(line))
+    while (bodyLines.length && bodyLines[bodyLines.length - 1] === '') bodyLines.pop()
     const parsed = code.parseDiffFenceRows(block).filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
     if (parsed.length !== bodyLines.length) lost += 1
   }
   check('no block loses a body line', lost === 0, `${lost} block(s) lost lines`)
 } else {
-  check('the design document is reachable', false, designDoc)
+  check('the fixture is reachable', false, fixtureDoc)
 }
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
