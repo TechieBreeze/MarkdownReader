@@ -56,7 +56,7 @@ function constOf(file, name) {
 const core = lift('00-core.js', ['escapeHtml', 'extOf'])
 const code = lift(
   '20-code.js',
-  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment', 'diffPlainText'],
+  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment', 'diffPlainText', 'isDiffFileHeaderLine'],
   `${constOf('20-code.js', 'DIFF_FENCE_LANGS')}\n${constOf('20-code.js', 'LANG_MAP')}\nconst escapeHtml = ${core.escapeHtml.toString()}\nconst extOf = ${core.extOf.toString()}`,
 )
 
@@ -228,6 +228,49 @@ check('every row shows exactly its own line', mismatched === 0, `${mismatched} r
 const delRows = rendered.filter((row) => row.cls.includes('mdr-git-del'))
 check('the deleted rows are the deleted lines', JSON.stringify(delRows.map((row) => row.text)) === JSON.stringify(['        int page = 1;', '        Page<SyncDataDTO> syncDataDTOS;']), JSON.stringify(delRows.map((row) => row.text)))
 check('the annotation line is NOT repeated as a deleted row', !delRows.some((row) => row.text.includes('@XxlJob')), JSON.stringify(delRows.map((row) => row.text)))
+
+console.log('\n[10] nothing of the patch is dropped')
+const withHeader = code.renderDiffFenceHtml(SAMPLE)
+check('the "diff --git" header line is rendered', withHeader.includes('diff --git a/src/main/resources/mapper/SyncEzrMapper.xml'))
+check('the "index" line is rendered', withHeader.includes('index 81882fa'))
+check('the "--- a/..." line is rendered', withHeader.includes('--- a/src/main/resources/mapper/SyncEzrMapper.xml'))
+
+console.log('\n[11] a hunk with wrong counts and an empty line keeps its whole body')
+// The counts are a HINT: a hand-written hunk that declares fewer lines than it
+// has must not lose its tail, and an empty line inside the body is a context
+// row (it used to end the hunk and turned the rest into dim header rows).
+const EMPTY_BODY = ['@@ -1,2 +1,2 @@', ' ctx one', '', '-old line', '+new line', ' ctx two'].join('\n')
+const emptyRows = code.parseDiffFenceRows(EMPTY_BODY)
+const emptyBody = emptyRows.filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
+check('the empty line is a context row', emptyBody.length === 5, emptyBody.length)
+check('the empty line keeps its place', emptyBody[1].kind === 'ctx' && emptyBody[1].text === '', JSON.stringify(emptyBody[1]))
+check('the tail after the empty line is kept', emptyBody[4].text === 'ctx two', JSON.stringify(emptyBody[4]))
+check('no body line became a header row', emptyRows.filter((row) => row.kind === 'meta').length === 0)
+
+console.log('\n[12] the file header of the next file ends the hunk (wrong counts)')
+const TWO_FILES = [
+  'diff --git a/A.java b/A.java',
+  '--- a/A.java',
+  '+++ b/A.java',
+  '@@ -1,1 +1,1 @@',
+  '-old A',
+  '+new A',
+  'diff --git a/B.java b/B.java',
+  '--- a/B.java',
+  '+++ b/B.java',
+  '@@ -10,2 +10,2 @@',
+  ' ctx B',
+  '+new B',
+].join('\n')
+const twoRows = code.parseDiffFenceRows(TWO_FILES)
+const twoBody = twoRows.filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
+check('both hunks keep their body (4 rows)', twoBody.length === 4, twoBody.length)
+check('the first hunk keeps its delete row', twoBody[0].kind === 'del' && twoBody[0].text === 'old A', JSON.stringify(twoBody[0]))
+check('the second hunk keeps its add row', twoBody[3].kind === 'add' && twoBody[3].text === 'new B', JSON.stringify(twoBody[3]))
+const twoSections = code.diffFenceSections(twoRows)
+check('two sections (one per file)', twoSections.length === 2, twoSections.length)
+check('the first section is A.java', twoSections[0].path === 'A.java', twoSections[0].path)
+check('the second section is B.java', twoSections[1].path === 'B.java', twoSections[1].path)
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
 if (failures) process.exitCode = 1

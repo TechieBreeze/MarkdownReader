@@ -526,17 +526,31 @@ function isDiffFenceLang(lang) {
 }
 
 /**
+ * Is this line a FILE HEADER of a diff (`--- a/x`, `+++ b/x`, `--- /dev/null`)?
+ *
+ * The shape decides, NOT the counts of the hunk header: the counts are only a
+ * hint (hand-written diffs declare them wrong all the time), and a hunk whose
+ * counts are too small would otherwise swallow the file header of the NEXT
+ * file - the rest of that hunk would fall out of the diff and be rendered as
+ * dim header rows instead of code rows.
+ */
+function isDiffFileHeaderLine(line) {
+  return /^(---|\+\+\+) (a\/|b\/|\/dev\/null)/.test(String(line == null ? '' : line))
+}
+
+/**
  * Rows of a unified diff pasted into a ```diff fence.
  *
  * Boundary rules (the same in the Host's diff parser):
- *  - a hunk body runs until the next `@@` header or the next `diff --git`
- *    (a new file). The counts in the hunk header are a HINT, not a hard
+ *  - a hunk body runs until the next `@@` header, the next `diff --git`
+ *    (a new file) or the FILE HEADER of the next file (`--- a/x`, `+++ b/x`,
+ *    `--- /dev/null`). The counts in the hunk header are a HINT, not a hard
  *    boundary: hand-written diffs in design docs routinely declare the wrong
  *    counts (e.g. `@@ -11,21 +11,21 @@` over a 22-line body), and cutting the
  *    body there loses the tail of the change.
- *  - the counts are still used to recognise a FILE HEADER (`--- a/x`, `+++ b/x`)
- *    that follows a hunk, so a real `git diff` of several files still splits
- *    correctly.
+ *  - an EMPTY line inside a hunk body is a context row (some tools strip the
+ *    trailing space of an empty context line). It used to end the hunk, which
+ *    dropped the rest of the change into dim header rows.
  *  - trailing blank lines of the patch are stripped first: `git show --patch`
  *    output ends with a newline, and splitting it yields a trailing empty line
  *    that would otherwise become a phantom row (and eat a real line of the
@@ -570,31 +584,30 @@ function parseDiffFenceRows(source) {
         // hunk.
         rows.push({ kind: 'meta', no: null, text: line })
         continue
+      } else if (isDiffFileHeaderLine(line)) {
+        // The file header of the NEXT file ends this hunk.
+        inHunk = false
       } else {
-        const exhausted = oldLeft <= 0 && newLeft <= 0
-        const boundary = exhausted && (line === '' || /^(--- |\+\+\+ )/.test(line))
-        if (!boundary) {
-          const kind = line[0]
-          if (kind === '+') {
-            rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
-            newNo += 1
-            if (newLeft > 0) newLeft -= 1
-            continue
-          }
-          if (kind === '-') {
-            rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
-            oldNo += 1
-            if (oldLeft > 0) oldLeft -= 1
-            continue
-          }
-          rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
-          oldNo += 1
+        const kind = line[0]
+        if (kind === '+') {
+          rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
           newNo += 1
-          if (oldLeft > 0) oldLeft -= 1
           if (newLeft > 0) newLeft -= 1
           continue
         }
-        inHunk = false
+        if (kind === '-') {
+          rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
+          oldNo += 1
+          if (oldLeft > 0) oldLeft -= 1
+          continue
+        }
+        // context line (an empty line counts as a context line with no content)
+        rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
+        oldNo += 1
+        newNo += 1
+        if (oldLeft > 0) oldLeft -= 1
+        if (newLeft > 0) newLeft -= 1
+        continue
       }
     }
     if (line.startsWith('\\')) {
@@ -630,7 +643,9 @@ function diffFenceSections(rows) {
       if (gitHeader) {
         // A new file starts here: `diff --git` is the only header that opens a
         // section (`--- a/x` / `+++ b/x` belong to the file it just announced).
-        current = { path: gitHeader[2], rows: [] }
+        // The header line itself is KEPT as a row - nothing of the patch may
+        // silently disappear.
+        current = { path: gitHeader[2], rows: [row] }
         sections.push(current)
         continue
       }
