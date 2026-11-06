@@ -85,6 +85,11 @@ export function createState(config = {}) {
     packageDir,
     config: { ...config },
     _roots: dedupeVirtualNames(roots.map((r) => r.path)),
+    // When this plugin instance registered. The Harness only re-reads the
+    // client bundle when the plugin is (re-)registered, so this timestamp is
+    // how one tells "the Host restarted" from "the Host kept the old client
+    // snapshot".
+    startedAt: new Date().toISOString(),
 
     roots() {
       return this._roots.map((r) => ({ name: r.name, path: r.path }))
