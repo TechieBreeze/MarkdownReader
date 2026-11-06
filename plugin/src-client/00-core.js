@@ -202,6 +202,45 @@ function splitHref(href) {
 /* ------------------------------------------------------- clipboard & toast */
 
 /**
+ * The plugin's own root element (the reader panel), captured from the React
+ * tree.
+ *
+ * Why this matters: the Harness mounts the panel into its OWN DOM scope (a
+ * shadow root in the Web GUI), so `document.querySelector('.mdr-root')` cannot
+ * see it. Everything this plugin appends to `document.body` therefore lands
+ * OUTSIDE the panel: it loses the panel's stylesheet and shows up at the
+ * bottom of the Harness window (the unstyled "复制路径" / "已复制路径" line the
+ * user reported). Overlays (context menu, toast) must be mounted INSIDE the
+ * panel root, with viewport coordinates for a `position:fixed` element.
+ */
+let panelRootEl = null
+
+/** The panel root element, or null when the panel is not mounted. */
+function panelRoot() {
+  // `isConnected` is false once the panel is detached; a fake DOM may not have
+  // the property at all, so only an explicit false counts as detached.
+  if (panelRootEl && panelRootEl.isConnected !== false) return panelRootEl
+  if (typeof document !== 'undefined' && document && typeof document.querySelector === 'function') {
+    const found = document.querySelector('.mdr-root')
+    if (found) return found
+  }
+  return null
+}
+
+/** Where an overlay (context menu, toast) is mounted. */
+function overlayHost() {
+  return panelRoot() || (typeof document !== 'undefined' ? document.body : null)
+}
+
+/** Called by the panel component with its root element (null on unmount). */
+function setPanelRoot(element) {
+  panelRootEl = element || null
+  if (element && typeof element.addEventListener === 'function') {
+    element.addEventListener('contextmenu', onPathContextMenu)
+  }
+}
+
+/**
  * Copy text with the same three-step ladder as the standalone reader:
  * navigator.clipboard → execCommand → select for a manual Ctrl+C.
  * `http://` origins have no navigator.clipboard in Chromium, so the fallback is
@@ -243,16 +282,17 @@ let toastNode = null
  *
  * It used to be appended to `document.body` with `position:fixed`, which put it
  * at the very bottom of the Harness window - over the host UI instead of over
- * the reader. The panel root is `position:relative`, so anchoring the toast
- * there keeps the feedback inside the reader and off the rest of the app.
+ * the reader, and without the panel's stylesheet at all (the panel lives in
+ * its own DOM scope). It is mounted into the panel root now, so it stays
+ * inside the reader and keeps the panel's look.
  */
 function toastHost() {
-  const root = document.querySelector('.mdr-root')
-  return root || document.body
+  return overlayHost()
 }
 
 function toast(message, kind) {
   const host = toastHost()
+  if (!host) return
   let node = toastNode
   if (!node || node.parentNode !== host) {
     if (node && node.parentNode) node.parentNode.removeChild(node)
@@ -261,8 +301,7 @@ function toast(message, kind) {
     host.appendChild(node)
     toastNode = node
   }
-  node.className =
-    'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '') + ' show' + (kind === 'err' ? ' err' : '')
+  node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '') + ' show' + (kind === 'err' ? ' err' : '')
   node.textContent = String(message == null ? '' : message)
   if (toastTimer) clearTimeout(toastTimer)
   toastTimer = setTimeout(() => {
@@ -313,7 +352,14 @@ function pathMenuClose() {
 }
 
 function pathMenuOnDocMouseDown(event) {
-  if (pathMenu && pathMenu.contains(event.target)) return
+  if (pathMenu) {
+    // A click inside the menu must not close it. In a shadow root the event
+    // target at the document level is the shadow HOST, not the menu, so the
+    // composed path is what tells us where the click really happened.
+    const path = typeof event.composedPath === 'function' ? event.composedPath() : null
+    if (path && path.indexOf(pathMenu) >= 0) return
+    if (pathMenu.contains(event.target)) return
+  }
   pathMenuClose()
 }
 
@@ -355,7 +401,12 @@ function pathMenuOpen(x, y, items) {
     })
     menu.appendChild(button)
   }
-  document.body.appendChild(menu)
+  // Mount the menu INSIDE the panel: appended to document.body it would land
+  // outside the panel's DOM scope, lose the panel's stylesheet and show up as
+  // an unstyled line at the bottom of the Harness window.
+  const host = overlayHost()
+  if (host) host.appendChild(menu)
+  else document.body.appendChild(menu)
   const rect = menu.getBoundingClientRect()
   menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 8))}px`
   menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 8))}px`
@@ -386,17 +437,64 @@ function pathMenuTarget(event) {
   return path
 }
 
+/**
+ * Right-click a path → open the copy menu.
+ *
+ * The listener is attached BOTH to the document and to the panel root: when the
+ * Harness mounts the panel into its own DOM scope, the document-level listener
+ * sees the retargeted host element instead of the path element, so the panel
+ * listener is the one that works there. The same event object reaches both
+ * listeners, so it is handled exactly once.
+ */
+function onPathContextMenu(event) {
+  if (event.__mdrPathMenuHandled) return
+  event.__mdrPathMenuHandled = true
+  const path = pathMenuTarget(event)
+  if (!path) return
+  event.preventDefault()
+  const fileName = path.split(/[\\/]/).pop()
+  pathMenuOpen(event.clientX, event.clientY, [
+    { label: '复制路径', title: path, action: () => copyWithFeedback(path) },
+    { label: '复制文件名', title: fileName, action: () => copyWithFeedback(fileName) },
+  ])
+}
+
 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
-  document.addEventListener('contextmenu', (event) => {
-    const path = pathMenuTarget(event)
-    if (!path) return
-    event.preventDefault()
-    const fileName = path.split(/[\\/]/).pop()
-    pathMenuOpen(event.clientX, event.clientY, [
-      { label: '复制路径', title: path, action: () => copyWithFeedback(path) },
-      { label: '复制文件名', title: fileName, action: () => copyWithFeedback(fileName) },
-    ])
-  })
+  document.addEventListener('contextmenu', onPathContextMenu)
+}
+
+/**
+ * Report what the DOM around the panel looks like.
+ *
+ * "Why does this overlay end up at the bottom of the Harness window?" is a
+ * question about the DOM scope, so the client answers it instead of guessing:
+ * whether the panel root is reachable from the document, which scope it lives
+ * in, and where the overlays are mounted.
+ */
+function reportClientDom() {
+  try {
+    const root = panelRoot()
+    const scope = root && typeof root.getRootNode === 'function' ? root.getRootNode() : null
+    const shadow = !!(scope && scope !== document && scope.host)
+    const reachable = !!(
+      typeof document !== 'undefined' &&
+      document &&
+      typeof document.querySelector === 'function' &&
+      document.querySelector('.mdr-root')
+    )
+    postJson('/api/client-ping', {
+      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+      dom: {
+        shadow,
+        reachable,
+        inPanel: !!root,
+        host: overlayHost() === root,
+        href: typeof location !== 'undefined' ? String(location.href).slice(0, 120) : '',
+      },
+    }).catch(() => {})
+  } catch {
+    /* ignore */
+  }
 }
 
 /* ------------------------------------------------------------------ vendor */
@@ -735,6 +833,7 @@ const APP_CSS = `
 .mdr-def-busy{cursor:progress}
 .mdr-def-snippet{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mdr-ctx{position:fixed;z-index:2147483000;min-width:148px;padding:4px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;flex-direction:column}
+.mdr-build{position:absolute;right:10px;bottom:6px;z-index:3;font-size:10px;line-height:1;letter-spacing:.02em;color:var(--dsw-alias-label-secondary);opacity:.45;user-select:none;pointer-events:none}
 .mdr-ctx-item{display:block;width:100%;text-align:left;padding:6px 10px;border:none;border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
 .mdr-ctx-item:hover{background:var(--dsw-alias-bg-layer-2)}
 .mdr-ctx-item:disabled{cursor:default}
