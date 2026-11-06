@@ -264,6 +264,7 @@ function fenceHash(text) {
  */
 function cachedFenceHtml(prefix, source, produce) {
   const text = String(source == null ? '' : source)
+  loadFenceCacheFromStorage()
   const key = `${prefix}|${text.length}|${fenceHash(text)}`
   const hit = fenceCache.get(key)
   if (hit && hit.source === text) {
@@ -289,6 +290,7 @@ function cachedFenceHtml(prefix, source, produce) {
     fenceCacheChars -= entry.source.length + entry.html.length
     fenceCacheStats.evicted += 1
   }
+  scheduleFenceCacheSave()
   return html
 }
 
@@ -298,6 +300,84 @@ function fenceCacheReport() {
     ...fenceCacheStats,
     entries: fenceCache.size,
     chars: fenceCacheChars,
+  }
+}
+
+/**
+ * The cache also survives a PAGE RELOAD (sessionStorage).
+ *
+ * A window that is reloaded would otherwise pay the full highlight.js cost
+ * again on the first document it opens - the design document needs ~3.5 s of
+ * hljs for its 19 diff blocks. The persisted copy is namespaced by the bundle
+ * id: a new bundle starts with an empty cache, so old markup is never served
+ * for a new build.
+ */
+const FENCE_CACHE_STORAGE_PREFIX = 'mdr.fencecache.'
+const FENCE_CACHE_STORAGE_MAX = 3 * 1024 * 1024
+let fenceCacheLoaded = false
+let fenceCacheSaveTimer = null
+
+function fenceCacheStorageKey() {
+  return FENCE_CACHE_STORAGE_PREFIX + (typeof BUILD_ID === 'undefined' ? 'x' : BUILD_ID)
+}
+
+function loadFenceCacheFromStorage() {
+  if (fenceCacheLoaded) return
+  fenceCacheLoaded = true
+  try {
+    if (typeof sessionStorage === 'undefined' || !sessionStorage) return
+    const raw = sessionStorage.getItem(fenceCacheStorageKey())
+    if (!raw) return
+    const list = JSON.parse(raw)
+    if (!Array.isArray(list)) return
+    for (const item of list) {
+      if (!item || item.length < 3) continue
+      const key = String(item[0])
+      const source = String(item[1])
+      const html = String(item[2])
+      if (fenceCache.has(key)) continue
+      fenceCache.set(key, { source, html })
+      fenceCacheChars += source.length + html.length
+    }
+    fenceCacheStats.restored = fenceCache.size
+  } catch {
+    /* private mode / quota: the in-memory cache still works */
+  }
+}
+
+function saveFenceCacheToStorage() {
+  try {
+    if (typeof sessionStorage === 'undefined' || !sessionStorage) return
+    const list = []
+    let chars = 0
+    for (const [key, entry] of fenceCache) {
+      const size = key.length + entry.source.length + entry.html.length
+      if (chars + size > FENCE_CACHE_STORAGE_MAX) break
+      list.push([key, entry.source, entry.html])
+      chars += size
+    }
+    sessionStorage.setItem(fenceCacheStorageKey(), JSON.stringify(list))
+  } catch {
+    try {
+      if (typeof sessionStorage !== 'undefined' && sessionStorage) {
+        sessionStorage.removeItem(fenceCacheStorageKey())
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function scheduleFenceCacheSave() {
+  try {
+    if (fenceCacheSaveTimer) clearTimeout(fenceCacheSaveTimer)
+    fenceCacheSaveTimer = setTimeout(() => {
+      fenceCacheSaveTimer = null
+      saveFenceCacheToStorage()
+    }, 3000)
+    if (fenceCacheSaveTimer && typeof fenceCacheSaveTimer.unref === 'function') fenceCacheSaveTimer.unref()
+  } catch {
+    /* ignore */
   }
 }
 
@@ -626,7 +706,9 @@ function findCopyConfirmationNodes() {
     let node = walker.nextNode()
     while (node) {
       const text = String(node.textContent || '').trim()
-      if (text && text.length <= 40 && /已复制|复制路径|复制文件名/.test(text)) {
+      // Short texts only: a sentence in the conversation view ("…已复制路径…")
+      // is not the stray overlay this diagnostic is looking for.
+      if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
         const element = node.parentElement
         if (element) {
           let rect = { top: 0, left: 0, width: 0, height: 0 }
