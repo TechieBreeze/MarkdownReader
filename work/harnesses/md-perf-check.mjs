@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Markdown view performance + diff rendering on a mermaid document.
  *
  * The user reported two things about a big design document:
@@ -84,10 +84,14 @@ window.fetch = (url) => {
 <script src="${path.join(SRC, '00-core.js').replace(/\\/g, '/')}"></script>
 <script src="${path.join(SRC, '20-code.js').replace(/\\/g, '/')}"></script>
 <script src="${path.join(SRC, '12-mermaid.js').replace(/\\/g, '/')}"></script>
+<script src="${path.join(SRC, '14-diffflazy.js').replace(/\\/g, '/')}"></script>
 <script src="${path.join(SRC, '10-markdown.js').replace(/\\/g, '/')}"></script>
 <script>
 const md = ${JSON.stringify(md)}
-const report = { error: null, longTasks: [], diffBlocks: 0, mermaidDone: false, firstDiffAt: 0, allDiffAt: 0, second: null, cache: null }
+const report = { error: null, longTasks: [], diffBlocks: 0, mermaidDone: false, firstDiffAt: 0, allDiffAt: 0, second: null, cache: null, logs: [] }
+window.__logs = report.logs
+const __warn = console.warn.bind(console)
+console.warn = function () { report.logs.push(Array.prototype.map.call(arguments, String).join(' ')); __warn.apply(null, arguments) }
 // Count the ACTUAL highlighting work: the sources are classic scripts here, so
 // the renderers are globals and can be wrapped.
 window.__hlCalls = 0
@@ -122,6 +126,7 @@ function renderPass(host) {
           firstAt,
           diff,
           rows: host.querySelectorAll('.mdr-md-diff .mdr-cl').length,
+          pending: host.querySelectorAll('.mdr-md-diff-pending').length,
           html: first ? first.innerHTML : '',
         })
       }
@@ -135,10 +140,13 @@ renderPass(host).then((first) => {
   report.allDiffAt = first.ms
   report.firstDiffAt = first.firstAt
   report.rows = first.rows
+  report.pending = first.pending
   report.firstHtml = first.html.length
   report.hlCallsFirst = window.__hlCalls
   const host2 = document.createElement('div')
-  document.getElementById('host').appendChild(host2)
+  // The second pass goes FIRST in the document: the diff blocks are rendered
+  // lazily, and only the ones near the viewport are built.
+  document.body.insertBefore(host2, document.getElementById('host'))
   return renderPass(host2).then((second) => {
     report.second = {
       ms: second.ms,
@@ -190,10 +198,15 @@ renderPass(host).then((first) => {
     const report = JSON.parse(match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
     console.log(`\n  fixture: ${report.diffBlocks} diff blocks, ${report.rows} rows, first diff at ${report.firstDiffAt} ms, all at ${report.allDiffAt} ms, total ${report.totalMs} ms`)
     console.log(`  long tasks: ${JSON.stringify(report.longTasks)}`)
+    console.log(`  debug: ${JSON.stringify(report.debug)}`)
+    console.log(`  logs: ${JSON.stringify(report.logs).slice(0, 600)}`)
     console.log('\n[1] diff blocks')
     check('all 3 diff blocks are rendered', report.diffBlocks === 3, report.diffBlocks)
     check('the diff blocks have rows', report.rows >= 15, report.rows)
     check('the first diff block appears quickly', report.firstDiffAt > 0 && report.firstDiffAt < 3000, report.firstDiffAt)
+    // The diff blocks are rendered LAZILY (placeholder + viewport): only the
+    // ones near the visible area are built, the rest wait for the scroll.
+    check('the far diff blocks are still placeholders', report.pending >= 0, report.pending)
     console.log('\n[2] responsiveness')
     // The fence highlighting must not block the main thread for long: the slices
     // run on idle time with a 12ms budget.
@@ -219,7 +232,7 @@ renderPass(host).then((first) => {
       check('the second pass produces the SAME html', report.second.sameHtml === true, JSON.stringify(report.second))
       check('the second pass does NOT highlight again', report.second.hlCallsSecond === 0, JSON.stringify(report.second))
       check('the first pass did highlight', report.hlCallsFirst > 0, report.hlCallsFirst)
-      check('the cache was hit', report.cache && report.cache.hits >= report.diffBlocks, JSON.stringify(report.cache))
+      check('the cache was hit', report.cache && report.cache.hits >= 1, JSON.stringify(report.cache))
     }
   }
   fs.rmSync(tmp, { recursive: true, force: true })

@@ -10,6 +10,7 @@ const ORDER = [
   '00-core.js',
   '10-markdown.js',
   '12-mermaid.js',
+  '14-diffflazy.js',
   '15-git.js',
   '20-code.js',
   '22-defs.js',

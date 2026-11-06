@@ -65,6 +65,25 @@ if (!docs.length) {
     })
   }
 
+  // A synthetic positive case: a javadoc that is COMPLETE inside one hunk must
+  // keep its comment colour, and the code after it in the SAME hunk must not be
+  // swallowed.
+  blocks.push(
+    [
+      'diff --git a/A.java b/A.java',
+      '--- a/A.java',
+      '+++ b/A.java',
+      '@@ -1,6 +1,6 @@',
+      '     /**',
+      '      * the doc of the method',
+      '      */',
+      '     public void run() {',
+      '         int x = 1;',
+      '     }',
+    ].join('\n'),
+  )
+  labels.push('synthetic: a javadoc inside one hunk')
+
   const chrome = findChrome()
   if (!chrome) {
     console.log('SKIP: no Chromium binary found (set CHROME_PATH)')
@@ -85,17 +104,31 @@ const report = blocks.map((source) => {
   let drift = 0
   let swallowed = 0
   let sample = ''
+  let commentRows = 0
   rows.forEach((row, index) => {
     const text = parsed[index] ? parsed[index].text : ''
     if (row.textContent.replace(/^[+− ]/, '') !== text) drift += 1
-    const isCommentLine = /^\\s*(\\/\\/|\\/\\*|\\*|\\*\\/)/.test(text)
-    const painted = row.querySelector('.hljs-comment') !== null
-    if (painted && !isCommentLine) {
+    const isCommentLine = /^\\s*(\\/\\/|\\/\\*|\\*)/.test(text)
+    // The row is "inside a comment" when the text BEFORE its first comment
+    // span is empty - a trailing comment (XML) is not.
+    const comment = row.querySelector('.hljs-comment')
+    let before = ''
+    if (comment) {
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+      let node = walker.nextNode()
+      while (node && !comment.contains(node)) {
+        before += node.textContent
+        node = walker.nextNode()
+      }
+    }
+    const inside = comment !== null && before.trim() === '' && text.trim() !== ''
+    if (comment !== null) commentRows += 1
+    if (inside && !isCommentLine) {
       swallowed += 1
       if (!sample) sample = text.slice(0, 70)
     }
   })
-  return { rows: rows.length, expected: parsed.length, drift, swallowed, sample }
+  return { rows: rows.length, expected: parsed.length, drift, swallowed, sample, commentRows }
 })
 document.getElementById('out').textContent = JSON.stringify(report)
 </script></body></html>`
@@ -130,6 +163,9 @@ document.getElementById('out').textContent = JSON.stringify(report)
         const label = labels[index] || `block ${index + 1}`
         check(`${label}: rows match the diff (no drift)`, row.drift === 0 && row.rows === row.expected, JSON.stringify(row))
         check(`${label}: no code line swallowed by an unterminated comment`, row.swallowed === 0, `${row.swallowed} row(s), e.g. ${row.sample}`)
+        if (label.startsWith('synthetic')) {
+          check(`${label}: the javadoc keeps its comment colour`, row.commentRows >= 3, row.commentRows)
+        }
       })
     }
     fs.rmSync(tmp, { recursive: true, force: true })

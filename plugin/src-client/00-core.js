@@ -278,8 +278,12 @@ function cachedFenceHtml(prefix, source, produce) {
   let html = ''
   try {
     html = produce()
-  } catch {
+  } catch (error) {
     html = ''
+    // A silent empty block is the worst possible failure mode: say what broke.
+    if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+      console.warn('[markdown-reader] fence render failed:', error)
+    }
   }
   fenceCache.set(key, { source: text, html })
   fenceCacheChars += text.length + html.length
@@ -678,59 +682,54 @@ if (typeof document !== 'undefined' && document && typeof document.addEventListe
 }
 
 /**
- * Find every node in the window whose text is a copy confirmation.
+ * Find every node IN THE PANEL whose text is a copy confirmation.
  *
- * This is a DIAGNOSTIC, not a feature: the user reported a 「已复制路径」 line
- * that shows up at the bottom of the Harness window when the conversation view
- * is shown (and not while the plugin panel is open). The plugin cannot own that
- * text (its current build does not contain it), so the app has to say WHO does -
- * the scan reports the tag, class, id and position of every matching node.
+ * This is a DIAGNOSTIC, not a feature. It must stay CHEAP: an earlier version
+ * walked the WHOLE document body every 8 seconds - with a large conversation
+ * in the window that walk took seconds and pegged a CPU core, so the whole
+ * machine (even the mouse) stuttered. Now it only walks the plugin's own panel
+ * and stops after a bounded number of nodes.
  */
+const FIND_COPY_MAX_NODES = 3000
 function findCopyConfirmationNodes() {
   const hits = []
-  const roots = []
-  try {
-    if (typeof document !== 'undefined' && document.body) roots.push(document.body)
-  } catch {
-    /* ignore */
-  }
   const panel = panelRoot()
-  if (panel && roots.indexOf(panel) < 0) roots.push(panel)
-  for (const root of roots) {
-    let walker = null
-    try {
-      walker = document.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */)
-    } catch {
-      continue
-    }
-    let node = walker.nextNode()
-    while (node) {
-      const text = String(node.textContent || '').trim()
-      // Short texts only: a sentence in the conversation view ("…已复制路径…")
-      // is not the stray overlay this diagnostic is looking for.
-      if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
-        const element = node.parentElement
-        if (element) {
-          let rect = { top: 0, left: 0, width: 0, height: 0 }
-          try {
-            rect = element.getBoundingClientRect()
-          } catch {
-            /* ignore */
-          }
-          hits.push({
-            text,
-            tag: element.tagName,
-            cls: String(element.className || '').slice(0, 90),
-            id: element.id || '',
-            top: Math.round(rect.top),
-            left: Math.round(rect.left),
-            inPanel: !!(panel && panel.contains && panel.contains(element)),
-          })
-          if (hits.length >= 8) return hits
+  if (!panel) return hits
+  let walker = null
+  try {
+    walker = document.createTreeWalker(panel, 4 /* NodeFilter.SHOW_TEXT */)
+  } catch {
+    return hits
+  }
+  let visited = 0
+  let node = walker.nextNode()
+  while (node && visited < FIND_COPY_MAX_NODES) {
+    visited += 1
+    const text = String(node.textContent || '').trim()
+    // Short texts only: a sentence in the conversation view ("…已复制路径…")
+    // is not the stray overlay this diagnostic is looking for.
+    if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
+      const element = node.parentElement
+      if (element) {
+        let rect = { top: 0, left: 0, width: 0, height: 0 }
+        try {
+          rect = element.getBoundingClientRect()
+        } catch {
+          /* ignore */
         }
+        hits.push({
+          text,
+          tag: element.tagName,
+          cls: String(element.className || '').slice(0, 90),
+          id: element.id || '',
+          top: Math.round(rect.top),
+          left: Math.round(rect.left),
+          inPanel: true,
+        })
+        if (hits.length >= 8) return hits
       }
-      node = walker.nextNode()
     }
+    node = walker.nextNode()
   }
   return hits
 }
@@ -773,10 +772,11 @@ function reportClientDom() {
 /**
  * Keep the DOM report fresh.
  *
- * The copy confirmation the user reported only appears in the CONVERSATION
- * view (the plugin panel is not shown then), so the report has to run while
- * the panel is unmounted as well - hence the interval, not a one-shot call.
+ * The interval is deliberately SLOW (30 s) and the DOM scan only runs while
+ * the plugin panel is mounted: an 8 s interval that walked the whole document
+ * pegged a CPU core and made the whole machine stutter ("鼠标都会一卡一卡").
  */
+const DOM_REPORT_INTERVAL_MS = 30000
 let domReportTimer = null
 function startDomReport() {
   if (domReportTimer) return
@@ -786,8 +786,9 @@ function startDomReport() {
       // An older module instance may still be alive in this window; it must
       // take the page down so only the current bundle survives.
       if (typeof checkClientBuild === 'function') checkClientBuild()
-      reportClientDom()
-    }, 8000)
+      // The scan is only useful while the panel exists.
+      if (panelRoot()) reportClientDom()
+    }, DOM_REPORT_INTERVAL_MS)
     // A harness (Node) must not be held open by this timer.
     if (domReportTimer && typeof domReportTimer.unref === 'function') domReportTimer.unref()
   } catch {

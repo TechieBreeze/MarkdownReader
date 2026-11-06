@@ -56,7 +56,7 @@ function constOf(file, name) {
 const core = lift('00-core.js', ['escapeHtml', 'extOf'])
 const code = lift(
   '20-code.js',
-  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment', 'diffPlainText', 'isDiffFileHeaderLine'],
+  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment', 'diffPlainText', 'isDiffFileHeaderLine', 'diffFenceRowGroups'],
   `${constOf('20-code.js', 'DIFF_FENCE_LANGS')}\n${constOf('20-code.js', 'LANG_MAP')}\nconst escapeHtml = ${core.escapeHtml.toString()}\nconst extOf = ${core.extOf.toString()}`,
 )
 
@@ -133,8 +133,12 @@ check('no raw script tag survives', !/<script/i.test(injected))
 
 console.log('\n[5] the markdown view routes diff fences to the renderer')
 const markdownSource = fs.readFileSync(path.join(SRC, '10-markdown.js'), 'utf8')
-check('10-markdown dispatches diff fences', /isDiffFenceLang/.test(markdownSource) && /renderDiffFenceHtml/.test(markdownSource))
+const lazyPath = path.join(SRC, '14-diffflazy.js')
+const lazySource = fs.existsSync(lazyPath) ? fs.readFileSync(lazyPath, 'utf8') : ''
+check('10-markdown dispatches diff fences', /isDiffFenceLang/.test(markdownSource) && /diffLazyPlaceholder/.test(markdownSource))
 check('the diff block gets its own wrapper', /mdr-md-diff/.test(markdownSource))
+check('the diff block is rendered lazily (placeholder + viewport)', /enhanceDiffFences/.test(markdownSource) && /IntersectionObserver/.test(lazySource))
+check('the lazy renderer uses the content cache', /cachedFenceHtml/.test(lazySource))
 check('other fences still use the highlighter', /renderFenceCodeHtml/.test(markdownSource))
 
 console.log('\n[6] sections: the diffed file decides the highlighting language')
@@ -271,6 +275,39 @@ const twoSections = code.diffFenceSections(twoRows)
 check('two sections (one per file)', twoSections.length === 2, twoSections.length)
 check('the first section is A.java', twoSections[0].path === 'A.java', twoSections[0].path)
 check('the second section is B.java', twoSections[1].path === 'B.java', twoSections[1].path)
+
+console.log('\n[13] the rows are grouped per hunk (unterminated comment damage stays inside its hunk)')
+// Real case: docs/codereview/20261106_...preSync游标翻页改造_codereview.md -
+// the full-file diffs end EVERY hunk with the javadoc opener of the next
+// method. hljs reads an unterminated block comment as "comment until the end
+// of the text", so highlighting the WHOLE file as one block painted every
+// following line as comment text. Each hunk is a contiguous fragment of the
+// file, so the hunk is the unit of highlighting.
+const groups = code.diffFenceRowGroups
+  ? code.diffFenceRowGroups(
+      code.parseDiffFenceRows(
+        [
+          'diff --git a/A.java b/A.java',
+          '--- a/A.java',
+          '+++ b/A.java',
+          '@@ -1,3 +1,3 @@',
+          ' ctx',
+          '     /**',
+          '@@ -10,2 +10,2 @@',
+          ' ctx2',
+          '+new',
+        ].join('\n'),
+      ),
+    )
+  : null
+if (groups) {
+  check('the file header forms the leading group', groups.length === 3, groups.length)
+  check('group 1 = the file headers', groups[0].rows.every((row) => row.kind === 'meta'), JSON.stringify(groups[0].rows.map((r) => r.kind)))
+  check('group 2 = the first hunk (header + body)', groups[1].rows[0].kind === 'hunk' && groups[1].rows.length === 3, JSON.stringify(groups[1].rows.map((r) => r.kind)))
+  check('group 3 = the second hunk (header + body)', groups[2].rows[0].kind === 'hunk' && groups[2].rows.length === 3, JSON.stringify(groups[2].rows.map((r) => r.kind)))
+} else {
+  check('diffFenceRowGroups is exported', false, 'missing')
+}
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
 if (failures) process.exitCode = 1
