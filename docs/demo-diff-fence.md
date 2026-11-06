@@ -186,7 +186,38 @@ index 9a05f74..541114f 100755
          where ac.is_deleted = 0 and ac.relation_type = 3 and ac.active_flag = 1
 ```
 
-## 6. 边界行为（规范里写死的几条）
+## 6. **还没实施的改动**（设计阶段，手写补丁，没有对应提交）
+
+**diff 不依赖提交。** 代码窗口里那个「按 commit 看 diff」是 git 能力；文档里的 ```diff 围栏
+只是**渲染一段 unified diff 文本** —— 提交里导出的、手写的、还没实施的计划，都一样。
+
+所以详设里写「打算怎么改」时，直接手写补丁即可（下面这段就是没有任何提交对应的计划）：
+
+```diff
+--- a/src/main/java/com/pvh/datax/service/SyncEzrService.java
++++ b/src/main/java/com/pvh/datax/service/SyncEzrService.java
+@@ -38,8 +38,11 @@
+     public List<SyncDataDTO> buildSyncStoreChange(SyncQuery query) {
+-        return syncEzrMapper.buildSyncStoreChange(query.getStartDate(), query.getEndDate());
++        List<SyncDataDTO> all = new ArrayList<>();
++        Long lastId = 0L;
++        while (true) {
++            List<SyncDataDTO> page = syncEzrMapper.buildSyncStoreChange(lastId, PAGE_SIZE, query.getStartDate(), query.getEndDate());
++            if (page.isEmpty()) break;
++            all.addAll(page);
++            lastId = page.get(page.size() - 1).getId();
++        }
++        return all;
+     }
+```
+
+要点：
+
+- **文件头给语言**：`--- a/…` / `+++ b/…` 里的路径决定高亮语言（这里是 `.java`）；
+- **hunk 头的行数只是参考**：写错了也不会丢内容（上面这段的计数就不准）；
+- `-` 行是删掉的、`+` 行是新增的，其余是上下文。
+
+## 7. 边界行为（规范里写死的几条）
 
 | 情况 | 行为 |
 |------|------|
@@ -197,7 +228,9 @@ index 9a05f74..541114f 100755
 | 内容里带 HTML | 全部转义，不会注入页面 |
 | 行很长 | 整块横向滚动 |
 
-## 7. 相关工具
+## 8. 相关工具
 
-- 回归：`work/harnesses/diff-fence-check.mjs`（行模型/分段/转义/无幻影行/无行号列）
+- 回归：`work/harnesses/diff-fence-check.mjs`（行模型/分段/转义/无幻影行/无行号列/计数写错不丢行）
 - 真实渲染：`work/harnesses/diff-fence-render-check.mjs`（headless Chrome 跑真实客户端源码，断言确实无行号列、确实有语法高亮）
+- 性能：`work/harnesses/md-perf-check.mjs`（带 mermaid 的文档：diff 全部渲染 + 主线程无长阻塞）
+- 夹具：`work/fixtures/diff-fence-doc.md`（手写补丁 + mermaid 图，保留被删掉的那份详设的特征）
