@@ -204,6 +204,95 @@ document.getElementById('out').textContent = JSON.stringify(report)
       }
       fs.rmSync(demoTmp, { recursive: true, force: true })
     }
+
+    // Real documents: every ```diff block of a directory (default: the CK
+    // project's docs) must render row by row, with the row showing its own
+    // line and the code part highlighted.
+    const auditDirs = process.argv.slice(2)
+    const targets = auditDirs.length
+      ? auditDirs
+      : ['C:/Users/1/Desktop/work/tasks/20260917-微服务/docs'].filter((dir) => fs.existsSync(dir))
+    for (const dir of targets) {
+      if (!fs.existsSync(dir)) continue
+      const files = []
+      const walk = (current) => {
+        for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+          if (entry.name === '.git' || entry.name === 'node_modules') continue
+          const full = path.join(current, entry.name)
+          if (entry.isDirectory()) walk(full)
+          else if (/\.md$/i.test(entry.name)) files.push(full)
+        }
+      }
+      walk(dir)
+      const blocks = []
+      const labels = []
+      for (const file of files) {
+        const md = fs.readFileSync(file, 'utf8')
+        const list = [...md.matchAll(/```(?:diff|git-diff|patch)\r?\n([\s\S]*?)```/g)]
+        list.forEach((match, index) => {
+          blocks.push(match[1])
+          labels.push(`${path.relative(dir, file)} #${index + 1}`)
+        })
+      }
+      console.log(`\n[6] real documents in ${dir} (${files.length} files, ${blocks.length} diff blocks)`)
+      if (!blocks.length) {
+        check('the directory has diff blocks to check', false, dir)
+        continue
+      }
+      const auditPage = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<script src="${path.join(ROOT, 'plugin', 'vendor', 'highlight.min.js').replace(/\\/g, '/')}"></script>
+<script src="${path.join(SRC, '00-core.js').replace(/\\/g, '/')}"></script>
+<script src="${path.join(SRC, '20-code.js').replace(/\\/g, '/')}"></script>
+<pre id="out"></pre>
+<script>
+const blocks = ${JSON.stringify(blocks)}
+const report = blocks.map((source) => {
+  const html = renderDiffFenceHtml(source)
+  const holder = document.createElement('div')
+  holder.innerHTML = html
+  const rows = [...holder.querySelectorAll('.mdr-cl')]
+    .filter((row) => /mdr-git-(ctx|add|del)/.test(row.className))
+    .map((row) => row.textContent.replace(/^[+− ]/, ''))
+  const parsed = parseDiffFenceRows(source).filter((r) => r.kind === 'ctx' || r.kind === 'add' || r.kind === 'del')
+  let drift = 0
+  parsed.forEach((row, index) => { if (rows[index] !== row.text) drift += 1 })
+  return { rows: rows.length, expected: parsed.length, drift, hljs: (html.match(/class="hljs-/g) || []).length }
+})
+document.getElementById('out').textContent = JSON.stringify(report)
+</script></body></html>`
+      const auditTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mdr-audit-'))
+      fs.writeFileSync(path.join(auditTmp, 'index.html'), auditPage, 'utf8')
+      let auditDom = ''
+      try {
+        auditDom = execFileSync(
+          chrome,
+          [
+            '--headless=new',
+            '--disable-gpu',
+            '--no-sandbox',
+            '--allow-file-access-from-files',
+            `--user-data-dir=${path.join(auditTmp, 'profile')}`,
+            '--virtual-time-budget=8000',
+            '--dump-dom',
+            `file:///${path.join(auditTmp, 'index.html').replace(/\\/g, '/')}`,
+          ],
+          { encoding: 'utf8', timeout: 120000, windowsHide: true },
+        )
+      } catch (error) {
+        console.log('chrome failed for the audit page:', error.message)
+      }
+      const auditMatch = /<pre id="out">([\s\S]*?)<\/pre>/.exec(auditDom)
+      if (!auditMatch) {
+        check('the real documents render', false, 'no output')
+      } else {
+        const report = JSON.parse(auditMatch[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'))
+        const drifted = report.filter((row) => row.drift > 0 || row.rows !== row.expected)
+        check(`all ${report.length} real diff blocks render row by row`, drifted.length === 0, JSON.stringify(drifted.slice(0, 3)))
+        const unhighlighted = report.filter((row) => row.hljs === 0)
+        check('every real diff block is highlighted', unhighlighted.length === 0, `${unhighlighted.length} block(s) without hljs`)
+      }
+      fs.rmSync(auditTmp, { recursive: true, force: true })
+    }
   }
   fs.rmSync(tmp, { recursive: true, force: true })
 }

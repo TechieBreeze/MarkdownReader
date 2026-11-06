@@ -642,16 +642,27 @@ async function apiGitDiff(res, state, url) {
 }
 
 /**
+ * Is this line a FILE HEADER of a diff (`--- a/x`, `+++ b/x`, `--- /dev/null`)?
+ *
+ * The shape decides, not the counts of the hunk header: the counts are only a
+ * hint (hand-written diffs declare them wrong), and a hunk whose counts are too
+ * small would otherwise swallow the file header of the next file.
+ */
+function isDiffFileHeaderLine(line) {
+  return /^(---|\+\+\+) (a\/|b\/|\/dev\/null)/.test(String(line == null ? '' : line))
+}
+
+/**
  * Parse a unified diff into hunks.
  *
  * Boundary rules (the same as the client's markdown diff-fence parser):
- *  - a hunk body runs until the next `@@` header or the next `diff --git`
- *    (a new file). The counts in the hunk header are a HINT, not a hard
+ *  - a hunk body runs until the next `@@` header, the next `diff --git`
+ *    (a new file) or the FILE HEADER of the next file (`--- a/x`, `+++ b/x`,
+ *    `--- /dev/null`). The counts in the hunk header are a HINT, not a hard
  *    boundary: hand-written diffs in design docs routinely declare the wrong
  *    counts, and cutting the body there loses the tail of the change.
- *  - the counts are still used to recognise a FILE HEADER (`--- a/x`, `+++ b/x`)
- *    that follows a hunk, so a real `git diff` of several files still splits
- *    correctly.
+ *  - an empty line inside a hunk body is a context row, it does not end the
+ *    hunk.
  *  - trailing blank lines are stripped first: `git show --patch` output ends
  *    with a newline, so splitting it yields a trailing empty line that would
  *    otherwise become a phantom row - and that phantom row consumed a REAL
@@ -690,31 +701,29 @@ export function parseDiff(patch) {
         // "\ No newline at end of file" - not a body line, but it does NOT end
         // the hunk either.
         continue
+      } else if (isDiffFileHeaderLine(line)) {
+        // The file header of the next file ends this hunk.
+        current = null
       } else {
-        const exhausted = oldLeft <= 0 && newLeft <= 0
-        const boundary = exhausted && (line === '' || /^(--- |\+\+\+ )/.test(line))
-        if (!boundary) {
-          const kind = line[0]
-          if (kind === '+') {
-            current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
-            newNo += 1
-            if (newLeft > 0) newLeft -= 1
-            continue
-          }
-          if (kind === '-') {
-            current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
-            oldNo += 1
-            if (oldLeft > 0) oldLeft -= 1
-            continue
-          }
-          current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
-          oldNo += 1
+        const kind = line[0]
+        if (kind === '+') {
+          current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
           newNo += 1
-          if (oldLeft > 0) oldLeft -= 1
           if (newLeft > 0) newLeft -= 1
           continue
         }
-        current = null
+        if (kind === '-') {
+          current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
+          oldNo += 1
+          if (oldLeft > 0) oldLeft -= 1
+          continue
+        }
+        current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
+        oldNo += 1
+        newNo += 1
+        if (oldLeft > 0) oldLeft -= 1
+        if (newLeft > 0) newLeft -= 1
+        continue
       }
     }
     if (!current) continue
