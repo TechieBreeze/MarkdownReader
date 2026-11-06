@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "b7d3a654f574";
+    const BUILD_ID = "09af55c35e1f";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -7595,6 +7595,25 @@ function App() {
     projects: projectsOpen,
   }
 
+  /**
+   * Forget an expanded directory that no longer exists.
+   *
+   * The expansion set is persisted per project, so a directory the user
+   * deleted stayed in the stored set and was requested on EVERY open - each
+   * request failing with "目录不存在" and showing an error. The path is dropped
+   * from the in-memory set and from the stored set.
+   */
+  const pruneExpanded = React.useCallback((rel) => {
+    const key = String(rel == null ? '' : rel)
+    const current = expandedRef.current
+    if (!current.has(key)) return
+    const next = new Set(current)
+    next.delete(key)
+    expandedRef.current = next
+    setExpanded(next)
+    saveTreeExpansion(currentProjectRef.current, next)
+  }, [])
+
   const activeTask = workbench.tasks.find((task) => task.id === workbench.activeTaskId) || workbench.tasks[0] || null
   const tabs = activeTask ? activeTask.tabs : []
   const activeId = activeTask ? activeTask.activeId : null
@@ -7769,7 +7788,15 @@ function App() {
       })
       .catch((err) => {
         setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
-        setError(String((err && err.message) || err))
+        const message = String((err && err.message) || err)
+        if (/目录不存在|not found|ENOENT/i.test(message)) {
+          // The directory was deleted (the user removed a docs folder). A
+          // persisted expansion path pointing at it must not produce an error
+          // on EVERY open: drop the path silently and forget it.
+          pruneExpanded(key)
+          return
+        }
+        setError(message)
       })
       .finally(() => {
         inflightDirsRef.current.delete(key)
@@ -7791,7 +7818,9 @@ function App() {
         })
         .catch((err) => {
           const message = String((err && err.message) || err)
-          setError(message)
+          // A file the user deleted keeps its own error in the tab; the global
+          // banner would repeat it on every open.
+          if (!/不存在|not found|ENOENT/i.test(message)) setError(message)
           patchTab(id, { error: message })
         })
         .finally(() => {
