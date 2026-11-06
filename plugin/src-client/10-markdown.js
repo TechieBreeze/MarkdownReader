@@ -365,6 +365,45 @@ function MarkdownView(props) {
   const [error, setError] = React.useState('')
   const scrollKey = `md:${tab.path}`
 
+  // In-file search (Ctrl+F): the widget drives this controller. The markdown
+  // is searched by RENDERED TEXT - the matches are wrapped in <mark> and the
+  // current one is scrolled into view.
+  const fsRef = React.useRef({ marks: [], index: -1 })
+  React.useEffect(() => {
+    const controller = {
+      kind: 'md',
+      search(query, options) {
+        const marks = mdSearchFind(boxRef.current, query, options)
+        fsRef.current = { marks, index: marks.length ? 0 : -1 }
+        if (marks.length) {
+          marks[0].classList.add('mdr-fs-cur')
+          scrollFileSearchMark(marks[0])
+        }
+        return { count: marks.length, index: fsRef.current.index }
+      },
+      goto(delta) {
+        const state = fsRef.current
+        const total = state.marks.length
+        if (!total) return { count: 0, index: -1 }
+        let next = state.index + delta
+        if (next < 0) next = total - 1
+        if (next >= total) next = 0
+        for (const mark of state.marks) mark.classList.remove('mdr-fs-cur')
+        const mark = state.marks[next]
+        mark.classList.add('mdr-fs-cur')
+        state.index = next
+        scrollFileSearchMark(mark)
+        return { count: total, index: next }
+      },
+      clear() {
+        mdSearchClear(boxRef.current)
+        fsRef.current = { marks: [], index: -1 }
+      },
+    }
+    registerFileSearchController(tab.id, controller)
+    return () => unregisterFileSearchController(tab.id)
+  }, [tab.id])
+
   // Persist while visible. No save on cleanup: by then the tab may already be
   // replaced/switched (scrollTop clamped to 0) and would overwrite the good
   // value. App saves explicitly before switching and on beforeunload.

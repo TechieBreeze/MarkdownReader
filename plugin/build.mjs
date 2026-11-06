@@ -15,6 +15,7 @@ const ORDER = [
   '22-defs.js',
   '24-modal.js',
   '25-search.js',
+  '26-filesearch.js',
   '27-sync.js',
   '28-gitgraph.js',
   '30-tree.js',

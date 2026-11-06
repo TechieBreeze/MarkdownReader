@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "932171b9470f";
+    const BUILD_ID = "a54e47e8657f";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -1520,6 +1520,45 @@ function MarkdownView(props) {
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
   const scrollKey = `md:${tab.path}`
+
+  // In-file search (Ctrl+F): the widget drives this controller. The markdown
+  // is searched by RENDERED TEXT - the matches are wrapped in <mark> and the
+  // current one is scrolled into view.
+  const fsRef = React.useRef({ marks: [], index: -1 })
+  React.useEffect(() => {
+    const controller = {
+      kind: 'md',
+      search(query, options) {
+        const marks = mdSearchFind(boxRef.current, query, options)
+        fsRef.current = { marks, index: marks.length ? 0 : -1 }
+        if (marks.length) {
+          marks[0].classList.add('mdr-fs-cur')
+          scrollFileSearchMark(marks[0])
+        }
+        return { count: marks.length, index: fsRef.current.index }
+      },
+      goto(delta) {
+        const state = fsRef.current
+        const total = state.marks.length
+        if (!total) return { count: 0, index: -1 }
+        let next = state.index + delta
+        if (next < 0) next = total - 1
+        if (next >= total) next = 0
+        for (const mark of state.marks) mark.classList.remove('mdr-fs-cur')
+        const mark = state.marks[next]
+        mark.classList.add('mdr-fs-cur')
+        state.index = next
+        scrollFileSearchMark(mark)
+        return { count: total, index: next }
+      },
+      clear() {
+        mdSearchClear(boxRef.current)
+        fsRef.current = { marks: [], index: -1 }
+      },
+    }
+    registerFileSearchController(tab.id, controller)
+    return () => unregisterFileSearchController(tab.id)
+  }, [tab.id])
 
   // Persist while visible. No save on cleanup: by then the tab may already be
   // replaced/switched (scrollTop clamped to 0) and would overwrite the good
@@ -3329,7 +3368,7 @@ const codeScrollStore = (() => {
 })()
 
 /** One row's HTML. diffMode adds the +/- gutter sign and diff row classes. */
-function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top) {
+function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top, extraClass) {
   const classes = ['mdr-cl']
   if (row.kind === 'add') classes.push('mdr-git-add')
   else if (row.kind === 'del') classes.push('mdr-git-del')
@@ -3337,6 +3376,8 @@ function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top) {
   // 跳转行持久高亮：只有确实落在这一行（row index）才加 .hit；删除行不加
   // （旧文件行号与当前渲染的新版本文本错位，标上去反而误导）。
   if (hitIndex != null && hitIndex >= 0 && index === hitIndex && row.kind !== 'del') classes.push('hit')
+  // 搜索命中标记（Ctrl+F）：.mdr-fs-line 是命中行，.mdr-fs-cur 是当前命中。
+  if (extraClass) classes.push(extraClass)
   const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
   const gutter = diffMode ? sign : '  '
   const style = top == null ? '' : ` style="top:${top}px"`
@@ -3383,7 +3424,19 @@ function useCodeRows(view, workspaceContent) {
  *                  switching back to an open tab restores the remembered position.
  */
 function CodeBody(props) {
-  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll, jumpHover, freshOpen } = props
+  const {
+    rows,
+    lang,
+    diffMode,
+    targetLine,
+    viewKey,
+    scrollKey,
+    contentReady,
+    restoreScroll,
+    jumpHover,
+    freshOpen,
+    searchKey,
+  } = props
   const total = rows.length
   const virtual = total > GIT_V_THRESHOLD
   const scrollerRef = React.useRef(null)
@@ -3393,6 +3446,13 @@ function CodeBody(props) {
   rowsRef.current = rows
   const lastTopRef = React.useRef(0)
   const saveTimerRef = React.useRef(0)
+  // In-file search (Ctrl+F): the matching rows and the current one. The marks
+  // are part of the rendered rows, so they survive a virtual-scroll repaint.
+  const [fs, setFs] = React.useState({ matches: [], index: -1 })
+  const fsRef = React.useRef(fs)
+  fsRef.current = fs
+  const fsMarkSet = React.useMemo(() => new Set(fs.matches), [fs.matches])
+  const fsCurrent = fs.matches.length ? fs.matches[fs.index] : -1
   // Captured on mount only: a fresh open keeps "explicit jump" semantics even
   // after the content arrives and the prop flips to false.
   const freshOpenRef = React.useRef(!!freshOpen)
@@ -3440,6 +3500,61 @@ function CodeBody(props) {
     const last = Math.min(list.length, Math.ceil((scrollTop + el.clientHeight) / GIT_LINE_H) + GIT_BUFFER)
     setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
   }
+
+  /**
+   * In-file search (Ctrl+F) over the code rows.
+   *
+   * The code is searched by LINE (the rows carry the plain text), so a match
+   * is a row index. The rows carry the mark class, so the highlight survives a
+   * virtual-scroll repaint.
+   */
+  const scrollToSearchRow = (index) => {
+    const el = scrollerRef.current
+    if (!el || index < 0) return
+    const top = index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
+    el.scrollTop = Math.max(0, top)
+    lastTopRef.current = el.scrollTop
+    paintWindow()
+  }
+
+  React.useEffect(() => {
+    if (!searchKey) return undefined
+    const controller = {
+      kind: 'code',
+      search(query, options) {
+        const re = fileSearchRegex(query, options)
+        if (!re) return { count: 0, index: -1, error: '正则表达式错误' }
+        const list = rowsRef.current || []
+        const matches = []
+        for (let index = 0; index < list.length; index += 1) {
+          const row = list[index]
+          const text = row && row.text != null ? String(row.text) : ''
+          if (!text) continue
+          if (fileSearchMatchesIn(text, re).length) matches.push(index)
+        }
+        setFs({ matches, index: matches.length ? 0 : -1 })
+        if (matches.length) scrollToSearchRow(matches[0])
+        return { count: matches.length, index: matches.length ? 0 : -1 }
+      },
+      goto(delta) {
+        const state = fsRef.current
+        const total = state.matches.length
+        if (!total) return { count: 0, index: -1 }
+        let next = state.index + delta
+        if (next < 0) next = total - 1
+        if (next >= total) next = 0
+        setFs({ matches: state.matches, index: next })
+        scrollToSearchRow(state.matches[next])
+        return { count: total, index: next }
+      },
+      clear() {
+        setFs({ matches: [], index: -1 })
+      },
+    }
+    registerFileSearchController(searchKey, controller)
+    return () => unregisterFileSearchController(searchKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchKey])
 
   const flushScroll = () => {
     const meta = scrollMetaRef.current
@@ -3535,23 +3650,30 @@ function CodeBody(props) {
     return escapeHtml(row && row.text != null ? String(row.text) : '') || ' '
   }
 
+  // Search marks: the current match wins over the other matches.
+  const searchClassFor = (index) => {
+    if (index === fsCurrent) return 'mdr-fs-cur'
+    if (fsMarkSet.has(index)) return 'mdr-fs-line'
+    return ''
+  }
+
   const plainHtml = React.useMemo(() => {
     if (virtual) return ''
     let html = ''
     for (let index = 0; index < rows.length; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null, searchClassFor(index))
     }
     return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, fsMarkSet, fsCurrent])
 
   const windowHtml = React.useMemo(() => {
     if (!virtual) return ''
     let html = ''
     for (let index = windowFrom; index < windowTo; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H, searchClassFor(index))
     }
     return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo, fsMarkSet, fsCurrent])
 
   // `.jump-hover` is the original container gate for the Ctrl+click affordance;
   // deleted diff rows are excluded by CSS (their line numbers are the OLD file's).
@@ -3764,6 +3886,8 @@ function CodeView(props) {
         // A tab whose content has not loaded yet was just opened: its line request
         // is an explicit jump and must beat any remembered scroll position.
         freshOpen: tab.content == null,
+        // In-file search (Ctrl+F) keys the controller by the tab id.
+        searchKey: tab.id,
       }),
     ),
   )
@@ -4795,6 +4919,285 @@ function SearchPanel(props) {
         h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
       ),
     ),
+  )
+}
+
+// ---- 26-filesearch.js ----
+/**
+ * In-file search (Ctrl+F) — the plugin's port of the standalone reader's
+ * 「文件内搜索」 widget.
+ *
+ * The standalone reader had this feature (search-widget + fsRunCode/fsRunMd);
+ * the DSH plugin only got the GLOBAL search (Ctrl+Shift+F) and the quick open
+ * (Ctrl+P), so Ctrl+F did nothing at all.
+ *
+ * Design:
+ *  - the ACTIVE view registers a search controller (tab id -> controller);
+ *    the App only talks to that controller, so the widget does not care
+ *    whether the tab shows markdown, code, html or an image;
+ *  - markdown is searched by RENDERED TEXT (matches are wrapped in
+ *    `<mark class="mdr-fs-mark">`, the current one gets `.mdr-fs-cur`);
+ *  - code is searched by LINE (the rows carry the plain text, so a match is a
+ *    row index - the row is marked and the view scrolls to it);
+ *  - the search runs on ENTER, never per keystroke ("逐字搜索太卡了"): typing
+ *    only marks the query dirty, a second Enter navigates to the next match,
+ *    Shift+Enter to the previous one.
+ */
+
+/* ------------------------------------------------------------- styles */
+
+const FILE_SEARCH_CSS = `
+.mdr-fs{position:absolute;top:34px;right:14px;z-index:60;display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 28px rgba(0,0,0,.35);font-size:12.5px;color:var(--dsw-alias-label-primary)}
+.mdr-fs-input{width:210px;box-sizing:border-box;padding:3px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;outline:none}
+.mdr-fs-input:focus{border-color:var(--dsw-alias-brand-primary)}
+.mdr-fs-count{min-width:70px;text-align:center;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mdr-fs-count.err{color:var(--dsw-alias-state-error-primary)}
+.mdr-fs-btn{padding:2px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
+.mdr-fs-btn:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-fs-btn.on{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
+.mdr-fs-mark{background:rgba(255,214,102,.45);color:inherit;border-radius:2px}
+.mdr-fs-mark.mdr-fs-cur{background:rgba(255,140,0,.8);color:#fff}
+.mdr-cl.mdr-fs-line{background:rgba(255,214,102,.2)}
+.mdr-cl.mdr-fs-cur{background:rgba(255,140,0,.32)}
+`
+
+/* ----------------------------------------------------------- registry */
+
+/** tab id -> search controller of the mounted view. */
+const fileSearchControllers = new Map()
+
+function registerFileSearchController(key, controller) {
+  if (!key) return
+  fileSearchControllers.set(String(key), controller)
+}
+
+function unregisterFileSearchController(key) {
+  if (!key) return
+  fileSearchControllers.delete(String(key))
+}
+
+function fileSearchController(key) {
+  if (!key) return null
+  return fileSearchControllers.get(String(key)) || null
+}
+
+/* ------------------------------------------------------------ helpers */
+
+function fileSearchEscapeRe(text) {
+  return String(text == null ? '' : text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * The search pattern: plain text by default, plus the three switches of the
+ * standalone reader (Aa 大小写 / ab 全字 / .* 正则). A broken regex returns
+ * null - the caller reports "正则表达式错误" instead of searching nonsense.
+ */
+function fileSearchRegex(query, options) {
+  const opts = options || {}
+  let src = String(query == null ? '' : query)
+  if (!src) return null
+  if (opts.re) {
+    try {
+      return new RegExp(src, opts.cs ? 'g' : 'gi')
+    } catch {
+      return null
+    }
+  }
+  src = opts.word ? `\\b${fileSearchEscapeRe(src)}\\b` : fileSearchEscapeRe(src)
+  try {
+    return new RegExp(src, opts.cs ? 'g' : 'gi')
+  } catch {
+    return null
+  }
+}
+
+/** All [start, end] matches of `re` in `text` (the regex is reused, so reset it). */
+function fileSearchMatchesIn(text, re) {
+  const out = []
+  re.lastIndex = 0
+  let match
+  while ((match = re.exec(text)) !== null) {
+    out.push([match.index, match.index + match[0].length])
+    if (match[0].length === 0) re.lastIndex += 1
+  }
+  return out
+}
+
+/* ------------------------------------------------------ markdown search */
+
+/** Scroll a match into the middle of the viewport. */
+function scrollFileSearchMark(mark) {
+  if (!mark || typeof mark.scrollIntoView !== 'function') return
+  try {
+    mark.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  } catch {
+    try {
+      mark.scrollIntoView()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Unwrap every match mark and merge the split text nodes again. */
+function mdSearchClear(container) {
+  if (!container || typeof container.querySelectorAll !== 'function') return
+  const marks = container.querySelectorAll('mark.mdr-fs-mark')
+  for (const mark of marks) {
+    if (!mark.parentNode) continue
+    mark.parentNode.replaceChild(document.createTextNode(mark.textContent || ''), mark)
+  }
+  // Adjacent text nodes do not merge on their own: without normalize() the
+  // text is cut into pieces and a later search misses whole words.
+  if (typeof container.normalize === 'function') container.normalize()
+}
+
+/**
+ * Search the rendered markdown and wrap every match in `<mark>`.
+ *
+ * @returns {Element[]} the marks, in document order
+ */
+function mdSearchFind(container, query, options) {
+  mdSearchClear(container)
+  if (!container || !query) return []
+  const re = fileSearchRegex(query, options)
+  if (!re) return []
+  const walker = document.createTreeWalker(container, 4 /* NodeFilter.SHOW_TEXT */)
+  const nodes = []
+  while (walker.nextNode()) nodes.push(walker.currentNode)
+  const marks = []
+  for (const node of nodes) {
+    const parent = node.parentNode
+    if (!parent || parent.nodeType !== 1) continue
+    const tag = parent.tagName
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA') continue
+    const text = node.nodeValue || ''
+    const segs = fileSearchMatchesIn(text, re)
+    if (!segs.length) continue
+    const frag = document.createDocumentFragment()
+    let pos = 0
+    for (const [start, end] of segs) {
+      if (start > pos) frag.appendChild(document.createTextNode(text.slice(pos, start)))
+      const mark = document.createElement('mark')
+      mark.className = 'mdr-fs-mark'
+      mark.textContent = text.slice(start, end)
+      frag.appendChild(mark)
+      marks.push(mark)
+      pos = end
+    }
+    if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)))
+    parent.replaceChild(frag, node)
+  }
+  return marks
+}
+
+/* ------------------------------------------------------------- widget */
+
+/**
+ * The floating search widget.
+ *
+ * Enter searches (or moves to the next match), Shift+Enter to the previous
+ * one, Escape closes. The count is the App's state, the widget is dumb.
+ */
+function FileSearchWidget(props) {
+  const {
+    query,
+    onQuery,
+    count,
+    index,
+    status,
+    options,
+    onToggleOption,
+    onSearch,
+    onNext,
+    onPrev,
+    onClose,
+    onGlobal,
+  } = props
+  const inputRef = React.useRef(null)
+
+  React.useEffect(() => {
+    const input = inputRef.current
+    if (!input) return undefined
+    input.focus()
+    if (typeof input.select === 'function') input.select()
+    return undefined
+  }, [])
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      if (event.shiftKey) onPrev()
+      else onNext()
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+    }
+  }
+
+  const total = Number(count || 0)
+  const current = Number(index || 0) + 1
+  const label = status ? status : total ? `${current} / ${total}` : '0 处'
+
+  return h(
+    'div',
+    { className: 'mdr-fs', onClick: (event) => event.stopPropagation() },
+    h('input', {
+      ref: inputRef,
+      className: 'mdr-fs-input',
+      type: 'text',
+      value: query,
+      placeholder: '在当前文件中查找',
+      onChange: (event) => onQuery(event.target.value),
+      onKeyDown,
+    }),
+    h('span', { className: 'mdr-fs-count' + (status ? ' err' : '') }, label),
+    h(
+      'button',
+      { type: 'button', className: 'mdr-fs-btn', title: '上一个匹配 (Shift+Enter)', onClick: onPrev },
+      '↑',
+    ),
+    h(
+      'button',
+      { type: 'button', className: 'mdr-fs-btn', title: '下一个匹配 (Enter)', onClick: onNext },
+      '↓',
+    ),
+    h(
+      'button',
+      {
+        type: 'button',
+        className: 'mdr-fs-btn' + (options && options.cs ? ' on' : ''),
+        title: '区分大小写',
+        onClick: () => onToggleOption('cs'),
+      },
+      'Aa',
+    ),
+    h(
+      'button',
+      {
+        type: 'button',
+        className: 'mdr-fs-btn' + (options && options.word ? ' on' : ''),
+        title: '全字匹配',
+        onClick: () => onToggleOption('word'),
+      },
+      'ab',
+    ),
+    h(
+      'button',
+      {
+        type: 'button',
+        className: 'mdr-fs-btn' + (options && options.re ? ' on' : ''),
+        title: '正则表达式',
+        onClick: () => onToggleOption('re'),
+      },
+      '.*',
+    ),
+    typeof onGlobal === 'function'
+      ? h('button', { type: 'button', className: 'mdr-fs-btn', title: '全局搜索 (Ctrl+Shift+F)', onClick: onGlobal }, '全局')
+      : null,
+    h('button', { type: 'button', className: 'mdr-fs-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
   )
 }
 
@@ -8085,6 +8488,88 @@ function App() {
     ? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
     : ''
 
+  /* ------------------------------------------------- 文件内搜索 (Ctrl+F) */
+
+  const [fsOpen, setFsOpen] = React.useState(false)
+  const [fsQuery, setFsQuery] = React.useState('')
+  const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
+  const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
+  // Refs mirror the state: the callbacks below must see the CURRENT values.
+  // `fsAppliedRef` holds the query that was actually searched: a different one
+  // means "search again", the same one means "next match" (the standalone
+  // reader's rule).
+  const fsQueryRef = React.useRef('')
+  const fsAppliedRef = React.useRef('')
+  const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
+
+  const fsController = React.useCallback(
+    () => fileSearchController(activeTab ? activeTab.id : ''),
+    [activeTab],
+  )
+
+  const runFileSearch = React.useCallback(
+    (query) => {
+      const controller = fsController()
+      if (!controller) {
+        fsAppliedRef.current = query
+        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        return
+      }
+      const result = controller.search(query, fsOptionsRef.current)
+      fsAppliedRef.current = query
+      setFsInfo({
+        count: Number(result.count || 0),
+        index: Number(result.index == null ? -1 : result.index),
+        status: result.error || (result.count ? '' : '无匹配'),
+      })
+    },
+    [fsController],
+  )
+
+  const gotoFileSearch = React.useCallback(
+    (delta) => {
+      const controller = fsController()
+      if (!controller) {
+        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        return
+      }
+      // A changed query means "search", not "navigate".
+      if (fsQueryRef.current !== fsAppliedRef.current) {
+        runFileSearch(fsQueryRef.current)
+        return
+      }
+      const result = controller.goto(delta)
+      setFsInfo({
+        count: Number(result.count || 0),
+        index: Number(result.index == null ? -1 : result.index),
+        status: result.error || (result.count ? '' : '无匹配'),
+      })
+    },
+    [fsController, runFileSearch],
+  )
+
+  const closeFileSearch = React.useCallback(() => {
+    const controller = fsController()
+    if (controller) controller.clear()
+    setFsOpen(false)
+    setFsQuery('')
+    fsQueryRef.current = ''
+    fsAppliedRef.current = ''
+    setFsInfo({ count: 0, index: -1, status: '' })
+  }, [fsController])
+
+  const openFileSearch = React.useCallback(() => {
+    setFsOpen(true)
+  }, [])
+
+  const toggleFileSearchOption = React.useCallback((key) => {
+    setFsOptions((prev) => {
+      const next = { ...prev, [key]: !prev[key] }
+      fsOptionsRef.current = next
+      return next
+    })
+  }, [])
+
   /** Save the active markdown tab scroll NOW, before the DOM switches away. */
   const saveActiveScroll = React.useCallback(() => {
     const scroller = contentRef.current
@@ -8675,6 +9160,12 @@ function App() {
         setOverlay('search')
         return
       }
+      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
+        // 文件内搜索（Ctrl+F）：浏览器自带的那个找不到插件面板里的内容。
+        event.preventDefault()
+        openFileSearch()
+        return
+      }
       if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
         event.preventDefault()
         setOverlay('files')
@@ -8711,7 +9202,7 @@ function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [goNav, closeModal, closeSync, closeGit])
+  }, [goNav, closeModal, closeSync, closeGit, openFileSearch])
 
   // 旧版本 locator 曾把「项目名/项目名/...」双前缀写进展开态持久化。多根模式下
   // 折叠一次并回写（只折叠「首两段相同且首段是真实项目名」的路径，单根模式不动）。
@@ -9023,6 +9514,29 @@ function App() {
         ),
       ),
     ),
+    // 文件内搜索条（Ctrl+F）：浮在内容区右上角，属于插件面板内部。
+    fsOpen
+      ? h(FileSearchWidget, {
+          query: fsQuery,
+          onQuery: (value) => {
+            fsQueryRef.current = value
+            setFsQuery(value)
+          },
+          count: fsInfo.count,
+          index: fsInfo.index,
+          status: fsInfo.status,
+          options: fsOptions,
+          onToggleOption: toggleFileSearchOption,
+          onSearch: runFileSearch,
+          onNext: () => gotoFileSearch(1),
+          onPrev: () => gotoFileSearch(-1),
+          onClose: closeFileSearch,
+          onGlobal: () => {
+            closeFileSearch()
+            setOverlay('search')
+          },
+        })
+      : null,
     error ? h('div', { className: 'mdr-err' }, error) : null,
     overlay === 'search'
       ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -9058,6 +9572,7 @@ function Page() {
   // reaches the document if the panel is rendered there, and the diff rows
   // must keep their colours wherever the harness mounts the panel.
   const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+  const fileSearchCss = typeof FILE_SEARCH_CSS !== 'undefined' ? FILE_SEARCH_CSS : ''
   // The panel root is captured so overlays (context menu, toast) are mounted
   // INSIDE the panel: the Harness mounts it into its own DOM scope, and
   // anything appended to document.body loses the panel's stylesheet and lands
@@ -9071,6 +9586,9 @@ function Page() {
     { className: 'mdr-root', ref: rootRef },
     h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
     fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+    fileSearchCss
+      ? h('style', { id: 'mdr-filesearch-css', dangerouslySetInnerHTML: { __html: fileSearchCss } })
+      : null,
     buildId
       ? h(
           'div',

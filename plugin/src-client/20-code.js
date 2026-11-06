@@ -823,7 +823,7 @@ const codeScrollStore = (() => {
 })()
 
 /** One row's HTML. diffMode adds the +/- gutter sign and diff row classes. */
-function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top) {
+function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top, extraClass) {
   const classes = ['mdr-cl']
   if (row.kind === 'add') classes.push('mdr-git-add')
   else if (row.kind === 'del') classes.push('mdr-git-del')
@@ -831,6 +831,8 @@ function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top) {
   // 跳转行持久高亮：只有确实落在这一行（row index）才加 .hit；删除行不加
   // （旧文件行号与当前渲染的新版本文本错位，标上去反而误导）。
   if (hitIndex != null && hitIndex >= 0 && index === hitIndex && row.kind !== 'del') classes.push('hit')
+  // 搜索命中标记（Ctrl+F）：.mdr-fs-line 是命中行，.mdr-fs-cur 是当前命中。
+  if (extraClass) classes.push(extraClass)
   const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
   const gutter = diffMode ? sign : '  '
   const style = top == null ? '' : ` style="top:${top}px"`
@@ -877,7 +879,19 @@ function useCodeRows(view, workspaceContent) {
  *                  switching back to an open tab restores the remembered position.
  */
 function CodeBody(props) {
-  const { rows, lang, diffMode, targetLine, viewKey, scrollKey, contentReady, restoreScroll, jumpHover, freshOpen } = props
+  const {
+    rows,
+    lang,
+    diffMode,
+    targetLine,
+    viewKey,
+    scrollKey,
+    contentReady,
+    restoreScroll,
+    jumpHover,
+    freshOpen,
+    searchKey,
+  } = props
   const total = rows.length
   const virtual = total > GIT_V_THRESHOLD
   const scrollerRef = React.useRef(null)
@@ -887,6 +901,13 @@ function CodeBody(props) {
   rowsRef.current = rows
   const lastTopRef = React.useRef(0)
   const saveTimerRef = React.useRef(0)
+  // In-file search (Ctrl+F): the matching rows and the current one. The marks
+  // are part of the rendered rows, so they survive a virtual-scroll repaint.
+  const [fs, setFs] = React.useState({ matches: [], index: -1 })
+  const fsRef = React.useRef(fs)
+  fsRef.current = fs
+  const fsMarkSet = React.useMemo(() => new Set(fs.matches), [fs.matches])
+  const fsCurrent = fs.matches.length ? fs.matches[fs.index] : -1
   // Captured on mount only: a fresh open keeps "explicit jump" semantics even
   // after the content arrives and the prop flips to false.
   const freshOpenRef = React.useRef(!!freshOpen)
@@ -934,6 +955,61 @@ function CodeBody(props) {
     const last = Math.min(list.length, Math.ceil((scrollTop + el.clientHeight) / GIT_LINE_H) + GIT_BUFFER)
     setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
   }
+
+  /**
+   * In-file search (Ctrl+F) over the code rows.
+   *
+   * The code is searched by LINE (the rows carry the plain text), so a match
+   * is a row index. The rows carry the mark class, so the highlight survives a
+   * virtual-scroll repaint.
+   */
+  const scrollToSearchRow = (index) => {
+    const el = scrollerRef.current
+    if (!el || index < 0) return
+    const top = index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
+    el.scrollTop = Math.max(0, top)
+    lastTopRef.current = el.scrollTop
+    paintWindow()
+  }
+
+  React.useEffect(() => {
+    if (!searchKey) return undefined
+    const controller = {
+      kind: 'code',
+      search(query, options) {
+        const re = fileSearchRegex(query, options)
+        if (!re) return { count: 0, index: -1, error: '正则表达式错误' }
+        const list = rowsRef.current || []
+        const matches = []
+        for (let index = 0; index < list.length; index += 1) {
+          const row = list[index]
+          const text = row && row.text != null ? String(row.text) : ''
+          if (!text) continue
+          if (fileSearchMatchesIn(text, re).length) matches.push(index)
+        }
+        setFs({ matches, index: matches.length ? 0 : -1 })
+        if (matches.length) scrollToSearchRow(matches[0])
+        return { count: matches.length, index: matches.length ? 0 : -1 }
+      },
+      goto(delta) {
+        const state = fsRef.current
+        const total = state.matches.length
+        if (!total) return { count: 0, index: -1 }
+        let next = state.index + delta
+        if (next < 0) next = total - 1
+        if (next >= total) next = 0
+        setFs({ matches: state.matches, index: next })
+        scrollToSearchRow(state.matches[next])
+        return { count: total, index: next }
+      },
+      clear() {
+        setFs({ matches: [], index: -1 })
+      },
+    }
+    registerFileSearchController(searchKey, controller)
+    return () => unregisterFileSearchController(searchKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchKey])
 
   const flushScroll = () => {
     const meta = scrollMetaRef.current
@@ -1029,23 +1105,30 @@ function CodeBody(props) {
     return escapeHtml(row && row.text != null ? String(row.text) : '') || ' '
   }
 
+  // Search marks: the current match wins over the other matches.
+  const searchClassFor = (index) => {
+    if (index === fsCurrent) return 'mdr-fs-cur'
+    if (fsMarkSet.has(index)) return 'mdr-fs-line'
+    return ''
+  }
+
   const plainHtml = React.useMemo(() => {
     if (virtual) return ''
     let html = ''
     for (let index = 0; index < rows.length; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null, searchClassFor(index))
     }
     return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, fsMarkSet, fsCurrent])
 
   const windowHtml = React.useMemo(() => {
     if (!virtual) return ''
     let html = ''
     for (let index = windowFrom; index < windowTo; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H)
+      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H, searchClassFor(index))
     }
     return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo])
+  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo, fsMarkSet, fsCurrent])
 
   // `.jump-hover` is the original container gate for the Ctrl+click affordance;
   // deleted diff rows are excluded by CSS (their line numbers are the OLD file's).
@@ -1258,6 +1341,8 @@ function CodeView(props) {
         // A tab whose content has not loaded yet was just opened: its line request
         // is an explicit jump and must beat any remembered scroll position.
         freshOpen: tab.content == null,
+        // In-file search (Ctrl+F) keys the controller by the tab id.
+        searchKey: tab.id,
       }),
     ),
   )
