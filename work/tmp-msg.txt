@@ -1,0 +1,20 @@
+fix(ui): overlays stay inside the panel instead of the window bottom
+
+The path copy menu and the toast were appended to `document.body`. The Harness
+mounts the panel into its OWN DOM scope, so those nodes land outside the panel:
+they lose the panel's stylesheet and end up as an unstyled line at the bottom
+of the Harness window - the copy-path text the user kept seeing there.
+
+- capture the panel root from the React tree (ref callback) and mount the
+  context menu and the toast into it;
+- the contextmenu listener is attached to the panel root as well as the
+  document (in a shadow root the document only sees the retargeted host), and
+  the event is handled exactly once;
+- outside-click detection uses the composed path, so a click inside the menu
+  does not close it;
+- the panel shows its client build id in the corner, so a window running an old
+  bundle is visible at a glance;
+- the client reports the DOM scope it lives in to /api/client-ping, so the
+  question is answered by the app instead of guessed.
+
+Regression: copy-menu-check [8] (overlays inside the panel, shadow-root case).

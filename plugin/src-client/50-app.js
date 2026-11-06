@@ -1227,11 +1227,30 @@ function Page() {
   // reaches the document if the panel is rendered there, and the diff rows
   // must keep their colours wherever the harness mounts the panel.
   const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+  // The panel root is captured so overlays (context menu, toast) are mounted
+  // INSIDE the panel: the Harness mounts it into its own DOM scope, and
+  // anything appended to document.body loses the panel's stylesheet and lands
+  // at the bottom of the Harness window.
+  const rootRef = (element) => {
+    if (typeof setPanelRoot === 'function') setPanelRoot(element)
+  }
+  const buildId = typeof BUILD_ID === 'undefined' ? '' : BUILD_ID
   return h(
     'div',
-    { className: 'mdr-root' },
+    { className: 'mdr-root', ref: rootRef },
     h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
     fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+    buildId
+      ? h(
+          'div',
+          {
+            className: 'mdr-build',
+            title:
+              `Markdown Reader 客户端构建 ${buildId}。若这里显示的是旧构建号，说明窗口还在跑旧代码 —— 刷新窗口（Ctrl+R）即可。`,
+          },
+          `build ${buildId}`,
+        )
+      : null,
     h(App),
   )
 }
@@ -1264,6 +1283,13 @@ function registerSlots(ctx) {
   // Host serves a newer one (the Harness caches plugin clients immutably).
   try {
     syncClientBuild()
+  } catch {
+    /* ignore */
+  }
+  // Report the DOM scope the panel lives in, so "why does this overlay end up
+  // at the bottom of the window" is answered by the app, not guessed.
+  try {
+    if (typeof reportClientDom === 'function') reportClientDom()
   } catch {
     /* ignore */
   }

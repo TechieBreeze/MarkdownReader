@@ -166,6 +166,12 @@ async function apiClientPing(req, res, state) {
     // this is the only way to see what the running app actually did.
     last.md = body.md
   }
+  if (body.dom) {
+    // The DOM scope the panel lives in (shadow root or not) and where the
+    // overlays are mounted - the facts behind "this overlay shows up at the
+    // bottom of the Harness window".
+    last.dom = body.dom
+  }
   state.lastClientBuild = last
   return sendJson(res, 200, { ok: true, last: state.lastClientBuild })
 }

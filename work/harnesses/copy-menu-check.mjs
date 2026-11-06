@@ -245,7 +245,7 @@ function installEnvironment(doc) {
 function loadCore() {
   const source = fs.readFileSync(CORE, 'utf8')
   const factory = new Function(
-    `const React = null; const h = null;\n${source}\nreturn { copyText, copyTextFallback, copyWithFeedback, toast, pathMenuTarget, pathMenuOpen, pathMenuClose, pathOfElement, PATH_MENU_SELECTOR };`,
+    `const React = null; const h = null;\n${source}\nreturn { copyText, copyTextFallback, copyWithFeedback, toast, pathMenuTarget, pathMenuOpen, pathMenuClose, pathOfElement, PATH_MENU_SELECTOR, setPanelRoot, panelRoot, overlayHost };`,
   )
   return factory()
 }
@@ -547,7 +547,70 @@ let mod
   panel.remove()
 }
 
-/* ============================================================ [8] summary */
+/* ================================== [8] overlays stay INSIDE the panel scope */
+
+/*
+ * The Harness mounts the panel into its own DOM scope (a shadow root in the
+ * Web GUI). Anything this plugin appends to `document.body` lands OUTSIDE the
+ * panel: it loses the panel's stylesheet and shows up at the bottom of the
+ * Harness window - the unstyled 「复制路径」/「已复制路径」 line the user
+ * reported. The overlays must be mounted into the panel root instead.
+ */
+{
+  console.log('\n[8] overlays are mounted inside the panel, not on the document body')
+  const shadowDoc = createDocument()
+  installEnvironment(shadowDoc)
+  const shadowMod = loadCore()
+
+  // A panel that the document cannot reach - the shadow-root situation.
+  const panel = shadowDoc.createElement('div')
+  panel.className = 'mdr-root'
+  const shadowHost = shadowDoc.createElement('div')
+  shadowHost.appendChild(panel)
+  shadowMod.setPanelRoot(panel)
+  check('panel root captured', shadowMod.panelRoot() === panel)
+  check('the document cannot see the panel (shadow root)', !shadowDoc.querySelector('.mdr-root'))
+
+  const label = shadowDoc.createElement('span')
+  label.className = 'mdr-code-path'
+  label.setAttribute('title', 'docs/设计/说明.md')
+  label.textContent = 'docs/设计/说明.md'
+  panel.appendChild(label)
+
+  // A right-click inside the panel: the panel listener must handle it (the
+  // document listener only sees the retargeted host element).
+  const fired = { defaultPrevented: false }
+  panel.dispatch('contextmenu', {
+    target: label,
+    clientX: 80,
+    clientY: 90,
+    preventDefault() {
+      fired.defaultPrevented = true
+    },
+  })
+  await sleep(5)
+  const menu = panel.children.find((element) => element.classList.contains('mdr-ctx')) || null
+  check('the panel listener opens the menu', !!menu)
+  check('the right-click was consumed', fired.defaultPrevented === true)
+  check('the menu is mounted INSIDE the panel', !!menu && menu.parentNode === panel, menu && menu.parentNode && menu.parentNode.className)
+  check('the menu is NOT a child of the document body', !shadowDoc.body.children.some((element) => element.classList.contains('mdr-ctx')))
+  check('the menu keeps its position', !!menu && menu.style.left === '80px' && menu.style.top === '90px', menu && [menu.style.left, menu.style.top])
+
+  // The toast too: it must not become a fixed line on the window bottom.
+  shadowMod.toast('面板内提示', 'ok')
+  await flush()
+  const toastNode = panel.children.find((element) => element.id === 'mdr-toast') || null
+  check('the toast is mounted inside the panel', !!toastNode, toastNode && toastNode.textContent)
+  check('the toast is not on the document body', !shadowDoc.body.children.some((element) => element.id === 'mdr-toast'))
+  check('the toast text is the message', !!toastNode && toastNode.textContent === '面板内提示', toastNode && toastNode.textContent)
+
+  // An outside click must still close the menu (composed path aware).
+  shadowDoc.dispatch('mousedown', { target: shadowDoc.body })
+  check('an outside click closes the menu', !panel.children.some((element) => element.classList.contains('mdr-ctx')))
+  shadowMod.setPanelRoot(null)
+}
+
+/* ============================================================ [9] summary */
 
 console.log(`\n${checks - failures}/${checks} checks passed`)
 if (failures) {
