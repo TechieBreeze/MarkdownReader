@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "2d71d85342f6";
+    const BUILD_ID = "f4ccaf55862e";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -129,6 +129,25 @@ function syncClientBuild() {
   } catch {
     /* the Host may be gone; ignore */
   }
+  checkClientBuild()
+}
+
+/**
+ * Reload the page when the Host serves a newer bundle than this one runs.
+ *
+ * This runs PERIODICALLY, not only at load: the Harness hot-swaps the client
+ * module when the bundle is rebuilt, and the OLD module instance stays alive
+ * (its document listeners and timers keep running). An old instance is what
+ * kept re-creating the round-7 「已复制路径」 toast in the window, so the page
+ * has to be reloaded to get rid of it - which this check does as soon as it
+ * sees that the served build is not its own.
+ *
+ * The reload is guarded per served build (sessionStorage), so a rebuild loop
+ * cannot trap the page: after the reload the fresh instance matches the served
+ * build and nothing reloads again.
+ */
+function checkClientBuild() {
+  if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
   try {
     fetchJson('/api/client-build')
       .then((payload) => {
@@ -168,6 +187,8 @@ function reportMdRender(stats) {
         diffBlocks: Number((stats && stats.diffBlocks) || 0),
         ms: Number((stats && stats.ms) || 0),
         error: String((stats && stats.error) || ''),
+        // Cache hits/misses: "is the document re-highlighting on every open?"
+        cache: stats && stats.cache ? stats.cache : null,
         at: new Date().toISOString(),
       },
     }).catch(() => {})
@@ -206,6 +227,87 @@ function splitHref(href) {
   const hashAt = text.indexOf('#')
   if (hashAt < 0) return { path: text, hash: '' }
   return { path: text.slice(0, hashAt), hash: text.slice(hashAt + 1) }
+}
+
+/* ---------------------------------------------------------- fence rendering */
+
+/**
+ * Cache of rendered fence HTML.
+ *
+ * Opening a document renders every fenced block again, and a diff block costs
+ * TWO highlight.js passes (the OLD side and the NEW side are highlighted as
+ * separate blocks, so multi-line comments/strings keep their colours). A design
+ * document with ~20 diff blocks therefore spends seconds in hljs on EVERY tab
+ * switch - the user reported "每次打开 markdown 都会全量重新渲染 diff 代码块,
+ * 详设/codereview 这类文档很卡".
+ *
+ * The rendered HTML depends only on the fence text and its language, so it is
+ * cached by CONTENT: the second time a document is opened the blocks are
+ * restored as ready-made HTML and the document appears immediately.
+ *
+ * The cache lives in the module instance, so a new bundle (a hot swap by the
+ * Harness) starts with an empty cache - the colours of a new bundle must not
+ * be served from an old one.
+ */
+const FENCE_CACHE_MAX_CHARS = 6 * 1024 * 1024
+const fenceCache = new Map()
+let fenceCacheChars = 0
+const fenceCacheStats = { hits: 0, misses: 0, evicted: 0 }
+
+/** FNV-1a: cheap, stable, good enough for a cache key (the source is verified). */
+function fenceHash(text) {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(36)
+}
+
+/**
+ * Render a fence through the cache.
+ *
+ * @param {string} prefix  cache namespace ('diff', 'code:xml', …)
+ * @param {string} source  the fence text
+ * @param {Function} produce  the actual renderer (called on a miss)
+ */
+function cachedFenceHtml(prefix, source, produce) {
+  const text = String(source == null ? '' : source)
+  const key = `${prefix}|${text.length}|${fenceHash(text)}`
+  const hit = fenceCache.get(key)
+  if (hit && hit.source === text) {
+    // Refresh the LRU order.
+    fenceCache.delete(key)
+    fenceCache.set(key, hit)
+    fenceCacheStats.hits += 1
+    return hit.html
+  }
+  fenceCacheStats.misses += 1
+  let html = ''
+  try {
+    html = produce()
+  } catch {
+    html = ''
+  }
+  fenceCache.set(key, { source: text, html })
+  fenceCacheChars += text.length + html.length
+  while (fenceCacheChars > FENCE_CACHE_MAX_CHARS && fenceCache.size > 1) {
+    const oldest = fenceCache.keys().next().value
+    const entry = fenceCache.get(oldest)
+    fenceCache.delete(oldest)
+    fenceCacheChars -= entry.source.length + entry.html.length
+    fenceCacheStats.evicted += 1
+  }
+  return html
+}
+
+/** Cache statistics for the render report. */
+function fenceCacheReport() {
+  return {
+    ...fenceCacheStats,
+    entries: fenceCache.size,
+    chars: fenceCacheChars,
+  }
 }
 
 /* ------------------------------------------------------- clipboard & toast */
@@ -608,6 +710,9 @@ function startDomReport() {
   try {
     domReportTimer = setInterval(() => {
       cleanupStaleOverlays()
+      // An older module instance may still be alive in this window; it must
+      // take the page down so only the current bundle survives.
+      if (typeof checkClientBuild === 'function') checkClientBuild()
       reportClientDom()
     }, 8000)
     // A harness (Node) must not be held open by this timer.
@@ -1073,6 +1178,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       diffBlocks: diffCount,
       ms: Math.round(performance.now() - renderStarted),
       error: renderError,
+      cache: typeof fenceCacheReport === 'function' ? fenceCacheReport() : null,
     })
   }
   // 1) local images -> raw endpoint
@@ -1232,8 +1338,20 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           // ```diff → the commit-diff view inside the document: the code part
           // only, highlighted with the language of the file the diff belongs
           // to, added rows green and deleted rows red + strike-through.
+          //
+          // The rendered HTML is cached by content: a diff block costs TWO
+          // hljs passes (old side + new side), so re-rendering ~20 blocks on
+          // every tab switch is what made these documents slow. The second
+          // visit restores the ready-made HTML.
           try {
-            const html = typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source)
+            const html =
+              typeof cachedFenceHtml === 'function'
+                ? cachedFenceHtml('diff', source, () =>
+                    typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
+                  )
+                : typeof renderDiffFenceHtml === 'function'
+                  ? renderDiffFenceHtml(source)
+                  : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
             const wrap = document.createElement('div')
             wrap.className = 'mdr-md-diff'
@@ -1249,9 +1367,15 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
         } else {
           try {
             code.innerHTML =
-              typeof renderFenceCodeHtml === 'function'
-                ? renderFenceCodeHtml(source, lang)
-                : escapeHtml(source)
+              typeof cachedFenceHtml === 'function'
+                ? cachedFenceHtml(`code:${lang}`, source, () =>
+                    typeof renderFenceCodeHtml === 'function'
+                      ? renderFenceCodeHtml(source, lang)
+                      : escapeHtml(source),
+                  )
+                : typeof renderFenceCodeHtml === 'function'
+                  ? renderFenceCodeHtml(source, lang)
+                  : escapeHtml(source)
             code.classList.add('hljs')
           } catch {
             code.innerHTML = escapeHtml(source)

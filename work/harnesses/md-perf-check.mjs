@@ -87,33 +87,78 @@ window.fetch = (url) => {
 <script src="${path.join(SRC, '10-markdown.js').replace(/\\/g, '/')}"></script>
 <script>
 const md = ${JSON.stringify(md)}
-const report = { error: null, longTasks: [], diffBlocks: 0, mermaidDone: false, firstDiffAt: 0, allDiffAt: 0 }
+const report = { error: null, longTasks: [], diffBlocks: 0, mermaidDone: false, firstDiffAt: 0, allDiffAt: 0, second: null, cache: null }
+// Count the ACTUAL highlighting work: the sources are classic scripts here, so
+// the renderers are globals and can be wrapped.
+window.__hlCalls = 0
+for (const name of ['renderDiffFenceHtml', 'renderFenceCodeHtml']) {
+  const original = window[name]
+  if (typeof original !== 'function') continue
+  window[name] = function (source, lang) {
+    window.__hlCalls += 1
+    return original(source, lang)
+  }
+}
 try {
   new PerformanceObserver((list) => {
     for (const entry of list.getEntries()) report.longTasks.push(Math.round(entry.startTime) + ':' + Math.round(entry.duration))
   }).observe({ entryTypes: ['longtask'] })
 } catch {}
-const t0 = performance.now()
-const html = window.marked.parse(md, { gfm: true, breaks: false, mangle: false, headerIds: false })
+function renderPass(host) {
+  return new Promise((resolve) => {
+    const started = performance.now()
+    const html = window.marked.parse(md, { gfm: true, breaks: false, mangle: false, headerIds: false })
+    host.innerHTML = html
+    enhanceMarkdown(host, '20260917-微服务/docs/设计/fixture.md', true, ['code', '20260917-微服务'])
+    let firstAt = 0
+    const timer = setInterval(() => {
+      const diff = host.querySelectorAll('.mdr-md-diff').length
+      if (diff > 0 && !firstAt) firstAt = Math.round(performance.now() - started)
+      if (diff >= 3) {
+        clearInterval(timer)
+        const first = host.querySelector('.mdr-md-diff')
+        resolve({
+          ms: Math.round(performance.now() - started),
+          firstAt,
+          diff,
+          rows: host.querySelectorAll('.mdr-md-diff .mdr-cl').length,
+          html: first ? first.innerHTML : '',
+        })
+      }
+    }, 20)
+  })
+}
 const host = document.getElementById('host')
-host.innerHTML = html
-enhanceMarkdown(host, '20260917-微服务/docs/设计/fixture.md', true, ['code', '20260917-微服务'])
-const timer = setInterval(() => {
-  const diff = host.querySelectorAll('.mdr-md-diff').length
-  if (diff > 0 && !report.firstDiffAt) report.firstDiffAt = Math.round(performance.now() - t0)
-  if (diff >= 3) {
-    report.diffBlocks = diff
-    report.allDiffAt = Math.round(performance.now() - t0)
-    clearInterval(timer)
-    setTimeout(() => {
-      report.mermaidDone = !!host.querySelector('.mdr-mermaid-done, .mdr-mermaid-failed')
-      report.mermaidPlaceholder = !!host.querySelector('.mdr-mermaid')
-      report.rows = host.querySelectorAll('.mdr-md-diff .mdr-cl').length
-      report.totalMs = Math.round(performance.now() - t0)
-      document.getElementById('report').textContent = JSON.stringify(report)
-    }, 4000)
-  }
-}, 50)
+const t0 = performance.now()
+renderPass(host).then((first) => {
+  report.diffBlocks = first.diff
+  report.allDiffAt = first.ms
+  report.firstDiffAt = first.firstAt
+  report.rows = first.rows
+  report.firstHtml = first.html.length
+  report.hlCallsFirst = window.__hlCalls
+  const host2 = document.createElement('div')
+  document.getElementById('host').appendChild(host2)
+  return renderPass(host2).then((second) => {
+    report.second = {
+      ms: second.ms,
+      firstAt: second.firstAt,
+      diff: second.diff,
+      rows: second.rows,
+      sameHtml: second.html === first.html,
+      sameLength: second.html.length === first.html.length,
+      hlCallsSecond: window.__hlCalls - report.hlCallsFirst,
+    }
+    report.cache = typeof fenceCacheReport === 'function' ? fenceCacheReport() : null
+    report.mermaidDone = !!host.querySelector('.mdr-mermaid-done, .mdr-mermaid-failed')
+    report.mermaidPlaceholder = !!host.querySelector('.mdr-mermaid')
+    report.totalMs = Math.round(performance.now() - t0)
+    document.getElementById('report').textContent = JSON.stringify(report)
+  })
+}).catch((error) => {
+  report.error = String(error && error.message ? error.message : error)
+  document.getElementById('report').textContent = JSON.stringify(report)
+})
 </script>
 </body></html>`
 
@@ -162,6 +207,20 @@ const timer = setInterval(() => {
     // so the DIAGRAM may stay pending here; what must exist is the placeholder
     // the mermaid slice installs (the wiring), not the finished SVG.
     check('the mermaid placeholder is installed', report.mermaidPlaceholder === true, JSON.stringify(report))
+    console.log('\n[4] the second visit of a document is served from the cache')
+    // Re-opening a document must not re-run highlight.js for every block: the
+    // rendered HTML is cached by content, so the second pass is much faster
+    // and produces exactly the same markup.
+    if (!report.second) {
+      check('the second render pass ran', false, JSON.stringify(report))
+    } else {
+      console.log(`  first pass: ${report.allDiffAt} ms, second pass: ${report.second.ms} ms, cache ${JSON.stringify(report.cache)}`)
+      check('the second pass renders the same blocks', report.second.diff === report.diffBlocks && report.second.rows === report.rows, JSON.stringify(report.second))
+      check('the second pass produces the SAME html', report.second.sameHtml === true, JSON.stringify(report.second))
+      check('the second pass does NOT highlight again', report.second.hlCallsSecond === 0, JSON.stringify(report.second))
+      check('the first pass did highlight', report.hlCallsFirst > 0, report.hlCallsFirst)
+      check('the cache was hit', report.cache && report.cache.hits >= report.diffBlocks, JSON.stringify(report.cache))
+    }
   }
   fs.rmSync(tmp, { recursive: true, force: true })
 }
