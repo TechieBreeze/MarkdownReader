@@ -317,7 +317,7 @@ function fenceCacheReport() {
  * for a new build.
  */
 const FENCE_CACHE_STORAGE_PREFIX = 'mdr.fencecache.'
-const FENCE_CACHE_STORAGE_MAX = 3 * 1024 * 1024
+const FENCE_CACHE_STORAGE_MAX = 2 * 1024 * 1024
 let fenceCacheLoaded = false
 let fenceCacheSaveTimer = null
 
@@ -375,10 +375,12 @@ function saveFenceCacheToStorage() {
 function scheduleFenceCacheSave() {
   try {
     if (fenceCacheSaveTimer) clearTimeout(fenceCacheSaveTimer)
+    // A long debounce: saving means stringifying up to a few MB, which is a
+    // visible hitch right after a document was rendered.
     fenceCacheSaveTimer = setTimeout(() => {
       fenceCacheSaveTimer = null
       saveFenceCacheToStorage()
-    }, 3000)
+    }, 10000)
     if (fenceCacheSaveTimer && typeof fenceCacheSaveTimer.unref === 'function') fenceCacheSaveTimer.unref()
   } catch {
     /* ignore */
