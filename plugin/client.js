@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "a54e47e8657f";
+    const BUILD_ID = "ea897dd050cf";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -287,8 +287,12 @@ function cachedFenceHtml(prefix, source, produce) {
   let html = ''
   try {
     html = produce()
-  } catch {
+  } catch (error) {
     html = ''
+    // A silent empty block is the worst possible failure mode: say what broke.
+    if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+      console.warn('[markdown-reader] fence render failed:', error)
+    }
   }
   fenceCache.set(key, { source: text, html })
   fenceCacheChars += text.length + html.length
@@ -687,59 +691,54 @@ if (typeof document !== 'undefined' && document && typeof document.addEventListe
 }
 
 /**
- * Find every node in the window whose text is a copy confirmation.
+ * Find every node IN THE PANEL whose text is a copy confirmation.
  *
- * This is a DIAGNOSTIC, not a feature: the user reported a 「已复制路径」 line
- * that shows up at the bottom of the Harness window when the conversation view
- * is shown (and not while the plugin panel is open). The plugin cannot own that
- * text (its current build does not contain it), so the app has to say WHO does -
- * the scan reports the tag, class, id and position of every matching node.
+ * This is a DIAGNOSTIC, not a feature. It must stay CHEAP: an earlier version
+ * walked the WHOLE document body every 8 seconds - with a large conversation
+ * in the window that walk took seconds and pegged a CPU core, so the whole
+ * machine (even the mouse) stuttered. Now it only walks the plugin's own panel
+ * and stops after a bounded number of nodes.
  */
+const FIND_COPY_MAX_NODES = 3000
 function findCopyConfirmationNodes() {
   const hits = []
-  const roots = []
-  try {
-    if (typeof document !== 'undefined' && document.body) roots.push(document.body)
-  } catch {
-    /* ignore */
-  }
   const panel = panelRoot()
-  if (panel && roots.indexOf(panel) < 0) roots.push(panel)
-  for (const root of roots) {
-    let walker = null
-    try {
-      walker = document.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */)
-    } catch {
-      continue
-    }
-    let node = walker.nextNode()
-    while (node) {
-      const text = String(node.textContent || '').trim()
-      // Short texts only: a sentence in the conversation view ("…已复制路径…")
-      // is not the stray overlay this diagnostic is looking for.
-      if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
-        const element = node.parentElement
-        if (element) {
-          let rect = { top: 0, left: 0, width: 0, height: 0 }
-          try {
-            rect = element.getBoundingClientRect()
-          } catch {
-            /* ignore */
-          }
-          hits.push({
-            text,
-            tag: element.tagName,
-            cls: String(element.className || '').slice(0, 90),
-            id: element.id || '',
-            top: Math.round(rect.top),
-            left: Math.round(rect.left),
-            inPanel: !!(panel && panel.contains && panel.contains(element)),
-          })
-          if (hits.length >= 8) return hits
+  if (!panel) return hits
+  let walker = null
+  try {
+    walker = document.createTreeWalker(panel, 4 /* NodeFilter.SHOW_TEXT */)
+  } catch {
+    return hits
+  }
+  let visited = 0
+  let node = walker.nextNode()
+  while (node && visited < FIND_COPY_MAX_NODES) {
+    visited += 1
+    const text = String(node.textContent || '').trim()
+    // Short texts only: a sentence in the conversation view ("…已复制路径…")
+    // is not the stray overlay this diagnostic is looking for.
+    if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
+      const element = node.parentElement
+      if (element) {
+        let rect = { top: 0, left: 0, width: 0, height: 0 }
+        try {
+          rect = element.getBoundingClientRect()
+        } catch {
+          /* ignore */
         }
+        hits.push({
+          text,
+          tag: element.tagName,
+          cls: String(element.className || '').slice(0, 90),
+          id: element.id || '',
+          top: Math.round(rect.top),
+          left: Math.round(rect.left),
+          inPanel: true,
+        })
+        if (hits.length >= 8) return hits
       }
-      node = walker.nextNode()
     }
+    node = walker.nextNode()
   }
   return hits
 }
@@ -782,10 +781,11 @@ function reportClientDom() {
 /**
  * Keep the DOM report fresh.
  *
- * The copy confirmation the user reported only appears in the CONVERSATION
- * view (the plugin panel is not shown then), so the report has to run while
- * the panel is unmounted as well - hence the interval, not a one-shot call.
+ * The interval is deliberately SLOW (30 s) and the DOM scan only runs while
+ * the plugin panel is mounted: an 8 s interval that walked the whole document
+ * pegged a CPU core and made the whole machine stutter ("鼠标都会一卡一卡").
  */
+const DOM_REPORT_INTERVAL_MS = 30000
 let domReportTimer = null
 function startDomReport() {
   if (domReportTimer) return
@@ -795,8 +795,9 @@ function startDomReport() {
       // An older module instance may still be alive in this window; it must
       // take the page down so only the current bundle survives.
       if (typeof checkClientBuild === 'function') checkClientBuild()
-      reportClientDom()
-    }, 8000)
+      // The scan is only useful while the panel exists.
+      if (panelRoot()) reportClientDom()
+    }, DOM_REPORT_INTERVAL_MS)
     // A harness (Node) must not be held open by this timer.
     if (domReportTimer && typeof domReportTimer.unref === 'function') domReportTimer.unref()
   } catch {
@@ -1399,6 +1400,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     fenceBlocks.push({ code, lang })
   }
   fenceCount = fenceBlocks.length
+  const diffFences = []
   if (fenceBlocks.length) {
     let index = 0
     // Run the slices on IDLE time with a small budget.
@@ -1421,46 +1423,58 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           // only, highlighted with the language of the file the diff belongs
           // to, added rows green and deleted rows red + strike-through.
           //
-          // The rendered HTML is cached by content: a diff block costs TWO
-          // hljs passes (old side + new side), so re-rendering ~20 blocks on
-          // every tab switch is what made these documents slow. The second
-          // visit restores the ready-made HTML.
+          // The block is NOT rendered here: a diff block is the most expensive
+          // thing in a document (two hljs passes, one DOM row per line) and a
+          // review document has dozens of them - rendering them all up front
+          // froze the window for seconds on every open. The block is a
+          // PLACEHOLDER here and is rendered when it approaches the viewport
+          // (14-diffflazy.js); the rendered HTML is cached by content.
           try {
-            const html =
-              typeof cachedFenceHtml === 'function'
-                ? cachedFenceHtml('diff', source, () =>
-                    typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
-                  )
-                : typeof renderDiffFenceHtml === 'function'
-                  ? renderDiffFenceHtml(source)
-                  : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
-            const wrap = document.createElement('div')
-            wrap.className = 'mdr-md-diff'
-            wrap.innerHTML = html
+            const wrap =
+              typeof diffLazyPlaceholder === 'function' ? diffLazyPlaceholder(source) : document.createElement('div')
+            wrap.className = 'mdr-md-diff mdr-md-diff-pending'
             const pre = code.parentElement
             if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
-            else code.innerHTML = html
+            else code.innerHTML = ''
+            diffFences.push({ el: wrap, source, kind: 'diff' })
             diffCount += 1
           } catch {
             code.innerHTML = escapeHtml(source)
             renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
           }
         } else {
-          try {
-            code.innerHTML =
-              typeof cachedFenceHtml === 'function'
-                ? cachedFenceHtml(`code:${lang}`, source, () =>
-                    typeof renderFenceCodeHtml === 'function'
-                      ? renderFenceCodeHtml(source, lang)
-                      : escapeHtml(source),
-                  )
-                : typeof renderFenceCodeHtml === 'function'
-                  ? renderFenceCodeHtml(source, lang)
-                  : escapeHtml(source)
-            code.classList.add('hljs')
-          } catch {
-            code.innerHTML = escapeHtml(source)
+          // A BIG code block is rendered lazily as well: highlighting a few
+          // hundred lines of java/xml costs real time, and a review document
+          // has dozens of them.
+          const lines = source.split('\n').length
+          if (typeof LAZY_CODE_MIN_LINES === 'number' && lines > LAZY_CODE_MIN_LINES && typeof lazyFencePlaceholder === 'function') {
+            try {
+              const wrap = lazyFencePlaceholder(source, 'code')
+              wrap.dataset.lang = lang || ''
+              const pre = code.parentElement
+              if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
+              else code.innerHTML = ''
+              diffFences.push({ el: wrap, source, kind: 'code', lang: lang || '' })
+            } catch {
+              code.innerHTML = escapeHtml(source)
+            }
+          } else {
+            try {
+              code.innerHTML =
+                typeof cachedFenceHtml === 'function'
+                  ? cachedFenceHtml(`code:${lang}`, source, () =>
+                      typeof renderFenceCodeHtml === 'function'
+                        ? renderFenceCodeHtml(source, lang)
+                        : escapeHtml(source),
+                    )
+                  : typeof renderFenceCodeHtml === 'function'
+                    ? renderFenceCodeHtml(source, lang)
+                    : escapeHtml(source)
+              code.classList.add('hljs')
+            } catch {
+              code.innerHTML = escapeHtml(source)
+            }
           }
         }
         if (performance.now() - started > 12) {
@@ -1469,7 +1483,16 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
         }
       }
       if (index < fenceBlocks.length) schedule(step)
-      else report()
+      else {
+        // The diff placeholders are wired to the viewport here: they render
+        // when they come close to the visible area.
+        try {
+          if (typeof enhanceDiffFences === 'function') enhanceDiffFences(container, diffFences)
+        } catch {
+          /* the diff blocks are an enhancement; the raw text stays visible */
+        }
+        report()
+      }
     }
     schedule(step)
   } else {
@@ -1600,6 +1623,12 @@ function MarkdownView(props) {
     return () => {
       cancelled = true
       disposeRestore()
+      // The lazy diff observers of this view must not outlive it.
+      try {
+        if (boxRef.current && typeof stopDiffFences === 'function') stopDiffFences(boxRef.current)
+      } catch {
+        /* ignore */
+      }
     }
   }, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
 
@@ -2107,6 +2136,192 @@ function enhanceMermaid(container, scroller) {
     // Mermaid rendering is an enhancement: a failure must not break the document.
     if (window.console && console.warn) console.warn('[markdown-reader] mermaid:', err)
   }
+}
+
+// ---- 14-diffflazy.js ----
+/**
+ * Lazy fenced blocks (```diff and big code blocks).
+ *
+ * A ```diff block costs TWO highlight.js passes (the OLD side and the NEW side
+ * are highlighted as separate blocks so multi-line comments/strings keep their
+ * colours) and it produces one DOM row per line. The codereview document has
+ * 44 diff blocks = 2346 rows ≈ 24k DOM nodes, and rendering them all up front
+ * froze the whole Harness window for ~2.4 s EVERY time the document was opened
+ * ("每次打开那个文件都会卡，而且是电脑卡" - the mouse stuttered too, because the
+ * GPU process was compositing that huge tree).
+ *
+ * So a fenced block starts as a PLACEHOLDER with a reserved height and is
+ * rendered when it approaches the viewport - the same trick the mermaid slice
+ * already uses for diagrams. The blocks that are already in view are rendered
+ * immediately, so the user never sees a placeholder where the content belongs.
+ * The rendered HTML is cached by content, so a block that was already rendered
+ * comes back instantly.
+ */
+
+/** How far ahead of the viewport a block is rendered. */
+const LAZY_FENCE_MARGIN = '900px'
+/** One code line is about this tall. */
+const LAZY_LINE_HEIGHT = 19
+/** A code block with more lines than this is rendered lazily. */
+const LAZY_CODE_MIN_LINES = 30
+
+/** container -> { observer, left } */
+const lazyFenceRecs = new Map()
+/** element -> { el, source, kind, lang } */
+const lazyFencePending = new Map()
+
+function lazyFenceStop(rec) {
+  if (!rec) return
+  try {
+    if (rec.observer) rec.observer.disconnect()
+  } catch {
+    /* already gone */
+  }
+  lazyFenceRecs.delete(rec.container)
+  rec.left = 0
+}
+
+/** Render one fenced block into its placeholder. */
+function lazyFenceRender(entry) {
+  const el = entry && entry.el
+  if (!el || !el.isConnected) return
+  const source = entry.source || ''
+  const kind = entry.kind === 'diff' ? 'diff' : 'code'
+  let html = ''
+  try {
+    if (kind === 'diff') {
+      html =
+        typeof cachedFenceHtml === 'function'
+          ? cachedFenceHtml('diff', source, () =>
+              typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
+            )
+          : typeof renderDiffFenceHtml === 'function'
+            ? renderDiffFenceHtml(source)
+            : escapeHtml(source)
+    } else {
+      const lang = entry.lang || ''
+      html =
+        typeof cachedFenceHtml === 'function'
+          ? cachedFenceHtml(`code:${lang}`, source, () =>
+              typeof renderFenceCodeHtml === 'function' ? renderFenceCodeHtml(source, lang) : escapeHtml(source),
+            )
+          : typeof renderFenceCodeHtml === 'function'
+            ? renderFenceCodeHtml(source, lang)
+            : escapeHtml(source)
+    }
+  } catch {
+    html = escapeHtml(source)
+  }
+  el.classList.remove('mdr-md-diff-pending')
+  el.innerHTML = html
+}
+
+/**
+ * The placeholder for a fenced block: the note plus a reserved height, so the
+ * document height (and therefore the scrollbar) is already correct.
+ */
+function lazyFencePlaceholder(source, kind) {
+  const el = document.createElement('div')
+  const isDiff = kind === 'diff'
+  el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
+  const rows = String(source || '').split('\n').length
+  const height = Math.max(60, rows * LAZY_LINE_HEIGHT + 24)
+  el.style.minHeight = `${height}px`
+  const note = document.createElement('span')
+  note.className = isDiff ? 'mdr-md-diff-note' : 'mdr-md-code-note'
+  note.textContent = isDiff ? '▦ diff 块 · 滚动到可见时渲染' : '▦ 代码块 · 滚动到可见时渲染'
+  el.appendChild(note)
+  return el
+}
+
+/** The diff flavour of the placeholder (kept for the call sites). */
+function diffLazyPlaceholder(source) {
+  return lazyFencePlaceholder(source, 'diff')
+}
+
+/**
+ * Wire the placeholders of one document to the viewport.
+ *
+ * @param {Element} container  the rendered markdown
+ * @param {Array} entries      [{ el, source, kind, lang }]
+ */
+function enhanceLazyFences(container, entries) {
+  try {
+    if (!container || !entries || !entries.length) return
+    const scroller = container.closest ? container.closest('.mdr-content') : null
+    const viewport = window.innerHeight || 800
+    const margin = parseFloat(LAZY_FENCE_MARGIN) || 0
+    // The blocks that are already near the viewport are rendered RIGHT AWAY:
+    // the user must not see a placeholder where the content belongs. The rects
+    // are read in one pass (the first read forces the layout, the rest are
+    // cheap because nothing changed in between).
+    const near = []
+    const waiting = []
+    for (const entry of entries) {
+      const el = entry && entry.el
+      if (!el) continue
+      let rect = null
+      try {
+        rect = el.getBoundingClientRect()
+      } catch {
+        rect = null
+      }
+      if (rect && rect.top < viewport + margin && rect.bottom > -margin) near.push(entry)
+      else waiting.push(entry)
+    }
+    for (const entry of near) lazyFenceRender(entry)
+    if (!waiting.length) return
+
+    if (typeof window === 'undefined' || typeof window.IntersectionObserver !== 'function') {
+      // No observer: render everything (the old behaviour).
+      for (const entry of waiting) lazyFenceRender(entry)
+      return
+    }
+    const rec = { container, left: waiting.length, observer: null }
+    rec.observer = new window.IntersectionObserver(
+      (changes) => {
+        if (!rec.container || !rec.container.isConnected) {
+          lazyFenceStop(rec)
+          return
+        }
+        for (const change of changes) {
+          if (!change.isIntersecting) continue
+          const el = change.target
+          const entry = lazyFencePending.get(el)
+          lazyFencePending.delete(el)
+          try {
+            rec.observer.unobserve(el)
+          } catch {
+            /* already unobserved */
+          }
+          rec.left = Math.max(0, rec.left - 1)
+          if (entry) lazyFenceRender(entry)
+        }
+        if (rec.left <= 0) lazyFenceStop(rec)
+      },
+      { root: scroller || null, rootMargin: LAZY_FENCE_MARGIN, threshold: 0 },
+    )
+    lazyFenceRecs.set(container, rec)
+    for (const entry of waiting) {
+      lazyFencePending.set(entry.el, entry)
+      rec.observer.observe(entry.el)
+    }
+  } catch (err) {
+    if (typeof window !== 'undefined' && window.console && window.console.warn) {
+      window.console.warn('[markdown-reader] lazy fences:', err)
+    }
+  }
+}
+
+/** The diff flavour of the wiring (kept for the call sites). */
+function enhanceDiffFences(container, entries) {
+  enhanceLazyFences(container, entries)
+}
+
+/** Stop the lazy rendering of a container (its view was replaced). */
+function stopDiffFences(container) {
+  const rec = lazyFenceRecs.get(container)
+  if (rec) lazyFenceStop(rec)
 }
 
 // ---- 15-git.js ----
@@ -3011,6 +3226,11 @@ const FENCE_CSS = `
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
 .mdr-md .mdr-md-diff .mdr-diff-meta .mdr-cl-code{color:#6e7681}
 .mdr-md .mdr-md-diff .mdr-diff-hunk .mdr-cl-code{color:#79c0ff}
+.mdr-md .mdr-md-diff.mdr-md-diff-pending{display:flex;align-items:center;justify-content:center;background:rgba(139,148,158,.06);color:#6e7681;font-size:12px}
+.mdr-md .mdr-md-diff-note{opacity:.85;letter-spacing:.02em}
+.mdr-md .mdr-md-code{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;color:#d4d4d4}
+.mdr-md .mdr-md-code.mdr-md-code-pending{display:flex;align-items:center;justify-content:center;white-space:normal;color:#6e7681;font-size:12px}
+.mdr-md .mdr-md-code-note{opacity:.85;letter-spacing:.02em}
 /* The diff block is NOT inside <pre><code>, so the fence palette above does not
    reach it: mirror the same token colours for the highlighted diff code. */
 .mdr-md .mdr-md-diff .hljs-keyword,.mdr-md .mdr-md-diff .hljs-doctag,.mdr-md .mdr-md-diff .hljs-template-tag,.mdr-md .mdr-md-diff .hljs-tag,.mdr-md .mdr-md-diff .hljs-name,.mdr-md .mdr-md-diff .hljs-attr,.mdr-md .mdr-md-diff .hljs-selector-tag,.mdr-md .mdr-md-diff .hljs-meta,.mdr-md .mdr-md-diff .hljs-section,.mdr-md .mdr-md-diff .hljs-link,.mdr-md .mdr-md-diff .hljs-variable.language_{color:#569cd6}
@@ -3211,7 +3431,44 @@ function diffFenceSections(rows) {
 }
 
 /**
- * Highlight the code part of a diff section.
+ * Split the rows of a section into HUNK-scoped groups.
+ *
+ * Why per hunk and not per file: a hunk is a CONTIGUOUS fragment of the file,
+ * and hljs treats an unterminated block comment as "comment until the end of
+ * the text it was given". A javadoc opener that sits at the end of a hunk
+ * (its closer is in the part of the file the diff does not show - the real
+ * case: `docs/codereview/20261106_...preSync游标翻页改造_codereview.md`, whose
+ * full-file diffs end every hunk with the javadoc opener of the next method)
+ * therefore made hljs paint EVERY FOLLOWING LINE OF THE FILE as comment text
+ * - the code after it lost all its own colours.
+ *
+ * Highlighting each hunk on its own keeps that damage inside the hunk that
+ * really ends inside the comment: the javadoc opener row is comment-coloured
+ * (correct) and the next hunk is highlighted as code (correct).
+ */
+function diffFenceRowGroups(rows) {
+  const groups = []
+  let current = null
+  for (const row of rows) {
+    // A hunk header opens a new group; everything after it belongs to it.
+    if (row.kind === 'hunk') {
+      current = { rows: [row] }
+      groups.push(current)
+      continue
+    }
+    if (!current) {
+      // The file header lines (`diff --git`, `--- a/x`, `+++ b/x`) come before
+      // the first hunk - they form a leading group of their own.
+      current = { rows: [] }
+      groups.push(current)
+    }
+    current.rows.push(row)
+  }
+  return groups
+}
+
+/**
+ * Highlight the code part of a diff fragment (one hunk, one side).
  *
  * Two fragments are highlighted, because a diff has two sides: the NEW side
  * (context + added lines) and the OLD side (context + deleted lines). Each side
@@ -3256,51 +3513,55 @@ function renderDiffFenceHtml(source) {
   if (!rows.length) return escapeHtml(String(source == null ? '' : source))
   const parts = []
   for (const section of diffFenceSections(rows)) {
-    const newSide = []
-    const oldSide = []
-    // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
-    // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
-    // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
-    // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
-    const slots = []
-    for (const row of section.rows) {
-      const slot = { old: -1, new: -1 }
-      if (row.kind === 'ctx') {
-        slot.new = newSide.length
-        newSide.push(row)
-        slot.old = oldSide.length
-        oldSide.push(row)
-      } else if (row.kind === 'add') {
-        slot.new = newSide.length
-        newSide.push(row)
-      } else if (row.kind === 'del') {
-        slot.old = oldSide.length
-        oldSide.push(row)
+    // 每个 hunk 单独高亮（见 diffFenceRowGroups 的说明）：hunk 末尾未闭合的
+    // 块注释（javadoc 开头的 `/**`）不会把整个文件的后续代码都吞成注释。
+    for (const group of diffFenceRowGroups(section.rows)) {
+      const newSide = []
+      const oldSide = []
+      // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
+      // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
+      // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
+      // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
+      const slots = []
+      for (const row of group.rows) {
+        const slot = { old: -1, new: -1 }
+        if (row.kind === 'ctx') {
+          slot.new = newSide.length
+          newSide.push(row)
+          slot.old = oldSide.length
+          oldSide.push(row)
+        } else if (row.kind === 'add') {
+          slot.new = newSide.length
+          newSide.push(row)
+        } else if (row.kind === 'del') {
+          slot.old = oldSide.length
+          oldSide.push(row)
+        }
+        slots.push(slot)
       }
-      slots.push(slot)
-    }
-    const newHtml = highlightDiffFragment(newSide, section.lang)
-    const oldHtml = highlightDiffFragment(oldSide, section.lang)
-    for (let index = 0; index < section.rows.length; index += 1) {
-      const row = section.rows[index]
-      if (row.kind === 'meta') {
-        parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-        continue
+      const newHtml = highlightDiffFragment(newSide, section.lang)
+      const oldHtml = highlightDiffFragment(oldSide, section.lang)
+      for (let index = 0; index < group.rows.length; index += 1) {
+        const row = group.rows[index]
+        if (row.kind === 'meta') {
+          parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+          continue
+        }
+        if (row.kind === 'hunk') {
+          parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+          continue
+        }
+        const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
+        const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
+        const slot = slots[index]
+        const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
+        // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
+        // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
+        const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
+        parts.push(
+          `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
+        )
       }
-      if (row.kind === 'hunk') {
-        parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-        continue
-      }
-      const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
-      const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
-      const slot = slots[index]
-      const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
-      // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
-      // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
-      const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
-      parts.push(
-        `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
-      )
     }
   }
   return parts.join('')

@@ -466,6 +466,11 @@ const FENCE_CSS = `
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
 .mdr-md .mdr-md-diff .mdr-diff-meta .mdr-cl-code{color:#6e7681}
 .mdr-md .mdr-md-diff .mdr-diff-hunk .mdr-cl-code{color:#79c0ff}
+.mdr-md .mdr-md-diff.mdr-md-diff-pending{display:flex;align-items:center;justify-content:center;background:rgba(139,148,158,.06);color:#6e7681;font-size:12px}
+.mdr-md .mdr-md-diff-note{opacity:.85;letter-spacing:.02em}
+.mdr-md .mdr-md-code{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;color:#d4d4d4}
+.mdr-md .mdr-md-code.mdr-md-code-pending{display:flex;align-items:center;justify-content:center;white-space:normal;color:#6e7681;font-size:12px}
+.mdr-md .mdr-md-code-note{opacity:.85;letter-spacing:.02em}
 /* The diff block is NOT inside <pre><code>, so the fence palette above does not
    reach it: mirror the same token colours for the highlighted diff code. */
 .mdr-md .mdr-md-diff .hljs-keyword,.mdr-md .mdr-md-diff .hljs-doctag,.mdr-md .mdr-md-diff .hljs-template-tag,.mdr-md .mdr-md-diff .hljs-tag,.mdr-md .mdr-md-diff .hljs-name,.mdr-md .mdr-md-diff .hljs-attr,.mdr-md .mdr-md-diff .hljs-selector-tag,.mdr-md .mdr-md-diff .hljs-meta,.mdr-md .mdr-md-diff .hljs-section,.mdr-md .mdr-md-diff .hljs-link,.mdr-md .mdr-md-diff .hljs-variable.language_{color:#569cd6}
@@ -666,7 +671,44 @@ function diffFenceSections(rows) {
 }
 
 /**
- * Highlight the code part of a diff section.
+ * Split the rows of a section into HUNK-scoped groups.
+ *
+ * Why per hunk and not per file: a hunk is a CONTIGUOUS fragment of the file,
+ * and hljs treats an unterminated block comment as "comment until the end of
+ * the text it was given". A javadoc opener that sits at the end of a hunk
+ * (its closer is in the part of the file the diff does not show - the real
+ * case: `docs/codereview/20261106_...preSync游标翻页改造_codereview.md`, whose
+ * full-file diffs end every hunk with the javadoc opener of the next method)
+ * therefore made hljs paint EVERY FOLLOWING LINE OF THE FILE as comment text
+ * - the code after it lost all its own colours.
+ *
+ * Highlighting each hunk on its own keeps that damage inside the hunk that
+ * really ends inside the comment: the javadoc opener row is comment-coloured
+ * (correct) and the next hunk is highlighted as code (correct).
+ */
+function diffFenceRowGroups(rows) {
+  const groups = []
+  let current = null
+  for (const row of rows) {
+    // A hunk header opens a new group; everything after it belongs to it.
+    if (row.kind === 'hunk') {
+      current = { rows: [row] }
+      groups.push(current)
+      continue
+    }
+    if (!current) {
+      // The file header lines (`diff --git`, `--- a/x`, `+++ b/x`) come before
+      // the first hunk - they form a leading group of their own.
+      current = { rows: [] }
+      groups.push(current)
+    }
+    current.rows.push(row)
+  }
+  return groups
+}
+
+/**
+ * Highlight the code part of a diff fragment (one hunk, one side).
  *
  * Two fragments are highlighted, because a diff has two sides: the NEW side
  * (context + added lines) and the OLD side (context + deleted lines). Each side
@@ -711,51 +753,55 @@ function renderDiffFenceHtml(source) {
   if (!rows.length) return escapeHtml(String(source == null ? '' : source))
   const parts = []
   for (const section of diffFenceSections(rows)) {
-    const newSide = []
-    const oldSide = []
-    // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
-    // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
-    // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
-    // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
-    const slots = []
-    for (const row of section.rows) {
-      const slot = { old: -1, new: -1 }
-      if (row.kind === 'ctx') {
-        slot.new = newSide.length
-        newSide.push(row)
-        slot.old = oldSide.length
-        oldSide.push(row)
-      } else if (row.kind === 'add') {
-        slot.new = newSide.length
-        newSide.push(row)
-      } else if (row.kind === 'del') {
-        slot.old = oldSide.length
-        oldSide.push(row)
+    // 每个 hunk 单独高亮（见 diffFenceRowGroups 的说明）：hunk 末尾未闭合的
+    // 块注释（javadoc 开头的 `/**`）不会把整个文件的后续代码都吞成注释。
+    for (const group of diffFenceRowGroups(section.rows)) {
+      const newSide = []
+      const oldSide = []
+      // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
+      // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
+      // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
+      // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
+      const slots = []
+      for (const row of group.rows) {
+        const slot = { old: -1, new: -1 }
+        if (row.kind === 'ctx') {
+          slot.new = newSide.length
+          newSide.push(row)
+          slot.old = oldSide.length
+          oldSide.push(row)
+        } else if (row.kind === 'add') {
+          slot.new = newSide.length
+          newSide.push(row)
+        } else if (row.kind === 'del') {
+          slot.old = oldSide.length
+          oldSide.push(row)
+        }
+        slots.push(slot)
       }
-      slots.push(slot)
-    }
-    const newHtml = highlightDiffFragment(newSide, section.lang)
-    const oldHtml = highlightDiffFragment(oldSide, section.lang)
-    for (let index = 0; index < section.rows.length; index += 1) {
-      const row = section.rows[index]
-      if (row.kind === 'meta') {
-        parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-        continue
+      const newHtml = highlightDiffFragment(newSide, section.lang)
+      const oldHtml = highlightDiffFragment(oldSide, section.lang)
+      for (let index = 0; index < group.rows.length; index += 1) {
+        const row = group.rows[index]
+        if (row.kind === 'meta') {
+          parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+          continue
+        }
+        if (row.kind === 'hunk') {
+          parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+          continue
+        }
+        const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
+        const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
+        const slot = slots[index]
+        const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
+        // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
+        // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
+        const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
+        parts.push(
+          `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
+        )
       }
-      if (row.kind === 'hunk') {
-        parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-        continue
-      }
-      const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
-      const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
-      const slot = slots[index]
-      const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
-      // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
-      // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
-      const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
-      parts.push(
-        `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
-      )
     }
   }
   return parts.join('')

@@ -243,6 +243,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     fenceBlocks.push({ code, lang })
   }
   fenceCount = fenceBlocks.length
+  const diffFences = []
   if (fenceBlocks.length) {
     let index = 0
     // Run the slices on IDLE time with a small budget.
@@ -265,46 +266,58 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           // only, highlighted with the language of the file the diff belongs
           // to, added rows green and deleted rows red + strike-through.
           //
-          // The rendered HTML is cached by content: a diff block costs TWO
-          // hljs passes (old side + new side), so re-rendering ~20 blocks on
-          // every tab switch is what made these documents slow. The second
-          // visit restores the ready-made HTML.
+          // The block is NOT rendered here: a diff block is the most expensive
+          // thing in a document (two hljs passes, one DOM row per line) and a
+          // review document has dozens of them - rendering them all up front
+          // froze the window for seconds on every open. The block is a
+          // PLACEHOLDER here and is rendered when it approaches the viewport
+          // (14-diffflazy.js); the rendered HTML is cached by content.
           try {
-            const html =
-              typeof cachedFenceHtml === 'function'
-                ? cachedFenceHtml('diff', source, () =>
-                    typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
-                  )
-                : typeof renderDiffFenceHtml === 'function'
-                  ? renderDiffFenceHtml(source)
-                  : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
-            const wrap = document.createElement('div')
-            wrap.className = 'mdr-md-diff'
-            wrap.innerHTML = html
+            const wrap =
+              typeof diffLazyPlaceholder === 'function' ? diffLazyPlaceholder(source) : document.createElement('div')
+            wrap.className = 'mdr-md-diff mdr-md-diff-pending'
             const pre = code.parentElement
             if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
-            else code.innerHTML = html
+            else code.innerHTML = ''
+            diffFences.push({ el: wrap, source, kind: 'diff' })
             diffCount += 1
           } catch {
             code.innerHTML = escapeHtml(source)
             renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
           }
         } else {
-          try {
-            code.innerHTML =
-              typeof cachedFenceHtml === 'function'
-                ? cachedFenceHtml(`code:${lang}`, source, () =>
-                    typeof renderFenceCodeHtml === 'function'
-                      ? renderFenceCodeHtml(source, lang)
-                      : escapeHtml(source),
-                  )
-                : typeof renderFenceCodeHtml === 'function'
-                  ? renderFenceCodeHtml(source, lang)
-                  : escapeHtml(source)
-            code.classList.add('hljs')
-          } catch {
-            code.innerHTML = escapeHtml(source)
+          // A BIG code block is rendered lazily as well: highlighting a few
+          // hundred lines of java/xml costs real time, and a review document
+          // has dozens of them.
+          const lines = source.split('\n').length
+          if (typeof LAZY_CODE_MIN_LINES === 'number' && lines > LAZY_CODE_MIN_LINES && typeof lazyFencePlaceholder === 'function') {
+            try {
+              const wrap = lazyFencePlaceholder(source, 'code')
+              wrap.dataset.lang = lang || ''
+              const pre = code.parentElement
+              if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
+              else code.innerHTML = ''
+              diffFences.push({ el: wrap, source, kind: 'code', lang: lang || '' })
+            } catch {
+              code.innerHTML = escapeHtml(source)
+            }
+          } else {
+            try {
+              code.innerHTML =
+                typeof cachedFenceHtml === 'function'
+                  ? cachedFenceHtml(`code:${lang}`, source, () =>
+                      typeof renderFenceCodeHtml === 'function'
+                        ? renderFenceCodeHtml(source, lang)
+                        : escapeHtml(source),
+                    )
+                  : typeof renderFenceCodeHtml === 'function'
+                    ? renderFenceCodeHtml(source, lang)
+                    : escapeHtml(source)
+              code.classList.add('hljs')
+            } catch {
+              code.innerHTML = escapeHtml(source)
+            }
           }
         }
         if (performance.now() - started > 12) {
@@ -313,7 +326,16 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
         }
       }
       if (index < fenceBlocks.length) schedule(step)
-      else report()
+      else {
+        // The diff placeholders are wired to the viewport here: they render
+        // when they come close to the visible area.
+        try {
+          if (typeof enhanceDiffFences === 'function') enhanceDiffFences(container, diffFences)
+        } catch {
+          /* the diff blocks are an enhancement; the raw text stays visible */
+        }
+        report()
+      }
     }
     schedule(step)
   } else {
@@ -444,6 +466,12 @@ function MarkdownView(props) {
     return () => {
       cancelled = true
       disposeRestore()
+      // The lazy diff observers of this view must not outlive it.
+      try {
+        if (boxRef.current && typeof stopDiffFences === 'function') stopDiffFences(boxRef.current)
+      } catch {
+        /* ignore */
+      }
     }
   }, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
 
