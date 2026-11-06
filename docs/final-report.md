@@ -261,28 +261,33 @@ load/boot、code 177/177、html 159/159、panels 100/100、copy-menu 70/70、def
 |------|------|
 | 语言标记 | 固定 `diff`（别名 `git-diff`、`patch`）；其它语言照旧普通高亮 |
 | 内容 | 标准 unified diff（`git diff` / `git show --patch` 原样粘贴） |
-| 行号列 | 一列：删除行=旧文件行号，其余=新文件行号（与提交 diff 视图同规则） |
-| 符号列 | `+ ` / `− `（U+2212）/ 上下文两个空格 |
-| 配色 | 新增绿底 `rgba(46,160,67,.15)`+行号 `#3fb950`；删除红底 `rgba(248,81,73,.12)`+行号 `#f48771`+**删除线**；上下文灰底 `rgba(139,148,158,.06)`；文件头 `#6e7681`、hunk 头 `#79c0ff` |
+| 行号列 | **没有行号列** —— 只要代码部分（用户明确要求「不需要左侧代码行」） |
+| 语法高亮 | **保留**：语言由补丁里的文件路径决定（`diff --git`/`+++ b/…` → 扩展名 → `langForPath`），与代码视图同一套高亮管线；一个代码块含多个文件时按文件分段 |
+| 符号列 | `+` 新增、`−` 删除（U+2212）、上下文行留空 |
+| 配色 | 新增绿底 `rgba(46,160,67,.15)`+`+`号 `#3fb950`；删除红底 `rgba(248,81,73,.12)`+`−`号 `#f48771`+**删除线**；上下文灰底 `rgba(139,148,158,.06)`；文件头 `#6e7681`、hunk 头 `#79c0ff` |
 | 安全 | 内容全部转义，不注入 HTML |
-| 宽度 | 超出容器横向滚动，行号列 sticky |
+| 宽度 | 超出容器横向滚动 |
 
-**实现**：`20-code.js` 新增 `parseDiffFenceRows()` / `renderDiffFenceHtml()` / `isDiffFenceLang()`；
-`10-markdown.js` 在围栏渲染时把 diff 类语言分流到 diff 渲染器（其余语言仍走 `renderFenceCodeHtml`，
-md 代码块与代码视图同源高亮的既有规则不变）；配色加在 md 作用域的 `FENCE_CSS` 里。
+**实现**：`20-code.js` 的 `parseDiffFenceRows()` / `diffFenceSections()` / `highlightDiffFragment()` /
+`renderDiffFenceHtml()` / `isDiffFenceLang()`；`10-markdown.js` 在围栏渲染时把 diff 类语言分流到 diff 渲染器
+（其余语言仍走 `renderFenceCodeHtml`，md 代码块与代码视图同源高亮的既有规则不变）；
+diff 块不是 `<pre><code>`，所以在 md 作用域另配了一份 hljs 调色板（`FENCE_CSS`）。
+
+**高亮的关键细节**：diff 有两侧，**新增侧（上下文+新增）与删除侧（上下文+删除）各自整块高亮**再按行映射回行，
+删除行用删除侧的结果 —— 逐行高亮会把跨行注释/字符串切坏（代码视图坚持整文件一次 hljs 就是这个原因）。
 
 **关键细节**：**hunk 头声明的行数是权威** —— 补丁文本尾随的换行不能变成一行（第 11 轮同一个坑：
 `git show --patch` 输出以换行结尾，`split('\n')` 多出的空串被当成上下文行，既凭空多一行还吃掉真实下一行）。
 
 **验证**：
 
-- 新增 `work/harnesses/diff-fence-check.mjs`：语言别名判定、行模型（4 个文件头 meta / 1 个 hunk 头 /
-  5 新增 / 3 删除 / 7 上下文）、行号（删除=625,627,628；新增=625,626,628,629,630；上下文=622…633）、
-  尾部换行不产生幻影行、`\ No newline` 记为 meta、内容转义（`<img onerror=…>` 被转义）、md 视图确实分流；
-- marked 端到端：真实 marked 对 ```diff 产出 `<pre><code class="language-diff">`，语言提取正则命中 `diff`；
-- 用真实 CSS 渲染的截图核对：绿/红/灰三色、删除线、行号列与符号列对齐，与提交 diff 视图一致；
+- `work/harnesses/diff-fence-check.mjs`（Node）：语言别名、行模型（4 文件头 meta / 1 hunk 头 / 5 新增 / 3 删除 / 7 上下文）、
+  分段与语言推导（`SyncEzrMapper.xml` → xml）、**输出里没有 `mdr-cl-no`（无行号列）**、符号列、转义、无幻影行；
+- `work/harnesses/diff-fence-render-check.mjs`（headless Chrome 跑**真实客户端源码** + 真实 highlight.js）：
+  断言没有行号列、**真的有 hljs 高亮**（xml 标签/字符串着色）、增删行的 class 正确、内容未注入脚本；
+- 用真实 CSS 渲染的截图核对：与提交 diff 视图一致（绿/红/灰、删除线、符号列对齐、语法高亮在位）；
 - 全套 harness 绿：load/boot、code 177/177、html 159/159、panels 100/100、copy-menu 70/70、defs 63/63、
-  html-preview、git-diff、diff-fence 全通过。
+  html-preview、git-diff、diff-fence、diff-fence-render 全通过。
 
 ## 验收结论（2026-11-04）
 

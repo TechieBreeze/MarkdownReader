@@ -2417,17 +2417,32 @@ const FENCE_CSS = `
 .mdr-md pre code .hljs-params.hljs-constant{color:#b5cea8}
 .mdr-md .mdr-md-diff{margin:1em 0;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:#1e1e1e;overflow:auto}
 .mdr-md .mdr-md-diff .mdr-cl{font-size:12.5px}
-.mdr-md .mdr-md-diff .mdr-cl-no{flex:0 0 62px;text-align:right;padding-right:14px;color:#858585;background:#252526;border-right:1px solid #3e3e42;user-select:none;position:sticky;left:0;z-index:1}
-.mdr-md .mdr-md-diff .mdr-cl-code{flex:1;padding-left:16px;color:#d4d4d4;white-space:pre;tab-size:4}
+.mdr-md .mdr-md-diff .mdr-cl-code{flex:1;padding-left:10px;color:#d4d4d4;white-space:pre;tab-size:4}
+.mdr-md .mdr-md-diff .mdr-diff-sign{display:inline-block;width:14px;margin-right:6px;color:#6e7681;user-select:none}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-add .mdr-diff-sign{color:#3fb950}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-diff-sign{color:#f48771}
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-add{background:rgba(46,160,67,.15)}
-.mdr-md .mdr-md-diff .mdr-cl.mdr-git-add .mdr-cl-no{background:rgba(46,160,67,.25);color:#3fb950}
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-del{background:rgba(248,81,73,.12)}
-.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-cl-no{background:rgba(248,81,73,.2);color:#f48771}
-.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-cl-code{text-decoration:line-through;opacity:.72}
+.mdr-md .mdr-md-diff .mdr-cl.mdr-git-del .mdr-cl-code{text-decoration:line-through;opacity:.78}
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
-.mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx .mdr-cl-no{color:#6e7681}
 .mdr-md .mdr-md-diff .mdr-diff-meta .mdr-cl-code{color:#6e7681}
 .mdr-md .mdr-md-diff .mdr-diff-hunk .mdr-cl-code{color:#79c0ff}
+/* The diff block is NOT inside <pre><code>, so the fence palette above does not
+   reach it: mirror the same token colours for the highlighted diff code. */
+.mdr-md .mdr-md-diff .hljs-keyword,.mdr-md .mdr-md-diff .hljs-doctag,.mdr-md .mdr-md-diff .hljs-template-tag,.mdr-md .mdr-md-diff .hljs-tag,.mdr-md .mdr-md-diff .hljs-name,.mdr-md .mdr-md-diff .hljs-attr,.mdr-md .mdr-md-diff .hljs-selector-tag,.mdr-md .mdr-md-diff .hljs-meta,.mdr-md .mdr-md-diff .hljs-section,.mdr-md .mdr-md-diff .hljs-link,.mdr-md .mdr-md-diff .hljs-variable.language_{color:#569cd6}
+.mdr-md .mdr-md-diff .hljs-string,.mdr-md .mdr-md-diff .hljs-meta .hljs-string,.mdr-md .mdr-md-diff .hljs-code,.mdr-md .mdr-md-diff .hljs-formula{color:#ce9178}
+.mdr-md .mdr-md-diff .hljs-comment,.mdr-md .mdr-md-diff .hljs-quote{color:#6a9955}
+.mdr-md .mdr-md-diff .hljs-number,.mdr-md .mdr-md-diff .hljs-literal,.mdr-md .mdr-md-diff .hljs-symbol,.mdr-md .mdr-md-diff .hljs-bullet{color:#b5cea8}
+.mdr-md .mdr-md-diff .hljs-type,.mdr-md .mdr-md-diff .hljs-title,.mdr-md .mdr-md-diff .hljs-title.class_,.mdr-md .mdr-md-diff .hljs-title.class_.inherited__,.mdr-md .mdr-md-diff .hljs-built_in{color:#4ec9b0}
+.mdr-md .mdr-md-diff .hljs-title.function_,.mdr-md .mdr-md-diff .hljs-title.function_.invoke__{color:#dcdcaa}
+.mdr-md .mdr-md-diff .hljs-variable,.mdr-md .mdr-md-diff .hljs-property,.mdr-md .mdr-md-diff .hljs-attribute,.mdr-md .mdr-md-diff .hljs-params,.mdr-md .mdr-md-diff .hljs-template-variable{color:#9cdcfe}
+.mdr-md .mdr-md-diff .hljs-selector-id,.mdr-md .mdr-md-diff .hljs-selector-class,.mdr-md .mdr-md-diff .hljs-selector-attr,.mdr-md .mdr-md-diff .hljs-selector-pseudo{color:#d7ba7d}
+.mdr-md .mdr-md-diff .hljs-regexp{color:#d16969}
+.mdr-md .mdr-md-diff .hljs-operator,.mdr-md .mdr-md-diff .hljs-punctuation,.mdr-md .mdr-md-diff .hljs-subst{color:#d4d4d4}
+.mdr-md .mdr-md-diff .hljs-constant{color:#b5cea8}
+.mdr-md .mdr-md-diff .hljs-params.hljs-type{color:#4ec9b0}
+.mdr-md .mdr-md-diff .hljs-params.hljs-variable{color:#9cdcfe}
+.mdr-md .mdr-md-diff .hljs-params.hljs-keyword{color:#569cd6}
 `
 
 /** Inject the md-fence palette once; safe to call on every fence render. */
@@ -2473,10 +2488,6 @@ function isDiffFenceLang(lang) {
 
 /**
  * Rows of a unified diff pasted into a ```diff fence.
- *
- * The row contract is the commit-diff view's: ONE line-number column where a
- * deleted row carries the OLD file number and every other row the NEW one, and
- * a +/- gutter sign. File headers and hunk headers become meta rows.
  *
  * The hunk header's declared counts are authoritative (same rule as the Host's
  * diff parser): a patch ends with a newline, so splitting it yields a trailing
@@ -2537,20 +2548,113 @@ function parseDiffFenceRows(source) {
   return rows
 }
 
-/** HTML for a ```diff fence - same row markup as the commit-diff view. */
+/**
+ * Split the rows into per-file sections.
+ *
+ * The file path comes from the patch header (`diff --git a/x b/x`, or `+++ b/x`),
+ * and it decides the highlighting language - the same rule the code view uses
+ * for a file (`langForPath`).
+ */
+function diffFenceSections(rows) {
+  const sections = []
+  let current = null
+  const ensure = () => {
+    if (!current) {
+      current = { path: '', rows: [] }
+      sections.push(current)
+    }
+    return current
+  }
+  for (const row of rows) {
+    if (row.kind === 'meta') {
+      const gitHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(row.text)
+      if (gitHeader) {
+        // A new file starts here: `diff --git` is the only header that opens a
+        // section (`--- a/x` / `+++ b/x` belong to the file it just announced).
+        current = { path: gitHeader[2], rows: [] }
+        sections.push(current)
+        continue
+      }
+      const plusHeader = /^\+\+\+ b\/(.+)$/.exec(row.text)
+      if (plusHeader) {
+        const section = ensure()
+        if (!section.path) section.path = plusHeader[1]
+        section.rows.push(row)
+        continue
+      }
+    }
+    ensure().rows.push(row)
+  }
+  for (const section of sections) {
+    section.lang = section.path ? langForPath(section.path) : ''
+  }
+  return sections
+}
+
+/**
+ * Highlight the code part of a diff section.
+ *
+ * Two fragments are highlighted, because a diff has two sides: the NEW side
+ * (context + added lines) and the OLD side (context + deleted lines). Each side
+ * is highlighted as ONE block, so multi-line comments/strings keep their colour
+ * - per-line highlighting would break them (the reason the code view highlights
+ * whole files in one pass).
+ */
+function highlightDiffFragment(rows, lang) {
+  const texts = rows.map((row) => row.text)
+  if (!texts.length) return []
+  const lib = typeof window !== 'undefined' ? window.hljs : null
+  const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
+  if (!name) return texts.map((text) => escapeHtml(text))
+  try {
+    const lines = highlightToLines(highlightCodeHtml(texts.join('\n'), name), isJavaKtLang(name))
+    if (!lines || lines.length !== texts.length) return texts.map((text) => escapeHtml(text))
+    return lines
+  } catch {
+    return texts.map((text) => escapeHtml(text))
+  }
+}
+
+/**
+ * HTML for a ```diff fence: the code part only (NO line-number column),
+ * highlighted with the language of the file the diff belongs to, with added
+ * rows green and deleted rows red + strike-through - the same look as the
+ * commit diff in the code view.
+ */
 function renderDiffFenceHtml(source) {
   const rows = parseDiffFenceRows(source)
   if (!rows.length) return escapeHtml(String(source == null ? '' : source))
   const parts = []
-  for (const row of rows) {
-    if (row.kind === 'meta' || row.kind === 'hunk') {
-      const cls = row.kind === 'hunk' ? 'mdr-diff-hunk' : 'mdr-diff-meta'
-      parts.push(`<div class="mdr-cl ${cls}"><span class="mdr-cl-no"></span><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-      continue
+  for (const section of diffFenceSections(rows)) {
+    const newSide = []
+    const oldSide = []
+    for (const row of section.rows) {
+      if (row.kind === 'ctx') {
+        newSide.push(row)
+        oldSide.push(row)
+      } else if (row.kind === 'add') newSide.push(row)
+      else if (row.kind === 'del') oldSide.push(row)
     }
-    const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
-    const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
-    parts.push(`<div class="mdr-cl ${cls}"><span class="mdr-cl-no">${row.no}</span><span class="mdr-cl-code">${sign}${escapeHtml(row.text)}</span></div>`)
+    const newHtml = highlightDiffFragment(newSide, section.lang)
+    const oldHtml = highlightDiffFragment(oldSide, section.lang)
+    let newIndex = 0
+    let oldIndex = 0
+    for (const row of section.rows) {
+      if (row.kind === 'meta') {
+        parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+        continue
+      }
+      if (row.kind === 'hunk') {
+        parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+        continue
+      }
+      const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
+      const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
+      const code = row.kind === 'del' ? oldHtml[oldIndex++] : newHtml[newIndex++]
+      parts.push(
+        `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
+      )
+    }
   }
   return parts.join('')
 }

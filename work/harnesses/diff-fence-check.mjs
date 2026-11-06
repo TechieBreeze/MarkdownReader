@@ -53,11 +53,11 @@ function constOf(file, name) {
   return source.slice(start, end < 0 ? source.length : end)
 }
 
-const core = lift('00-core.js', ['escapeHtml'])
+const core = lift('00-core.js', ['escapeHtml', 'extOf'])
 const code = lift(
   '20-code.js',
-  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang'],
-  `${constOf('20-code.js', 'DIFF_FENCE_LANGS')}\nconst escapeHtml = ${core.escapeHtml.toString()}`,
+  ['parseDiffFenceRows', 'renderDiffFenceHtml', 'isDiffFenceLang', 'diffFenceSections', 'langForPath', 'highlightDiffFragment'],
+  `${constOf('20-code.js', 'DIFF_FENCE_LANGS')}\n${constOf('20-code.js', 'LANG_MAP')}\nconst escapeHtml = ${core.escapeHtml.toString()}\nconst extOf = ${core.extOf.toString()}`,
 )
 
 /* ------------------------------------------------------------- the sample */
@@ -121,9 +121,10 @@ check('deleted rows carry the del class', html.includes('mdr-git-del'))
 check('context rows carry the ctx class', html.includes('mdr-git-ctx'))
 check('hunk header has its own class', html.includes('mdr-diff-hunk'))
 check('file headers have the meta class', html.includes('mdr-diff-meta'))
-check('gutter sign for added rows', html.includes('+ '))
-check('gutter sign for deleted rows', html.includes('− '))
-check('row numbers are rendered', /class="mdr-cl-no">625</.test(html), html.slice(0, 200))
+check('sign column present', html.includes('mdr-diff-sign'))
+check('NO line-number column (the code part only)', !html.includes('mdr-cl-no'), html.slice(0, 200))
+check('added row signs with +', /mdr-git-add[^]*?mdr-diff-sign">\+</.test(html))
+check('deleted row signs with the minus sign', /mdr-git-del[^]*?mdr-diff-sign">−</.test(html))
 
 console.log('\n[4] safety')
 const injected = code.renderDiffFenceHtml(['@@ -1,1 +1,1 @@', '+<img src=x onerror="alert(1)">', ' ctx'].join('\n'))
@@ -135,6 +136,18 @@ const markdownSource = fs.readFileSync(path.join(SRC, '10-markdown.js'), 'utf8')
 check('10-markdown dispatches diff fences', /isDiffFenceLang/.test(markdownSource) && /renderDiffFenceHtml/.test(markdownSource))
 check('the diff block gets its own wrapper', /mdr-md-diff/.test(markdownSource))
 check('other fences still use the highlighter', /renderFenceCodeHtml/.test(markdownSource))
+
+console.log('\n[6] sections: the diffed file decides the highlighting language')
+const sections = code.diffFenceSections
+  ? code.diffFenceSections(rows)
+  : null
+if (sections) {
+  check('one section for one file', sections.length === 1, sections.length)
+  check('the file path comes from the patch header', sections[0].path === 'src/main/resources/mapper/SyncEzrMapper.xml', sections[0].path)
+  check('the language comes from the file extension', sections[0].lang === 'xml', sections[0].lang)
+} else {
+  check('diffFenceSections is exported', false, 'missing')
+}
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
 if (failures) process.exitCode = 1

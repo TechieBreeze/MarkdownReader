@@ -101,4 +101,5 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | HTML 预览是否真的画出图表（headless Chrome + CDP，canvas/控制台） | `work/html-preview-probe.mjs` |
 | HTML 预览重写契约（脚本正文必须逐字节不变） | `work/harnesses/html-preview-check.mjs` |
 | 提交 diff 视图（hunk 解析 + 行序列，行号/内容必须对得上） | `work/harnesses/git-diff-check.mjs` |
-| markdown ```diff 代码块（行模型/行号/转义/无幻影行） | `work/harnesses/diff-fence-check.mjs` |
+| markdown ```diff 代码块（行模型/分段/转义/无幻影行/无行号列） | `work/harnesses/diff-fence-check.mjs` |
+| markdown ```diff 真实渲染（headless Chrome：无行号列 + 有语法高亮） | `work/harnesses/diff-fence-render-check.mjs` |
