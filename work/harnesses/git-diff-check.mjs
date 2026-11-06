@@ -75,8 +75,51 @@ check('added row carries the new line number', hunk.lines[2].type === '+' && hun
 check('no phantom context row at the end', hunk.lines[hunk.lines.length - 1].type === ' ' && hunk.lines[hunk.lines.length - 1].new_no === 13, JSON.stringify(hunk.lines[hunk.lines.length - 1]))
 check('parser does not leak internal counters', !('_oldLeft' in hunk) && !('_newLeft' in hunk))
 
+// The body is 3 lines (" a", an empty content line, " b") but the header says
+// 2/2 - a wrong count. The body must survive completely, and the empty content
+// line must still be a context row.
 const emptyContext = parseDiff(['@@ -1,2 +1,2 @@', ' a', '', ' b', ''].join('\n'))
-check('an empty content line still counts as context', emptyContext[0].lines.length === 2, emptyContext[0].lines.length)
+check('an empty content line still counts as context', emptyContext[0].lines.length === 3, emptyContext[0].lines.length)
+check('the empty content line is a context row', emptyContext[0].lines[1].type === ' ' && emptyContext[0].lines[1].text === '', JSON.stringify(emptyContext[0].lines[1]))
+check('the row after it is kept too', emptyContext[0].lines[2].type === ' ' && emptyContext[0].lines[2].text === 'b', JSON.stringify(emptyContext[0].lines[2]))
+
+console.log('\n[1b] parseDiff: a hunk header with the WRONG counts keeps the whole body')
+// Hand-written diffs in design docs declare the wrong counts (the real case:
+// docs/设计/20261105/preSync游标翻页改造详细设计说明书.md declares
+// `@@ -11,21 +11,21 @@` over a 22-line body). The body must not be cut there.
+const wrongCounts = [
+  '@@ -11,21 +11,21 @@',
+  ' context one',
+  '-old line',
+  '+new line',
+  ' context two',
+  ' context three',
+  '',
+].join('\n')
+const wrongHunk = parseDiff(wrongCounts)[0]
+check('the whole body is kept (3 context + 1 del + 1 add = 5 rows)', wrongHunk.lines.length === 5, wrongHunk.lines.length)
+check('the last context line is still a context row', wrongHunk.lines[4].type === ' ' && wrongHunk.lines[4].text === 'context three', JSON.stringify(wrongHunk.lines[4]))
+check('no phantom row from the trailing newline', wrongHunk.lines.filter((line) => line.text === '').length === 0)
+
+const twoFiles = [
+  'diff --git a/one.xml b/one.xml',
+  '--- a/one.xml',
+  '+++ b/one.xml',
+  '@@ -1,2 +1,2 @@',
+  ' ctx',
+  '-old',
+  '+new',
+  'diff --git a/two.xml b/two.xml',
+  '--- a/two.xml',
+  '+++ b/two.xml',
+  '@@ -1,1 +1,1 @@',
+  ' ctx',
+  '',
+].join('\n')
+const splitHunks = parseDiff(twoFiles)
+check('two files -> two hunks', splitHunks.length === 2, splitHunks.length)
+check('the first hunk stops at the next file', splitHunks[0].lines.length === 3, splitHunks[0].lines.length)
+check('the second hunk has its own row', splitHunks[1].lines.length === 1, splitHunks[1].lines.length)
 
 /* ------------------------------------------------------- 2) real commits */
 
