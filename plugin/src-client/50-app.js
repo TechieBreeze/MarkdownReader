@@ -1289,7 +1289,9 @@ function registerSlots(ctx) {
   // Report the DOM scope the panel lives in, so "why does this overlay end up
   // at the bottom of the window" is answered by the app, not guessed.
   try {
+    if (typeof cleanupStaleOverlays === 'function') cleanupStaleOverlays()
     if (typeof reportClientDom === 'function') reportClientDom()
+    if (typeof startDomReport === 'function') startDomReport()
   } catch {
     /* ignore */
   }

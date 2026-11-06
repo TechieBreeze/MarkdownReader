@@ -156,8 +156,11 @@ function clientBuild(state) {
 /** Remember which client build a browser actually loaded. */
 async function apiClientPing(req, res, state) {
   const body = JSON.parse((await readBody(req)) || '{}')
+  // MERGE, do not replace: the client reports the DOM scope and the markdown
+  // render in separate pings, and the latest one must not erase the other.
   const last = {
-    build: String(body.build || ''),
+    ...(state.lastClientBuild || {}),
+    build: String(body.build || (state.lastClientBuild && state.lastClientBuild.build) || ''),
     at: new Date().toISOString(),
   }
   if (body.md) {
@@ -167,9 +170,9 @@ async function apiClientPing(req, res, state) {
     last.md = body.md
   }
   if (body.dom) {
-    // The DOM scope the panel lives in (shadow root or not) and where the
-    // overlays are mounted - the facts behind "this overlay shows up at the
-    // bottom of the Harness window".
+    // The DOM scope the panel lives in (shadow root or not) and which nodes
+    // carry a copy confirmation - the facts behind "this overlay shows up at
+    // the bottom of the Harness window".
     last.dom = body.dom
   }
   state.lastClientBuild = last
