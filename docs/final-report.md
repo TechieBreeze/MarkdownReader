@@ -288,6 +288,10 @@ diff 块不是 `<pre><code>`，所以在 md 作用域另配了一份 hljs 调色
 - 用真实 CSS 渲染的截图核对：与提交 diff 视图一致（绿/红/灰、删除线、符号列对齐、语法高亮在位）；
 - 全套 harness 绿：load/boot、code 177/177、html 159/159、panels 100/100、copy-menu 70/70、defs 63/63、
   html-preview、git-diff、diff-fence、diff-fence-render 全通过。
+- **演示文档**：`docs/demo-diff-fence.md` —— 用真实提交补丁（`gits/report` 的 `538a44a`、`gits/user` 的 `4839ebd`）
+  演示四种情形：XML 高亮、Java 高亮、**一个代码块里两个文件按文件分段**、**没有文件头的裸 hunk**（不高亮但增删照旧）；
+  配图 `docs/assets/demo-diff-fence.png`。`diff-fence-render-check.mjs` 会把该文档的每个块都渲染一遍并断言
+  （无行号列 / 有文件头则必须高亮 / 无文件头则不高亮）。
 
 ## 验收结论（2026-11-04）
 

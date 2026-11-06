@@ -140,6 +140,70 @@ try {
     console.log('\n[4] safety')
     check('no raw script tag', !/<script/i.test(html))
     console.log(`\nrendered ${html.length} chars, ${(html.match(/class="mdr-cl /g) || []).length} rows`)
+
+    // The shipped demo document must render by the same rules.
+    const demoPath = path.join(ROOT, 'docs', 'demo-diff-fence.md')
+    if (fs.existsSync(demoPath)) {
+      console.log('\n[5] the demo document (docs/demo-diff-fence.md)')
+      const demo = fs.readFileSync(demoPath, 'utf8')
+      const blocks = [...demo.matchAll(/```diff\n([\s\S]*?)```/g)].map((match) => match[1])
+      check('the demo has diff blocks', blocks.length >= 4, blocks.length)
+      const demoPage = `<!doctype html><html><head><meta charset="utf-8"></head><body>
+<script src="${path.join(ROOT, 'plugin', 'vendor', 'highlight.min.js').replace(/\\/g, '/')}"></script>
+<script src="${path.join(SRC, '00-core.js').replace(/\\/g, '/')}"></script>
+<script src="${path.join(SRC, '20-code.js').replace(/\\/g, '/')}"></script>
+<pre id="out"></pre>
+<script>
+const blocks = ${JSON.stringify(blocks)}
+const report = blocks.map((source) => {
+  const html = renderDiffFenceHtml(source)
+  return {
+    rows: (html.match(/class="mdr-cl /g) || []).length,
+    numbers: html.includes('mdr-cl-no'),
+    hljs: /class="hljs-/.test(html),
+    hasFileHeader: /^diff --git|^\\+\\+\\+ b\\//m.test(source),
+  }
+})
+document.getElementById('out').textContent = JSON.stringify(report)
+</script></body></html>`
+      const demoTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mdr-demo-'))
+      fs.writeFileSync(path.join(demoTmp, 'index.html'), demoPage, 'utf8')
+      let demoDom = ''
+      try {
+        demoDom = execFileSync(
+          chrome,
+          [
+            '--headless=new',
+            '--disable-gpu',
+            '--no-sandbox',
+            '--allow-file-access-from-files',
+            `--user-data-dir=${path.join(demoTmp, 'profile')}`,
+            '--virtual-time-budget=4000',
+            '--dump-dom',
+            `file:///${path.join(demoTmp, 'index.html').replace(/\\/g, '/')}`,
+          ],
+          { encoding: 'utf8', timeout: 60000, windowsHide: true },
+        )
+      } catch (error) {
+        console.log('chrome failed for the demo page:', error.message)
+      }
+      const demoMatch = /<pre id="out">([\s\S]*?)<\/pre>/.exec(demoDom)
+      if (!demoMatch) {
+        check('the demo document renders', false, 'no output')
+      } else {
+        const report = JSON.parse(demoMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'))
+        report.forEach((row, index) => {
+          check(`demo block ${index + 1}: no line-number column`, row.numbers === false, JSON.stringify(row))
+          if (row.hasFileHeader) {
+            check(`demo block ${index + 1}: code is highlighted`, row.hljs === true, JSON.stringify(row))
+          } else {
+            check(`demo block ${index + 1}: no file header -> no highlighting`, row.hljs === false, JSON.stringify(row))
+          }
+          check(`demo block ${index + 1}: rows rendered`, row.rows > 0, JSON.stringify(row))
+        })
+      }
+      fs.rmSync(demoTmp, { recursive: true, force: true })
+    }
   }
   fs.rmSync(tmp, { recursive: true, force: true })
 }
