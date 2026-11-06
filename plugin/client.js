@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "ea897dd050cf";
+    const BUILD_ID = "971dc8518f81";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -326,7 +326,7 @@ function fenceCacheReport() {
  * for a new build.
  */
 const FENCE_CACHE_STORAGE_PREFIX = 'mdr.fencecache.'
-const FENCE_CACHE_STORAGE_MAX = 3 * 1024 * 1024
+const FENCE_CACHE_STORAGE_MAX = 2 * 1024 * 1024
 let fenceCacheLoaded = false
 let fenceCacheSaveTimer = null
 
@@ -384,10 +384,12 @@ function saveFenceCacheToStorage() {
 function scheduleFenceCacheSave() {
   try {
     if (fenceCacheSaveTimer) clearTimeout(fenceCacheSaveTimer)
+    // A long debounce: saving means stringifying up to a few MB, which is a
+    // visible hitch right after a document was rendered.
     fenceCacheSaveTimer = setTimeout(() => {
       fenceCacheSaveTimer = null
       saveFenceCacheToStorage()
-    }, 3000)
+    }, 10000)
     if (fenceCacheSaveTimer && typeof fenceCacheSaveTimer.unref === 'function') fenceCacheSaveTimer.unref()
   } catch {
     /* ignore */
@@ -2160,6 +2162,16 @@ function enhanceMermaid(container, scroller) {
 
 /** How far ahead of the viewport a block is rendered. */
 const LAZY_FENCE_MARGIN = '900px'
+/**
+ * How far the rendered block is KEPT.
+ *
+ * A rendered diff block is ~50 DOM rows; a review document has 44 of them, so
+ * scrolling through the whole document builds the same ~24k nodes as before and
+ * the GPU starts compositing that huge tree (the machine stutters). So a block
+ * that scrolls far away is RELEASED again - back to its placeholder - and is
+ * restored from the cache (instantly) when it comes back.
+ */
+const LAZY_KEEP_MARGIN = '300% 0px'
 /** One code line is about this tall. */
 const LAZY_LINE_HEIGHT = 19
 /** A code block with more lines than this is rendered lazily. */
@@ -2167,7 +2179,7 @@ const LAZY_CODE_MIN_LINES = 30
 
 /** container -> { observer, left } */
 const lazyFenceRecs = new Map()
-/** element -> { el, source, kind, lang } */
+/** element -> { el, source, kind, lang, height } */
 const lazyFencePending = new Map()
 
 function lazyFenceStop(rec) {
@@ -2179,6 +2191,28 @@ function lazyFenceStop(rec) {
   }
   lazyFenceRecs.delete(rec.container)
   rec.left = 0
+}
+
+/**
+ * Release a rendered block: back to the placeholder, keeping the exact height
+ * so the scroll position does not jump.
+ */
+function lazyFenceRelease(entry) {
+  const el = entry && entry.el
+  if (!el || !el.isConnected) return
+  if (!el.classList.contains('mdr-md-diff-pending') && !el.classList.contains('mdr-md-code-pending')) {
+    // It is rendered: remember its height and empty it.
+    let height = entry.height || 0
+    try {
+      height = el.offsetHeight || height
+    } catch {
+      /* ignore */
+    }
+    entry.height = height
+    el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
+    el.innerHTML = ''
+    if (height) el.style.height = `${height}px`
+  }
 }
 
 /** Render one fenced block into its placeholder. */
@@ -2209,11 +2243,22 @@ function lazyFenceRender(entry) {
             ? renderFenceCodeHtml(source, lang)
             : escapeHtml(source)
     }
-  } catch {
+  } catch (error) {
     html = escapeHtml(source)
+    // A silent empty block is the worst possible failure mode: say what broke.
+    if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+      console.warn('[markdown-reader] fence render failed:', error)
+    }
   }
   el.classList.remove('mdr-md-diff-pending')
+  el.classList.remove('mdr-md-code-pending')
   el.innerHTML = html
+  try {
+    entry.height = el.offsetHeight || entry.height || 0
+    if (entry.height) el.style.height = ''
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -2285,27 +2330,32 @@ function enhanceLazyFences(container, entries) {
           return
         }
         for (const change of changes) {
-          if (!change.isIntersecting) continue
           const el = change.target
           const entry = lazyFencePending.get(el)
-          lazyFencePending.delete(el)
-          try {
-            rec.observer.unobserve(el)
-          } catch {
-            /* already unobserved */
+          if (!entry) continue
+          if (change.isIntersecting) {
+            // Inside the keep band: render it (from the cache -> instant).
+            lazyFenceRender(entry)
+          } else {
+            // Far away: release the DOM again, the document stays small.
+            lazyFenceRelease(entry)
           }
-          rec.left = Math.max(0, rec.left - 1)
-          if (entry) lazyFenceRender(entry)
         }
-        if (rec.left <= 0) lazyFenceStop(rec)
       },
-      { root: scroller || null, rootMargin: LAZY_FENCE_MARGIN, threshold: 0 },
+      { root: scroller || null, rootMargin: LAZY_KEEP_MARGIN, threshold: 0 },
     )
     lazyFenceRecs.set(container, rec)
     for (const entry of waiting) {
       lazyFencePending.set(entry.el, entry)
       rec.observer.observe(entry.el)
     }
+    // The blocks that were rendered right away are observed as well, so they
+    // are released too when they scroll away.
+    for (const entry of near) {
+      lazyFencePending.set(entry.el, entry)
+      rec.observer.observe(entry.el)
+    }
+    rec.left = 0
   } catch (err) {
     if (typeof window !== 'undefined' && window.console && window.console.warn) {
       window.console.warn('[markdown-reader] lazy fences:', err)
