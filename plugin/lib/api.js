@@ -597,74 +597,80 @@ async function apiGitDiff(res, state, url) {
 /**
  * Parse a unified diff into hunks.
  *
- * The hunk header declares how many old/new lines the hunk contains, and those
- * counts are authoritative: `git show` output ends with a newline, so splitting
- * it yields a trailing empty line, and reading that as a context line invented
- * a phantom row (it consumed a real line of the commit-version file, so the
- * line right after the hunk rendered empty instead of its content).
+ * Boundary rules (the same as the client's markdown diff-fence parser):
+ *  - a hunk body runs until the next `@@` header or the next `diff --git`
+ *    (a new file). The counts in the hunk header are a HINT, not a hard
+ *    boundary: hand-written diffs in design docs routinely declare the wrong
+ *    counts, and cutting the body there loses the tail of the change.
+ *  - the counts are still used to recognise a FILE HEADER (`--- a/x`, `+++ b/x`)
+ *    that follows a hunk, so a real `git diff` of several files still splits
+ *    correctly.
+ *  - trailing blank lines are stripped first: `git show --patch` output ends
+ *    with a newline, so splitting it yields a trailing empty line that would
+ *    otherwise become a phantom row - and that phantom row consumed a REAL
+ *    line of the commit-version file, so the line right after a hunk rendered
+ *    empty (the 2026-11-05 bug).
  */
 export function parseDiff(patch) {
   const hunks = []
+  const text = String(patch == null ? '' : patch).replace(/\r\n/g, '\n').replace(/\n+$/, '')
   let current = null
   let oldNo = 0
   let newNo = 0
-  for (const rawLine of String(patch).split('\n')) {
-    const line = rawLine.replace(/\r$/, '')
+  let oldLeft = 0
+  let newLeft = 0
+  for (const line of text.split('\n')) {
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
     if (header) {
       oldNo = Number(header[1])
       newNo = Number(header[3])
-      const oldCount = header[2] === undefined ? 1 : Number(header[2])
-      const newCount = header[4] === undefined ? 1 : Number(header[4])
+      oldLeft = header[2] === undefined ? 1 : Number(header[2])
+      newLeft = header[4] === undefined ? 1 : Number(header[4])
       current = {
         old_start: oldNo,
         new_start: newNo,
-        old_count: oldCount,
-        new_count: newCount,
+        old_count: oldLeft,
+        new_count: newLeft,
         lines: [],
-        _oldLeft: oldCount,
-        _newLeft: newCount,
       }
       hunks.push(current)
       continue
     }
+    if (current) {
+      if (line.startsWith('diff --git ')) {
+        current = null
+      } else if (line.startsWith('\\')) {
+        // "\ No newline at end of file" - not a body line, but it does NOT end
+        // the hunk either.
+        continue
+      } else {
+        const exhausted = oldLeft <= 0 && newLeft <= 0
+        const boundary = exhausted && (line === '' || /^(--- |\+\+\+ )/.test(line))
+        if (!boundary) {
+          const kind = line[0]
+          if (kind === '+') {
+            current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
+            newNo += 1
+            if (newLeft > 0) newLeft -= 1
+            continue
+          }
+          if (kind === '-') {
+            current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
+            oldNo += 1
+            if (oldLeft > 0) oldLeft -= 1
+            continue
+          }
+          current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
+          oldNo += 1
+          newNo += 1
+          if (oldLeft > 0) oldLeft -= 1
+          if (newLeft > 0) newLeft -= 1
+          continue
+        }
+        current = null
+      }
+    }
     if (!current) continue
-    if (line.startsWith('\\')) continue
-    if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ')) {
-      current = null
-      continue
-    }
-    const kind = line[0]
-    if (kind === '+' && current._newLeft > 0) {
-      current.lines.push({ type: '+', text: line.slice(1), old_no: null, new_no: newNo })
-      newNo += 1
-      current._newLeft -= 1
-      continue
-    }
-    if (kind === '-' && current._oldLeft > 0) {
-      current.lines.push({ type: '-', text: line.slice(1), old_no: oldNo, new_no: null })
-      oldNo += 1
-      current._oldLeft -= 1
-      continue
-    }
-    // A context line is " " + content; some tools strip the trailing space of an
-    // empty content line, so an empty line counts as context too - but only
-    // while the hunk still expects lines on both sides.
-    if ((kind === ' ' || line === '') && current._oldLeft > 0 && current._newLeft > 0) {
-      current.lines.push({ type: ' ', text: line.slice(1), old_no: oldNo, new_no: newNo })
-      oldNo += 1
-      newNo += 1
-      current._oldLeft -= 1
-      current._newLeft -= 1
-      continue
-    }
-    // The hunk is complete (its declared counts are exhausted) or the line does
-    // not belong to it: stop here instead of inventing rows.
-    current = null
-  }
-  for (const hunk of hunks) {
-    delete hunk._oldLeft
-    delete hunk._newLeft
   }
   return hunks
 }

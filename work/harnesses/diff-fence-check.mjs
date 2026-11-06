@@ -149,5 +149,41 @@ if (sections) {
   check('diffFenceSections is exported', false, 'missing')
 }
 
+console.log('\n[7] a hunk header with the WRONG counts keeps the whole body')
+// The real case: docs/设计/20261105/preSync游标翻页改造详细设计说明书.md declares
+// `@@ -11,21 +11,21 @@` over a 22-line body. Cutting the body there lost the
+// tail of the change, so the doc "did not render".
+const wrong = code.parseDiffFenceRows(
+  ['@@ -11,21 +11,21 @@', ' context one', '-old line', '+new line', ' context two', ' context three', ''].join('\n'),
+)
+const wrongBody = wrong.filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
+check('the whole body is kept (3 ctx + 1 del + 1 add)', wrongBody.length === 5, wrongBody.length)
+check('the last context line is still a context row', wrongBody[4].kind === 'ctx' && wrongBody[4].text === 'context three', JSON.stringify(wrongBody[4]))
+check('no phantom row from the trailing newline', wrongBody.every((row) => row.text !== ''))
+const wrongHtml = code.renderDiffFenceHtml(
+  ['@@ -11,21 +11,21 @@', ' context one', '-old line', '+new line', ' context two', ' context three', ''].join('\n'),
+)
+check('the tail still renders as diff rows', wrongHtml.includes('mdr-git-ctx') && wrongHtml.includes('context three'), wrongHtml.slice(-200))
+
+console.log('\n[8] the real design document with hand-written diffs')
+const designDoc = 'C:/Users/1/Desktop/work/tasks/20260917-微服务/docs/设计/20261105/preSync游标翻页改造详细设计说明书.md'
+if (fs.existsSync(designDoc)) {
+  const md = fs.readFileSync(designDoc, 'utf8')
+  const blocks = [...md.matchAll(/```diff\r?\n([\s\S]*?)```/g)].map((match) => match[1])
+  check('the document has diff blocks', blocks.length >= 10, blocks.length)
+  let lost = 0
+  for (const block of blocks) {
+    const bodyLines = block
+      .split('\n')
+      .filter((line) => line !== '')
+      .filter((line) => !/^(--- |\+\+\+ |diff --git |index |@@ )/.test(line))
+    const parsed = code.parseDiffFenceRows(block).filter((row) => row.kind === 'ctx' || row.kind === 'add' || row.kind === 'del')
+    if (parsed.length !== bodyLines.length) lost += 1
+  }
+  check('no block loses a body line', lost === 0, `${lost} block(s) lost lines`)
+} else {
+  check('the design document is reachable', false, designDoc)
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nall diff fence checks passed')
 if (failures) process.exitCode = 1

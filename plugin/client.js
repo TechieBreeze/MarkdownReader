@@ -2489,20 +2489,30 @@ function isDiffFenceLang(lang) {
 /**
  * Rows of a unified diff pasted into a ```diff fence.
  *
- * The hunk header's declared counts are authoritative (same rule as the Host's
- * diff parser): a patch ends with a newline, so splitting it yields a trailing
- * empty line that must not become a row.
+ * Boundary rules (the same in the Host's diff parser):
+ *  - a hunk body runs until the next `@@` header or the next `diff --git`
+ *    (a new file). The counts in the hunk header are a HINT, not a hard
+ *    boundary: hand-written diffs in design docs routinely declare the wrong
+ *    counts (e.g. `@@ -11,21 +11,21 @@` over a 22-line body), and cutting the
+ *    body there loses the tail of the change.
+ *  - the counts are still used to recognise a FILE HEADER (`--- a/x`, `+++ b/x`)
+ *    that follows a hunk, so a real `git diff` of several files still splits
+ *    correctly.
+ *  - trailing blank lines of the patch are stripped first: `git show --patch`
+ *    output ends with a newline, and splitting it yields a trailing empty line
+ *    that would otherwise become a phantom row (and eat a real line of the
+ *    commit-version file - the bug that made the code view lose the line right
+ *    after a hunk).
  */
 function parseDiffFenceRows(source) {
   const rows = []
-  const text = String(source == null ? '' : source)
+  const text = String(source == null ? '' : source).replace(/\r\n/g, '\n').replace(/\n+$/, '')
   let oldNo = 0
   let newNo = 0
   let oldLeft = 0
   let newLeft = 0
   let inHunk = false
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/\r$/, '')
+  for (const line of text.split('\n')) {
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
     if (header) {
       oldNo = Number(header[1])
@@ -2514,29 +2524,39 @@ function parseDiffFenceRows(source) {
       continue
     }
     if (inHunk) {
-      const kind = line[0]
-      if (kind === '+' && newLeft > 0) {
-        rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
-        newNo += 1
-        newLeft -= 1
+      if (line.startsWith('diff --git ')) {
+        inHunk = false
+      } else if (line.startsWith('\\')) {
+        // "\ No newline at end of file" - a meta row, and it does NOT end the
+        // hunk.
+        rows.push({ kind: 'meta', no: null, text: line })
         continue
+      } else {
+        const exhausted = oldLeft <= 0 && newLeft <= 0
+        const boundary = exhausted && (line === '' || /^(--- |\+\+\+ )/.test(line))
+        if (!boundary) {
+          const kind = line[0]
+          if (kind === '+') {
+            rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
+            newNo += 1
+            if (newLeft > 0) newLeft -= 1
+            continue
+          }
+          if (kind === '-') {
+            rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
+            oldNo += 1
+            if (oldLeft > 0) oldLeft -= 1
+            continue
+          }
+          rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
+          oldNo += 1
+          newNo += 1
+          if (oldLeft > 0) oldLeft -= 1
+          if (newLeft > 0) newLeft -= 1
+          continue
+        }
+        inHunk = false
       }
-      if (kind === '-' && oldLeft > 0) {
-        rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
-        oldNo += 1
-        oldLeft -= 1
-        continue
-      }
-      if ((kind === ' ' || line === '') && oldLeft > 0 && newLeft > 0) {
-        rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
-        oldNo += 1
-        newNo += 1
-        oldLeft -= 1
-        newLeft -= 1
-        continue
-      }
-      // The hunk is complete (counts exhausted) or the line is not part of it.
-      inHunk = false
     }
     if (line.startsWith('\\')) {
       rows.push({ kind: 'meta', no: null, text: line })
