@@ -1,5 +1,0 @@
-﻿const html = await (await fetch('http://127.0.0.1:57377/')).text()
-const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map((m) => m[1])
-console.log('scripts:', scripts.join('\n'))
-const inline = /__ModuleLoader__/.test(html)
-console.log('module loader inline:', inline)
