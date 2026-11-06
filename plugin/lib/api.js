@@ -97,6 +97,9 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/search' && req.method === 'GET') return apiSearch(res, state, url)
     if (pathname === '/api/files' && req.method === 'GET') return apiFiles(res, state, url)
     if (pathname === '/api/def' && req.method === 'POST') return await apiDef(req, res, state)
+    if (pathname === '/api/client-build' && req.method === 'GET') return sendJson(res, 200, clientBuild(state))
+    if (pathname === '/api/client-ping' && req.method === 'POST') return await apiClientPing(req, res, state)
+    if (pathname === '/api/client-ping' && req.method === 'GET') return sendJson(res, 200, { ok: true, last: state.lastClientBuild || null })
     if (pathname === '/api/sync/status' && req.method === 'GET') return sendJson(res, 200, await syncStatus(state, url.searchParams.get('fetch') === '1'))
     if (pathname === '/api/sync/pull' && req.method === 'POST') return sendJson(res, 200, await syncPull(state))
     if (pathname === '/api/git/graph' && req.method === 'GET') return sendJson(res, 200, await gitGraph(state, url))
@@ -121,6 +124,33 @@ export async function handleRequest(req, res, state) {
 function serveVendor(res, state, name) {
   if (!VENDOR_WHITELIST.has(name)) return sendError(res, 404, 'not found')
   return sendFile(res, path.join(state.packageDir, 'vendor', name))
+}
+
+/**
+ * The build id of the client bundle that is on disk right now.
+ *
+ * The Harness serves plugin clients as an immutable, one-year-cached asset and
+ * only re-reads the bytes when the plugin is re-registered, so a rebuilt
+ * client.js can stay invisible to a browser that already loaded the plugin.
+ * The client compares this id with its own BUILD_ID and reloads itself when
+ * they differ, and reports what it actually loaded to `/api/client-ping` - so
+ * "which build is the browser running" is answerable instead of guessed.
+ */
+function clientBuild(state) {
+  try {
+    const file = path.join(state.packageDir, 'client.build.json')
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return { ok: true, build: meta.build || '', at: meta.at || '', bytes: meta.bytes || 0 }
+  } catch {
+    return { ok: true, build: '', at: '', bytes: 0 }
+  }
+}
+
+/** Remember which client build a browser actually loaded. */
+async function apiClientPing(req, res, state) {
+  const body = JSON.parse((await readBody(req)) || '{}')
+  state.lastClientBuild = { build: String(body.build || ''), at: new Date().toISOString() }
+  return sendJson(res, 200, { ok: true, last: state.lastClientBuild })
 }
 
 async function apiRoots(req, res, state) {

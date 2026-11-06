@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
+    const BUILD_ID = "f2ea8b7da5d1";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -104,7 +105,49 @@ async function postJson(endpoint, body) {
   })
 }
 
-/** Resolve a link inside a markdown document to a client-visible relative path. */
+/**
+ * Report the client build this browser loaded, and reload when the Host serves
+ * a newer one.
+ *
+ * Why this exists: the Harness serves a plugin's client as an IMMUTABLE
+ * (one-year cache) asset whose URL carries a `rev` derived from the bundle's
+ * file metadata, captured when the plugin is REGISTERED. Rebuilding
+ * client.js therefore does not reach a browser that already loaded the plugin -
+ * the new bytes are only served after the plugin is re-registered. The symptom
+ * is "I changed the code and the app still behaves like the old version".
+ *
+ * The fix: the build id (a hash of the client sources, written by build.mjs)
+ * is embedded in the bundle, and the Host serves the CURRENT id from disk.
+ * A browser running an older id reloads itself once, which fetches the new
+ * URL. The reload is guarded per server build so a rebuild loop cannot trap
+ * the page.
+ */
+function syncClientBuild() {
+  if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
+  try {
+    postJson('/api/client-ping', { build: BUILD_ID }).catch(() => {})
+  } catch {
+    /* the Host may be gone; ignore */
+  }
+  try {
+    fetchJson('/api/client-build')
+      .then((payload) => {
+        const server = payload && payload.build
+        if (!server || server === BUILD_ID) return
+        const key = `mdr.reload.${server}`
+        try {
+          if (window.sessionStorage.getItem(key)) return
+          window.sessionStorage.setItem(key, '1')
+        } catch {
+          /* private mode: reload once anyway */
+        }
+        window.location.reload()
+      })
+      .catch(() => {})
+  } catch {
+    /* ignore */
+  }
+}
 function resolveRel(mdPath, href, multi, rootNames) {
   const raw = String(href || '').replace(/\\/g, '/')
   const clean = raw.replace(/^\/+/, '')
@@ -8463,6 +8506,13 @@ function MarkdownReaderIcon(props) {
 }
 
 function registerSlots(ctx) {
+  // Tell the Host which client build this browser loaded, and reload if the
+  // Host serves a newer one (the Harness caches plugin clients immutably).
+  try {
+    syncClientBuild()
+  } catch {
+    /* ignore */
+  }
   ctx.slots.inject('sidebar.panellist', () =>
     ctx.slots.register(
       { name: 'sidebar.panellist', id: 'markdown-reader', order: 20, label: 'Markdown Reader' },

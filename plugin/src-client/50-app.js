@@ -1220,6 +1220,13 @@ function MarkdownReaderIcon(props) {
 }
 
 function registerSlots(ctx) {
+  // Tell the Host which client build this browser loaded, and reload if the
+  // Host serves a newer one (the Harness caches plugin clients immutably).
+  try {
+    syncClientBuild()
+  } catch {
+    /* ignore */
+  }
   ctx.slots.inject('sidebar.panellist', () =>
     ctx.slots.register(
       { name: 'sidebar.panellist', id: 'markdown-reader', order: 20, label: 'Markdown Reader' },
