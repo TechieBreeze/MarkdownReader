@@ -254,6 +254,88 @@ function App() {
     ? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
     : ''
 
+  /* ------------------------------------------------- 文件内搜索 (Ctrl+F) */
+
+  const [fsOpen, setFsOpen] = React.useState(false)
+  const [fsQuery, setFsQuery] = React.useState('')
+  const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
+  const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
+  // Refs mirror the state: the callbacks below must see the CURRENT values.
+  // `fsAppliedRef` holds the query that was actually searched: a different one
+  // means "search again", the same one means "next match" (the standalone
+  // reader's rule).
+  const fsQueryRef = React.useRef('')
+  const fsAppliedRef = React.useRef('')
+  const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
+
+  const fsController = React.useCallback(
+    () => fileSearchController(activeTab ? activeTab.id : ''),
+    [activeTab],
+  )
+
+  const runFileSearch = React.useCallback(
+    (query) => {
+      const controller = fsController()
+      if (!controller) {
+        fsAppliedRef.current = query
+        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        return
+      }
+      const result = controller.search(query, fsOptionsRef.current)
+      fsAppliedRef.current = query
+      setFsInfo({
+        count: Number(result.count || 0),
+        index: Number(result.index == null ? -1 : result.index),
+        status: result.error || (result.count ? '' : '无匹配'),
+      })
+    },
+    [fsController],
+  )
+
+  const gotoFileSearch = React.useCallback(
+    (delta) => {
+      const controller = fsController()
+      if (!controller) {
+        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        return
+      }
+      // A changed query means "search", not "navigate".
+      if (fsQueryRef.current !== fsAppliedRef.current) {
+        runFileSearch(fsQueryRef.current)
+        return
+      }
+      const result = controller.goto(delta)
+      setFsInfo({
+        count: Number(result.count || 0),
+        index: Number(result.index == null ? -1 : result.index),
+        status: result.error || (result.count ? '' : '无匹配'),
+      })
+    },
+    [fsController, runFileSearch],
+  )
+
+  const closeFileSearch = React.useCallback(() => {
+    const controller = fsController()
+    if (controller) controller.clear()
+    setFsOpen(false)
+    setFsQuery('')
+    fsQueryRef.current = ''
+    fsAppliedRef.current = ''
+    setFsInfo({ count: 0, index: -1, status: '' })
+  }, [fsController])
+
+  const openFileSearch = React.useCallback(() => {
+    setFsOpen(true)
+  }, [])
+
+  const toggleFileSearchOption = React.useCallback((key) => {
+    setFsOptions((prev) => {
+      const next = { ...prev, [key]: !prev[key] }
+      fsOptionsRef.current = next
+      return next
+    })
+  }, [])
+
   /** Save the active markdown tab scroll NOW, before the DOM switches away. */
   const saveActiveScroll = React.useCallback(() => {
     const scroller = contentRef.current
@@ -844,6 +926,12 @@ function App() {
         setOverlay('search')
         return
       }
+      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
+        // 文件内搜索（Ctrl+F）：浏览器自带的那个找不到插件面板里的内容。
+        event.preventDefault()
+        openFileSearch()
+        return
+      }
       if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
         event.preventDefault()
         setOverlay('files')
@@ -880,7 +968,7 @@ function App() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [goNav, closeModal, closeSync, closeGit])
+  }, [goNav, closeModal, closeSync, closeGit, openFileSearch])
 
   // 旧版本 locator 曾把「项目名/项目名/...」双前缀写进展开态持久化。多根模式下
   // 折叠一次并回写（只折叠「首两段相同且首段是真实项目名」的路径，单根模式不动）。
@@ -1192,6 +1280,29 @@ function App() {
         ),
       ),
     ),
+    // 文件内搜索条（Ctrl+F）：浮在内容区右上角，属于插件面板内部。
+    fsOpen
+      ? h(FileSearchWidget, {
+          query: fsQuery,
+          onQuery: (value) => {
+            fsQueryRef.current = value
+            setFsQuery(value)
+          },
+          count: fsInfo.count,
+          index: fsInfo.index,
+          status: fsInfo.status,
+          options: fsOptions,
+          onToggleOption: toggleFileSearchOption,
+          onSearch: runFileSearch,
+          onNext: () => gotoFileSearch(1),
+          onPrev: () => gotoFileSearch(-1),
+          onClose: closeFileSearch,
+          onGlobal: () => {
+            closeFileSearch()
+            setOverlay('search')
+          },
+        })
+      : null,
     error ? h('div', { className: 'mdr-err' }, error) : null,
     overlay === 'search'
       ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -1227,6 +1338,7 @@ function Page() {
   // reaches the document if the panel is rendered there, and the diff rows
   // must keep their colours wherever the harness mounts the panel.
   const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+  const fileSearchCss = typeof FILE_SEARCH_CSS !== 'undefined' ? FILE_SEARCH_CSS : ''
   // The panel root is captured so overlays (context menu, toast) are mounted
   // INSIDE the panel: the Harness mounts it into its own DOM scope, and
   // anything appended to document.body loses the panel's stylesheet and lands
@@ -1240,6 +1352,9 @@ function Page() {
     { className: 'mdr-root', ref: rootRef },
     h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
     fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+    fileSearchCss
+      ? h('style', { id: 'mdr-filesearch-css', dangerouslySetInnerHTML: { __html: fileSearchCss } })
+      : null,
     buildId
       ? h(
           'div',
