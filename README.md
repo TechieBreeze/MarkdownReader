@@ -52,6 +52,7 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 - `docs/round-7-feature-parity-plan.md`：第 7 轮契约与分工（`/api/def` v2 接口定义在此）
 - `docs/round-7-report.md`：第 7 轮验证报告（parity 100%、7 个 harness 全绿）
 - `docs/feature-gap-audit.md`：原版最近提交 × 插件功能点差异审计（后续轮次清单）
+- `docs/demo-diff-fence.md`：**markdown 里的 diff 代码块演示文档**（真实提交补丁，插件里可直接打开看渲染效果）
 
 ## 过程记录
 
