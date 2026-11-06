@@ -104,6 +104,7 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
       diffBlocks: diffCount,
       ms: Math.round(performance.now() - renderStarted),
       error: renderError,
+      cache: typeof fenceCacheReport === 'function' ? fenceCacheReport() : null,
     })
   }
   // 1) local images -> raw endpoint
@@ -263,8 +264,20 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
           // ```diff → the commit-diff view inside the document: the code part
           // only, highlighted with the language of the file the diff belongs
           // to, added rows green and deleted rows red + strike-through.
+          //
+          // The rendered HTML is cached by content: a diff block costs TWO
+          // hljs passes (old side + new side), so re-rendering ~20 blocks on
+          // every tab switch is what made these documents slow. The second
+          // visit restores the ready-made HTML.
           try {
-            const html = typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source)
+            const html =
+              typeof cachedFenceHtml === 'function'
+                ? cachedFenceHtml('diff', source, () =>
+                    typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
+                  )
+                : typeof renderDiffFenceHtml === 'function'
+                  ? renderDiffFenceHtml(source)
+                  : escapeHtml(source)
             if (typeof ensureFenceCss === 'function') ensureFenceCss()
             const wrap = document.createElement('div')
             wrap.className = 'mdr-md-diff'
@@ -280,9 +293,15 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
         } else {
           try {
             code.innerHTML =
-              typeof renderFenceCodeHtml === 'function'
-                ? renderFenceCodeHtml(source, lang)
-                : escapeHtml(source)
+              typeof cachedFenceHtml === 'function'
+                ? cachedFenceHtml(`code:${lang}`, source, () =>
+                    typeof renderFenceCodeHtml === 'function'
+                      ? renderFenceCodeHtml(source, lang)
+                      : escapeHtml(source),
+                  )
+                : typeof renderFenceCodeHtml === 'function'
+                  ? renderFenceCodeHtml(source, lang)
+                  : escapeHtml(source)
             code.classList.add('hljs')
           } catch {
             code.innerHTML = escapeHtml(source)
