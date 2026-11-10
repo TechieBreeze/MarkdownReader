@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "971dc8518f81";
+    const BUILD_ID = "b38465f48667";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -953,6 +953,11 @@ function saveTreeExpansion(project, paths) {
  * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
  * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
  * is authoritative when storage is unavailable.
+ *
+ * The key carries the TASK id: the tab id is `<kind>:<path>` (the same document
+ * opened in two tasks is two tab instances with the SAME id), so a path-only key
+ * would make the two tasks share one reading position - and switching tasks
+ * would restore the other task's position instead of this task's.
  */
 const scrollStorage = (() => {
   const cache = { value: null, timer: 0 }
@@ -996,6 +1001,21 @@ const scrollStorage = (() => {
 })()
 
 /* ------------------------------------------------------------------- icons */
+
+/**
+ * Reading-position key of a markdown tab.
+ *
+ * Keyed by TASK + path: the tab id (`<kind>:<path>`) is shared between tasks,
+ * so a path-only key would let the tasks overwrite each other's position.
+ */
+function mdScrollKey(taskId, path) {
+  return `${taskId || 'task'}:md:${path}`
+}
+
+/** Reading-position key of a tab inside a task (the persisted per-tab scroll). */
+function tabScrollKey(taskId, tabId) {
+  return `${taskId || 'task'}:${tabId}`
+}
 
 function svgIcon(paths, viewBox) {
   return (props) => {
@@ -1541,10 +1561,12 @@ function restoreMarkdownScroll(scroller, target) {
 }
 
 function MarkdownView(props) {
-  const { tab, multi, rootNames } = props
+  const { tab, multi, rootNames, taskId } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
-  const scrollKey = `md:${tab.path}`
+  // The reading position belongs to the TASK, not to the path: the tab id is
+  // `<kind>:<path>` and the same document can be open in two tasks.
+  const scrollKey = mdScrollKey(taskId, tab.path)
 
   // In-file search (Ctrl+F): the widget drives this controller. The markdown
   // is searched by RENDERED TEXT - the matches are wrapped in <mark> and the
@@ -4045,7 +4067,7 @@ function defBarViewMatches(defView, view) {
 }
 
 function CodeView(props) {
-  const { tab, onOpen, onBack } = props
+  const { tab, onOpen, onBack, taskId } = props
   const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
   const workspaceContent = String(tab.content == null ? '' : tab.content)
@@ -4137,7 +4159,12 @@ function CodeView(props) {
   const showInfo = !!view.commit || !!view.hint || !!view.loading
   // Scroll memory is per file; the commit view gets its own slot so switching
   // back from a diff does not restore a diff scroll position into the file view.
-  const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
+  // The scroll memory is per FILE, but the tab id (`kind:path`) is shared between
+  // tasks - so the key carries the task id, otherwise two tasks showing the same
+  // file share one reading position.
+  const scrollKey = diffMode
+    ? `${taskId || 'task'}:${tab.path}\u0000commit:${view.commit || ''}`
+    : `${taskId || 'task'}:${tab.path}`
   const contentReady = tab.content != null || view.branchContent != null
 
   const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null
@@ -6950,7 +6977,9 @@ function normalizeWorkbench(data) {
       if (!tab) continue
       // The same path may only appear once per task (id is kind:path).
       if (tabs.some((item) => item.id === tab.id)) continue
-      if (tab.scroll > 0) rememberTabScroll(tab.id, tab.scroll)
+      // The reading position belongs to the TASK: the tab id is shared between
+      // tasks, so a task-scoped key keeps the two positions apart.
+      if (tab.scroll > 0) rememberTabScroll(tabScrollKey(rawTask.id, tab.id), tab.scroll)
       tabs.push(tab)
     }
     const wantedActive = rawTask.activeId != null ? rawTask.activeId : rawTask.activeTabId
@@ -7020,7 +7049,7 @@ function saveWorkbench(project, workbench) {
         commit: tab.commit || '',
         htmlMode: tab.htmlMode === 'source' ? 'source' : 'render',
         navFrom: !!tab.navFrom,
-        scroll: recallTabScroll(tab.id) || tab.scroll || 0,
+        scroll: recallTabScroll(tabScrollKey(task.id, tab.id)) || tab.scroll || 0,
       })),
     })),
   }
@@ -8889,8 +8918,8 @@ function App() {
     const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
     const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
     if (!tab || tab.kind !== 'md') return
-    scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
-    rememberTabScroll(tab.id, scroller.scrollTop)
+    scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+    rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
   }, [])
 
   /** Patch one tab wherever it lives (tab ids are unique per kind:path). */
@@ -8986,7 +9015,7 @@ function App() {
               htmlMode: 'render',
               navFrom: true,
               error: '',
-              scroll: recallTabScroll(id),
+              scroll: recallTabScroll(tabScrollKey(targetTask.id, id)),
             },
           ])
         }
@@ -8995,9 +9024,9 @@ function App() {
       return { ...prev, tasks, activeTaskId: targetTask.id }
     })
     if (kind === 'md') {
-      const top = recallTabScroll(id)
+      const top = recallTabScroll(tabScrollKey(targetTask.id, id))
       if (top > 0) {
-        scrollStorage.set(`md:${entry.path}`, top)
+        scrollStorage.set(mdScrollKey(targetTask.id, entry.path), top)
         const apply = () => {
           const scroller = contentRef.current
           if (scroller && Math.abs(scroller.scrollTop - top) > 2) scroller.scrollTop = top
@@ -9572,9 +9601,9 @@ function App() {
       const wb = workbenchRef.current
       const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
       const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
-      if (!tab || tab.kind !== 'md') return
-      scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
-      rememberTabScroll(tab.id, scroller.scrollTop)
+      if (!task || !tab || tab.kind !== 'md') return
+      scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+      rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
     }
     const onBeforeUnload = () => {
       onScroll()
@@ -9588,6 +9617,30 @@ function App() {
       window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [saveWorkbenchNow])
+
+  /**
+   * Restore the reading position when the active TASK or TAB changes.
+   *
+   * The markdown view restores its own position when it MOUNTS - but the tab id
+   * is `<kind>:<path>`, so the same document open in two tasks is the SAME key:
+   * React reuses the view, nothing remounts, and the position of the task you
+   * came back to was never applied ("切任务到别的任务，滚动位置就没了"). This
+   * effect applies it explicitly, per task.
+   */
+  React.useEffect(() => {
+    if (!activeTab || activeTab.kind !== 'md') return undefined
+    const scroller = contentRef.current
+    if (!scroller) return undefined
+    const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
+    if (target <= 0) return undefined
+    const apply = () => {
+      const el = contentRef.current
+      if (el && Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
+    }
+    apply()
+    const timer = setTimeout(apply, 150)
+    return () => clearTimeout(timer)
+  }, [workbench.activeTaskId, activeTabKey])
 
   React.useEffect(() => {
     let cancelled = false
@@ -9792,12 +9845,15 @@ function App() {
             ? h(EmptyState, { meta, currentProject })
             : activeTab.kind === 'md'
               ? vendorReady
-                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames })
+                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames, taskId: workbench.activeTaskId })
                 : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
               : activeTab.kind === 'code'
                 ? h(CodeView, {
                     key: activeTab.id,
                     tab: activeTab,
+                    // The reading position belongs to the task (the tab id is
+                    // shared between tasks).
+                    taskId: workbench.activeTaskId,
                     // Definition jumps pass {kind:'code', branch, commit, defBar}
                     // so a .vue/.html target still opens as code and keeps the
                     // rendered git version + 「实现」 entry bar.

@@ -143,7 +143,17 @@ const REAL = [
 ]
 
 console.log('\n[2] real commits: every file line appears once, in order, with its content')
-for (const item of REAL) {
+// The Harness picks a new port for every app start, so the live part is
+// skipped (not failed) when the Host is not reachable: set HOST_BASE to the
+// current base to run it.
+let hostReachable = true
+try {
+  await fetch(`${HOST_BASE}/api/meta`)
+} catch (err) {
+  hostReachable = false
+  console.log(`  SKIP the live Host is not reachable at ${HOST_BASE} (set HOST_BASE=...)`)
+}
+for (const item of hostReachable ? REAL : []) {
   const diffResponse = await fetch(`${HOST_BASE}/api/git/diff?path=${encodeURIComponent(item.path)}&commit=${item.commit}`)
   const fileResponse = await fetch(`${HOST_BASE}/api/git/file?path=${encodeURIComponent(item.path)}&commit=${item.commit}`)
   const diff = await diffResponse.json()
