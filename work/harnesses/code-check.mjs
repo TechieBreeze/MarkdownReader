@@ -850,7 +850,7 @@ async function testViewAndModal() {
   const tab = { id: 'code:src/Demo.java', kind: 'code', path: 'src/Demo.java', content: 'WORKSPACE 1\nWORKSPACE 2\nWORKSPACE 3', lang: 'java', line: 3, branch: 'dev' }
   const opened = []
   const backCalls = []
-  let tree = await mount(mod.CodeView, { tab: { ...tab, navFrom: 'md:docs/a.md' }, onOpen: (p, l) => opened.push([p, l]), onBack: () => backCalls.push(1) })
+  let tree = await mount(mod.CodeView, { tab: { ...tab, navFrom: 'md:docs/a.md' }, onOpen: (p, l) => opened.push([p, l]), onBack: () => backCalls.push(1), taskId: 'task7' })
   // the git-adapted branch must be applied on open
   await sleep(30)
   await flushAsync()
@@ -860,7 +860,7 @@ async function testViewAndModal() {
   check('CodeBody receives the tab jump line', bodyProps.length === 1 && bodyProps[0].targetLine === 3, JSON.stringify(bodyProps[0] && bodyProps[0].targetLine))
   check('CodeBody receives contentReady once content is in', bodyProps[0].contentReady === true)
   check('CodeBody gets jump-hover for java', bodyProps[0].jumpHover === true)
-  check('CodeBody gets per-file scroll key', bodyProps[0].scrollKey === 'src/Demo.java')
+  check('CodeBody gets a task-scoped per-file scroll key', bodyProps[0].scrollKey === 'task7:src/Demo.java', bodyProps[0].scrollKey)
   const backButtons = [...elements(tree)].filter((node) => node.type === 'button' && textOf(node).includes('← 返回'))
   check('code tab header shows ← 返回 when onBack + navFrom', backButtons.length === 1 && backCalls.length === 0)
   backButtons[0].props.onClick()
@@ -923,7 +923,7 @@ function testStaticWiring() {
   const modal = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
   const git = fs.readFileSync(path.join(SRC, '15-git.js'), 'utf8')
 
-  check('CodeView accepts onBack prop', code.includes('const { tab, onOpen, onBack } = props'))
+  check('CodeView accepts onBack prop', code.includes('const { tab, onOpen, onBack, taskId } = props'))
   check('back button shown only when tab.navFrom', code.includes('typeof onBack === \'function\' && tab.navFrom'))
   check('back button label', code.includes("'← 返回'"))
   check('git target applied on tab open', code.includes('applyGitTarget({ id: tab.id, kind: \'code\', path: tab.path }, tab.branch, tab.commit'))

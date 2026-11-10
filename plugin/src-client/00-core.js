@@ -944,6 +944,11 @@ function saveTreeExpansion(project, paths) {
  * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
  * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
  * is authoritative when storage is unavailable.
+ *
+ * The key carries the TASK id: the tab id is `<kind>:<path>` (the same document
+ * opened in two tasks is two tab instances with the SAME id), so a path-only key
+ * would make the two tasks share one reading position - and switching tasks
+ * would restore the other task's position instead of this task's.
  */
 const scrollStorage = (() => {
   const cache = { value: null, timer: 0 }
@@ -987,6 +992,21 @@ const scrollStorage = (() => {
 })()
 
 /* ------------------------------------------------------------------- icons */
+
+/**
+ * Reading-position key of a markdown tab.
+ *
+ * Keyed by TASK + path: the tab id (`<kind>:<path>`) is shared between tasks,
+ * so a path-only key would let the tasks overwrite each other's position.
+ */
+function mdScrollKey(taskId, path) {
+  return `${taskId || 'task'}:md:${path}`
+}
+
+/** Reading-position key of a tab inside a task (the persisted per-tab scroll). */
+function tabScrollKey(taskId, tabId) {
+  return `${taskId || 'task'}:${tabId}`
+}
 
 function svgIcon(paths, viewBox) {
   return (props) => {

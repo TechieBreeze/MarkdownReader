@@ -344,8 +344,8 @@ function App() {
     const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
     const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
     if (!tab || tab.kind !== 'md') return
-    scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
-    rememberTabScroll(tab.id, scroller.scrollTop)
+    scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+    rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
   }, [])
 
   /** Patch one tab wherever it lives (tab ids are unique per kind:path). */
@@ -441,7 +441,7 @@ function App() {
               htmlMode: 'render',
               navFrom: true,
               error: '',
-              scroll: recallTabScroll(id),
+              scroll: recallTabScroll(tabScrollKey(targetTask.id, id)),
             },
           ])
         }
@@ -450,9 +450,9 @@ function App() {
       return { ...prev, tasks, activeTaskId: targetTask.id }
     })
     if (kind === 'md') {
-      const top = recallTabScroll(id)
+      const top = recallTabScroll(tabScrollKey(targetTask.id, id))
       if (top > 0) {
-        scrollStorage.set(`md:${entry.path}`, top)
+        scrollStorage.set(mdScrollKey(targetTask.id, entry.path), top)
         const apply = () => {
           const scroller = contentRef.current
           if (scroller && Math.abs(scroller.scrollTop - top) > 2) scroller.scrollTop = top
@@ -1027,9 +1027,9 @@ function App() {
       const wb = workbenchRef.current
       const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
       const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
-      if (!tab || tab.kind !== 'md') return
-      scrollStorage.set(`md:${tab.path}`, scroller.scrollTop)
-      rememberTabScroll(tab.id, scroller.scrollTop)
+      if (!task || !tab || tab.kind !== 'md') return
+      scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+      rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
     }
     const onBeforeUnload = () => {
       onScroll()
@@ -1043,6 +1043,30 @@ function App() {
       window.removeEventListener('beforeunload', onBeforeUnload)
     }
   }, [saveWorkbenchNow])
+
+  /**
+   * Restore the reading position when the active TASK or TAB changes.
+   *
+   * The markdown view restores its own position when it MOUNTS - but the tab id
+   * is `<kind>:<path>`, so the same document open in two tasks is the SAME key:
+   * React reuses the view, nothing remounts, and the position of the task you
+   * came back to was never applied ("切任务到别的任务，滚动位置就没了"). This
+   * effect applies it explicitly, per task.
+   */
+  React.useEffect(() => {
+    if (!activeTab || activeTab.kind !== 'md') return undefined
+    const scroller = contentRef.current
+    if (!scroller) return undefined
+    const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
+    if (target <= 0) return undefined
+    const apply = () => {
+      const el = contentRef.current
+      if (el && Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
+    }
+    apply()
+    const timer = setTimeout(apply, 150)
+    return () => clearTimeout(timer)
+  }, [workbench.activeTaskId, activeTabKey])
 
   React.useEffect(() => {
     let cancelled = false
@@ -1247,12 +1271,15 @@ function App() {
             ? h(EmptyState, { meta, currentProject })
             : activeTab.kind === 'md'
               ? vendorReady
-                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames })
+                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames, taskId: workbench.activeTaskId })
                 : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
               : activeTab.kind === 'code'
                 ? h(CodeView, {
                     key: activeTab.id,
                     tab: activeTab,
+                    // The reading position belongs to the task (the tab id is
+                    // shared between tasks).
+                    taskId: workbench.activeTaskId,
                     // Definition jumps pass {kind:'code', branch, commit, defBar}
                     // so a .vue/.html target still opens as code and keeps the
                     // rendered git version + 「实现」 entry bar.

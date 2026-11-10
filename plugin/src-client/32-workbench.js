@@ -103,7 +103,9 @@ function normalizeWorkbench(data) {
       if (!tab) continue
       // The same path may only appear once per task (id is kind:path).
       if (tabs.some((item) => item.id === tab.id)) continue
-      if (tab.scroll > 0) rememberTabScroll(tab.id, tab.scroll)
+      // The reading position belongs to the TASK: the tab id is shared between
+      // tasks, so a task-scoped key keeps the two positions apart.
+      if (tab.scroll > 0) rememberTabScroll(tabScrollKey(rawTask.id, tab.id), tab.scroll)
       tabs.push(tab)
     }
     const wantedActive = rawTask.activeId != null ? rawTask.activeId : rawTask.activeTabId
@@ -173,7 +175,7 @@ function saveWorkbench(project, workbench) {
         commit: tab.commit || '',
         htmlMode: tab.htmlMode === 'source' ? 'source' : 'render',
         navFrom: !!tab.navFrom,
-        scroll: recallTabScroll(tab.id) || tab.scroll || 0,
+        scroll: recallTabScroll(tabScrollKey(task.id, tab.id)) || tab.scroll || 0,
       })),
     })),
   }

@@ -1235,7 +1235,7 @@ function defBarViewMatches(defView, view) {
 }
 
 function CodeView(props) {
-  const { tab, onOpen, onBack } = props
+  const { tab, onOpen, onBack, taskId } = props
   const { view, actions } = useGitView(tab)
   const lang = tab.lang || langForPath(tab.path)
   const workspaceContent = String(tab.content == null ? '' : tab.content)
@@ -1327,7 +1327,12 @@ function CodeView(props) {
   const showInfo = !!view.commit || !!view.hint || !!view.loading
   // Scroll memory is per file; the commit view gets its own slot so switching
   // back from a diff does not restore a diff scroll position into the file view.
-  const scrollKey = diffMode ? `${tab.path}\u0000commit:${view.commit || ''}` : tab.path
+  // The scroll memory is per FILE, but the tab id (`kind:path`) is shared between
+  // tasks - so the key carries the task id, otherwise two tasks showing the same
+  // file share one reading position.
+  const scrollKey = diffMode
+    ? `${taskId || 'task'}:${tab.path}\u0000commit:${view.commit || ''}`
+    : `${taskId || 'task'}:${tab.path}`
   const contentReady = tab.content != null || view.branchContent != null
 
   const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null

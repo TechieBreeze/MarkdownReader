@@ -382,10 +382,12 @@ function restoreMarkdownScroll(scroller, target) {
 }
 
 function MarkdownView(props) {
-  const { tab, multi, rootNames } = props
+  const { tab, multi, rootNames, taskId } = props
   const boxRef = React.useRef(null)
   const [error, setError] = React.useState('')
-  const scrollKey = `md:${tab.path}`
+  // The reading position belongs to the TASK, not to the path: the tab id is
+  // `<kind>:<path>` and the same document can be open in two tasks.
+  const scrollKey = mdScrollKey(taskId, tab.path)
 
   // In-file search (Ctrl+F): the widget drives this controller. The markdown
   // is searched by RENDERED TEXT - the matches are wrapped in <mark> and the
