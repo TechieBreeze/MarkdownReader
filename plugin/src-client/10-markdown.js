@@ -473,7 +473,16 @@ function MarkdownView(props) {
           enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
           setError('')
           const scroller = boxRef.current.closest('.mdr-content')
-          const target = scrollStorage.get(scrollKey)
+          // Two stores: the per-path map (written on every scroll) and the
+          // per-tab memory (written when the tab was left). The per-tab one
+          // survives a trip to the conversation, when the panel is unmounted
+          // and remounted.
+          const byPath = scrollStorage.get(scrollKey)
+          const byTab =
+            typeof recallTabScroll === 'function' && typeof tabScrollKey === 'function'
+              ? recallTabScroll(tabScrollKey(taskId, tab.id))
+              : 0
+          const target = Math.max(byPath, byTab || 0)
           if (target > 0) disposeRestore = restoreMarkdownScroll(scroller, target)
           else if (scroller) scroller.scrollTop = 0
         } catch (err) {

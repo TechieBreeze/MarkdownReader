@@ -8,6 +8,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { Worker } from 'node:worker_threads'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { ROUTE, VERSION } from './constants.js'
@@ -339,13 +340,12 @@ function preferredRootFor(state, from) {
  */
 const nameIndex = { at: 0, key: '', map: new Map(), building: false, ready: false, pending: null }
 const NAME_INDEX_TTL = 10 * 60 * 1000
-const NAME_INDEX_MAX_FILES = 150000
-const NAME_INDEX_MAX_DEPTH = 18
-/** How many names are persisted. The full index of the 微服务 workspace holds
- *  tens of thousands of entries; writing all of them as JSON produced a 10 MB
- *  string in the MAIN process, which is where the Harness runs the plugin -
- *  that memory spike took the whole application down (the app died, the crash
- *  handler restarted it and the boot then failed with "import failed"). */
+/** Layout version of the cache file: bump it when the walk or the format
+ *  changes, so the stale cache is ignored and the worker rebuilds it. */
+const NAME_INDEX_VERSION = 'v2'
+/** How many names are kept. The full index of the 微服务 workspace holds tens
+ *  of thousands of entries; the worker writes the capped set to disk and hands
+ *  the same set to the main thread, so neither side holds a huge map. */
 const NAME_INDEX_MAX_SAVED = 20000
 
 /** Where the index is cached between app runs. */
@@ -373,6 +373,10 @@ function loadNameIndexFromDisk(state) {
     const header = (lines.shift() || '').split('\t')
     const at = Number(header[0])
     const key = header[1] || ''
+    // A cache written by an older layout (or an older walk order) is ignored:
+    // the worker rebuilds it. Without this a stale cache keeps the resolver
+    // blind for the whole TTL.
+    if (header[2] !== NAME_INDEX_VERSION) return nameIndex.map
     if (!at || key !== nameIndexKey(state)) return nameIndex.map
     if (Date.now() - at > NAME_INDEX_TTL) return nameIndex.map
     const map = new Map()
@@ -395,85 +399,36 @@ function loadNameIndexFromDisk(state) {
 }
 
 /**
- * Persist the index so the next app start does not walk the workspace again.
+ * Build the index in a WORKER THREAD.
  *
- * Written ASYNCHRONOUSLY and in a compact TSV: the Host runs in the Harness's
- * main process, and a multi-megabyte synchronous write there is a memory spike
- * that can take the whole application down.
- */
-function saveNameIndexToDisk(state) {
-  try {
-    const lines = [`${nameIndex.at}\t${nameIndex.key}`]
-    let count = 0
-    for (const [name, best] of nameIndex.map) {
-      if (count >= NAME_INDEX_MAX_SAVED) break
-      lines.push(`${name}\t${best}`)
-      count += 1
-    }
-    const body = lines.join('\n')
-    const file = nameIndexFile()
-    fs.promises
-      .mkdir(path.dirname(file), { recursive: true })
-      .then(() => fs.promises.writeFile(file, body, 'utf8'))
-      .catch(() => {})
-  } catch {
-    // A read-only home is not a reason to break the reader.
-  }
-}
-
-/**
- * Build the index in the background.
- *
- * The walk yields to the event loop every few directories, so the Host keeps
- * serving requests while it runs.
+ * The Host runs in the Harness's MAIN process - the same process that serves
+ * the app's web requests and the plugin client bundles. Walking the workspace
+ * there blocked that process for seconds, and the app's own boot then failed
+ * to fetch the plugin bundle ("Failed to fetch" -> "web boot: 1 entry did not
+ * activate" -> the crash dialog). A worker leaves the main thread free: the
+ * tree listing, the markdown fetch and the boot's bundle request are served
+ * immediately, and the reader feels instant again.
  */
 async function buildNameIndexAsync(state) {
   if (nameIndex.building) return nameIndex.pending
   nameIndex.building = true
   const key = nameIndexKey(state)
   const pending = (async () => {
+    const roots = state.roots().map((root) => root.path)
+    const entries = await runNameIndexWorker(roots, key)
+    if (!entries || !entries.length) return
     const map = new Map()
-    let files = 0
-    const stack = state.roots().map((root) => ({ dir: root.path, depth: 0 }))
-    let ticks = 0
-    while (stack.length && files < NAME_INDEX_MAX_FILES) {
-      const { dir, depth } = stack.pop()
-      let dirents = null
-      try {
-        dirents = fs.readdirSync(dir, { withFileTypes: true })
-      } catch {
-        continue
-      }
-      for (const dirent of dirents) {
-        if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
-        const child = path.join(dir, dirent.name)
-        if (dirent.isDirectory()) {
-          if (depth < NAME_INDEX_MAX_DEPTH) stack.push({ dir: child, depth: depth + 1 })
-          continue
-        }
-        if (!dirent.isFile()) continue
-        files += 1
-        // Only the SHALLOWEST path per name is kept: the search prefers it
-        // anyway, and keeping every copy of every name cost the main process
-        // tens of megabytes.
-        const known = map.get(dirent.name)
-        if (known === undefined) {
-          map.set(dirent.name, child)
-        } else if (child.split(path.sep).length < known.split(path.sep).length) {
-          map.set(dirent.name, child)
-        }
-      }
-      ticks += 1
-      // Yield often enough that a request is never queued behind the walk.
-      if (ticks % 8 === 0) await new Promise((resolve) => setImmediate(resolve))
+    for (const item of entries) {
+      if (!Array.isArray(item) || item.length !== 2) continue
+      map.set(String(item[0]), String(item[1]))
     }
+    if (!map.size) return
     nameIndex.at = Date.now()
     nameIndex.key = key
     nameIndex.map = map
     nameIndex.ready = true
     // The misses cached while the index was building may be hits now.
     existsCache.clear()
-    saveNameIndexToDisk(state)
   })()
     .catch(() => {})
     .finally(() => {
@@ -481,6 +436,35 @@ async function buildNameIndexAsync(state) {
     })
   nameIndex.pending = pending
   return pending
+}
+
+/** Run the index worker and hand back its entries. */
+function runNameIndexWorker(roots, key) {
+  return new Promise((resolve) => {
+    let worker = null
+    try {
+      worker = new Worker(new URL('./nameindex-worker.js', import.meta.url), {
+        workerData: { roots, key, version: NAME_INDEX_VERSION, cacheFile: nameIndexFile() },
+      })
+    } catch {
+      resolve([])
+      return
+    }
+    let done = false
+    const finish = (entries) => {
+      if (done) return
+      done = true
+      try {
+        worker.terminate()
+      } catch {
+        /* already gone */
+      }
+      resolve(entries || [])
+    }
+    worker.on('message', (message) => finish((message && message.entries) || []))
+    worker.on('error', () => finish([]))
+    worker.on('exit', () => finish([]))
+  })
 }
 
 /** The index (possibly still being built) + whether it is complete. */
