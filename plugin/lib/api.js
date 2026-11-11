@@ -339,13 +339,19 @@ function preferredRootFor(state, from) {
  */
 const nameIndex = { at: 0, key: '', map: new Map(), building: false, ready: false, pending: null }
 const NAME_INDEX_TTL = 10 * 60 * 1000
-const NAME_INDEX_MAX_FILES = 400000
+const NAME_INDEX_MAX_FILES = 150000
 const NAME_INDEX_MAX_DEPTH = 18
+/** How many names are persisted. The full index of the 微服务 workspace holds
+ *  tens of thousands of entries; writing all of them as JSON produced a 10 MB
+ *  string in the MAIN process, which is where the Harness runs the plugin -
+ *  that memory spike took the whole application down (the app died, the crash
+ *  handler restarted it and the boot then failed with "import failed"). */
+const NAME_INDEX_MAX_SAVED = 20000
 
 /** Where the index is cached between app runs. */
 function nameIndexFile() {
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
-  return path.join(home, 'markdown-reader.nameindex.json')
+  return path.join(home, 'markdown-reader.nameindex.tsv')
 }
 
 /** The identity of the current roots: a different set of roots needs a new index. */
@@ -353,22 +359,33 @@ function nameIndexKey(state) {
   return state.roots().map((root) => root.path).join('|')
 }
 
-/** Load the persisted index (fast path: no walk at all). */
+/**
+ * Load the persisted index (fast path: no walk at all).
+ *
+ * The file is a TSV (`<at>\t<key>\n<name>\t<path>\n...`): a compact format
+ * that can be read line by line without parsing a huge JSON string.
+ */
 function loadNameIndexFromDisk(state) {
   if (nameIndex.map.size) return nameIndex.map
   try {
     const raw = fs.readFileSync(nameIndexFile(), 'utf8')
-    const value = JSON.parse(raw)
-    if (!value || value.key !== nameIndexKey(state)) return nameIndex.map
-    if (!value.at || Date.now() - value.at > NAME_INDEX_TTL) return nameIndex.map
+    const lines = raw.split('\n')
+    const header = (lines.shift() || '').split('\t')
+    const at = Number(header[0])
+    const key = header[1] || ''
+    if (!at || key !== nameIndexKey(state)) return nameIndex.map
+    if (Date.now() - at > NAME_INDEX_TTL) return nameIndex.map
     const map = new Map()
-    for (const item of value.entries || []) {
-      if (!Array.isArray(item) || item.length !== 2) continue
-      map.set(String(item[0]), [String(item[1])])
+    for (const line of lines) {
+      if (!line) continue
+      const tab = line.indexOf('\t')
+      if (tab < 0) continue
+      map.set(line.slice(0, tab), line.slice(tab + 1))
+      if (map.size >= NAME_INDEX_MAX_SAVED) break
     }
     if (!map.size) return nameIndex.map
-    nameIndex.at = value.at
-    nameIndex.key = value.key
+    nameIndex.at = at
+    nameIndex.key = key
     nameIndex.map = map
     nameIndex.ready = true
   } catch {
@@ -377,31 +394,28 @@ function loadNameIndexFromDisk(state) {
   return nameIndex.map
 }
 
-/** Persist the index so the next app start does not walk the workspace again. */
+/**
+ * Persist the index so the next app start does not walk the workspace again.
+ *
+ * Written ASYNCHRONOUSLY and in a compact TSV: the Host runs in the Harness's
+ * main process, and a multi-megabyte synchronous write there is a memory spike
+ * that can take the whole application down.
+ */
 function saveNameIndexToDisk(state) {
   try {
-    const entries = []
-    for (const [name, hits] of nameIndex.map) {
-      // Keep the SHALLOWEST hit: that is the one `searchByBasename` prefers
-      // (a doc's citation means the top-level file, not a copy deep in target/).
-      let best = hits[0]
-      let bestDepth = best.split(path.sep).length
-      for (const hit of hits) {
-        const depth = hit.split(path.sep).length
-        if (depth < bestDepth) {
-          best = hit
-          bestDepth = depth
-        }
-      }
-      entries.push([name, best])
+    const lines = [`${nameIndex.at}\t${nameIndex.key}`]
+    let count = 0
+    for (const [name, best] of nameIndex.map) {
+      if (count >= NAME_INDEX_MAX_SAVED) break
+      lines.push(`${name}\t${best}`)
+      count += 1
     }
+    const body = lines.join('\n')
     const file = nameIndexFile()
-    fs.mkdirSync(path.dirname(file), { recursive: true })
-    fs.writeFileSync(
-      file,
-      JSON.stringify({ at: nameIndex.at, key: nameIndex.key, entries }),
-      'utf8',
-    )
+    fs.promises
+      .mkdir(path.dirname(file), { recursive: true })
+      .then(() => fs.promises.writeFile(file, body, 'utf8'))
+      .catch(() => {})
   } catch {
     // A read-only home is not a reason to break the reader.
   }
@@ -439,9 +453,15 @@ async function buildNameIndexAsync(state) {
         }
         if (!dirent.isFile()) continue
         files += 1
-        const bucket = map.get(dirent.name)
-        if (bucket) bucket.push(child)
-        else map.set(dirent.name, [child])
+        // Only the SHALLOWEST path per name is kept: the search prefers it
+        // anyway, and keeping every copy of every name cost the main process
+        // tens of megabytes.
+        const known = map.get(dirent.name)
+        if (known === undefined) {
+          map.set(dirent.name, child)
+        } else if (child.split(path.sep).length < known.split(path.sep).length) {
+          map.set(dirent.name, child)
+        }
       }
       ticks += 1
       // Yield often enough that a request is never queued behind the walk.
@@ -490,23 +510,12 @@ function nameIndexReady(state) {
 function searchByBasename(state, rel, preferredRoot) {
   const base = path.basename(String(rel).replace(/\\/g, '/'))
   if (!base) return null
-  const hits = fileNameIndex(state).get(base)
-  if (!hits || !hits.length) return null
-  if (preferredRoot) {
-    const inside = hits.find((hit) => hit.startsWith(preferredRoot + path.sep) || hit === path.join(preferredRoot, base))
-    if (inside) return inside
+  const hit = fileNameIndex(state).get(base)
+  if (!hit) return null
+  if (preferredRoot && (hit.startsWith(preferredRoot + path.sep) || hit === path.join(preferredRoot, base))) {
+    return hit
   }
-  // Shallowest first: a doc's citation means the top-level file, not a copy deep in target/.
-  let best = hits[0]
-  let bestDepth = best.split(path.sep).length
-  for (const hit of hits) {
-    const depth = hit.split(path.sep).length
-    if (depth < bestDepth) {
-      best = hit
-      bestDepth = depth
-    }
-  }
-  return best
+  return hit
 }
 
 function apiRaw(res, state, url) {

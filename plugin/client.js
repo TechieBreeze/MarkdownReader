@@ -18,1065 +18,726 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "e0e679c26f2c";
+    const BUILD_ID = "f8c7c6fba5bb";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
     try {
       __slots = (() => {
 // ---- 00-core.js ----
-/**
- * Core helpers shared by every client part: route, fetch helpers, path rules,
- * vendor loader, small storage helper and the global stylesheet.
- */
-
 const ROUTE = '/markdown-reader'
 const TREE_KEY = 'mdreader.plugin.tree.v1'
-
 const MD_EXTS = new Set(['.md', '.markdown'])
 const CODE_EXTS = new Set([
-  '.java', '.kt', '.kts', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.vue',
-  '.py', '.go', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp', '.scala',
-  '.xml', '.yml', '.yaml', '.json', '.properties', '.sql', '.sh', '.bat', '.ps1',
-  '.html', '.htm', '.css', '.scss', '.less', '.gradle', '.toml', '.md',
+'.java', '.kt', '.kts', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.vue',
+'.py', '.go', '.rb', '.php', '.cs', '.cpp', '.c', '.h', '.hpp', '.scala',
+'.xml', '.yml', '.yaml', '.json', '.properties', '.sql', '.sh', '.bat', '.ps1',
+'.html', '.htm', '.css', '.scss', '.less', '.gradle', '.toml', '.md',
 ])
-
 function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
+return String(value)
+.replace(/&/g, '&amp;')
+.replace(/</g, '&lt;')
+.replace(/>/g, '&gt;')
+.replace(/"/g, '&quot;')
 }
-
 function extOf(rel) {
-  const base = String(rel || '').split('/').pop() || ''
-  const dot = base.lastIndexOf('.')
-  return dot <= 0 ? '' : base.slice(dot).toLowerCase()
+const base = String(rel || '').split('/').pop() || ''
+const dot = base.lastIndexOf('.')
+return dot <= 0 ? '' : base.slice(dot).toLowerCase()
 }
-
 function isMdFile(rel) {
-  return MD_EXTS.has(extOf(rel))
+return MD_EXTS.has(extOf(rel))
 }
-
 function isCodeFile(rel) {
-  return CODE_EXTS.has(extOf(rel))
+return CODE_EXTS.has(extOf(rel))
 }
-
 function isImageFile(rel) {
-  return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(extOf(rel))
+return ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp'].includes(extOf(rel))
 }
-
 function dirnameOf(rel) {
-  const value = String(rel || '')
-  const at = value.lastIndexOf('/')
-  return at < 0 ? '' : value.slice(0, at)
+const value = String(rel || '')
+const at = value.lastIndexOf('/')
+return at < 0 ? '' : value.slice(0, at)
 }
-
 function encodeQuery(params) {
-  const usp = new URLSearchParams()
-  for (const [key, value] of Object.entries(params || {})) {
-    if (value === undefined || value === null || value === '') continue
-    if (Array.isArray(value)) value.forEach((item) => usp.append(key, String(item)))
-    else usp.append(key, String(value))
-  }
-  const text = usp.toString()
-  return text ? `?${text}` : ''
+const usp = new URLSearchParams()
+for (const [key, value] of Object.entries(params || {})) {
+if (value === undefined || value === null || value === '') continue
+if (Array.isArray(value)) value.forEach((item) => usp.append(key, String(item)))
+else usp.append(key, String(value))
 }
-
-/**
- * Current-project scope (vtop name, null = all). The Host supports a `project`
- * filter on /api/search, /api/files and /api/git/repos; the panels that call
- * those endpoints (25-search.js / 28-gitgraph.js) don't know about the project
- * layer, so the scope is injected here. Set by the workbench (50-app.js).
- */
+const text = usp.toString()
+return text ? `?${text}` : ''
+}
 let projectScope = null
 function setProjectScope(name) {
-  projectScope = name || null
+projectScope = name || null
 }
 const PROJECT_SCOPED_ENDPOINTS = new Set(['/api/search', '/api/files', '/api/git/repos'])
-
 async function fetchJson(endpoint, params, init) {
-  let query = params
-  if (projectScope && PROJECT_SCOPED_ENDPOINTS.has(endpoint) && !(query && query.project)) {
-    query = { ...(query || {}), project: projectScope }
-  }
-  const response = await fetch(ROUTE + endpoint + encodeQuery(query), init)
-  let payload = null
-  try {
-    payload = await response.json()
-  } catch {
-    payload = null
-  }
-  if (!response.ok || !payload || payload.ok === false) {
-    const message = (payload && payload.error) || `HTTP ${response.status}`
-    throw new Error(message)
-  }
-  return payload
+let query = params
+if (projectScope && PROJECT_SCOPED_ENDPOINTS.has(endpoint) && !(query && query.project)) {
+query = { ...(query || {}), project: projectScope }
 }
-
+const response = await fetch(ROUTE + endpoint + encodeQuery(query), init)
+let payload = null
+try {
+payload = await response.json()
+} catch {
+payload = null
+}
+if (!response.ok || !payload || payload.ok === false) {
+const message = (payload && payload.error) || `HTTP ${response.status}`
+throw new Error(message)
+}
+return payload
+}
 async function postJson(endpoint, body) {
-  return fetchJson(endpoint, null, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
+return fetchJson(endpoint, null, {
+method: 'POST',
+headers: { 'content-type': 'application/json' },
+body: JSON.stringify(body || {}),
+})
 }
-
-/**
- * Report the client build this browser loaded, and reload when the Host serves
- * a newer one.
- *
- * Why this exists: the Harness serves a plugin's client as an IMMUTABLE
- * (one-year cache) asset whose URL carries a `rev` derived from the bundle's
- * file metadata, captured when the plugin is REGISTERED. Rebuilding
- * client.js therefore does not reach a browser that already loaded the plugin -
- * the new bytes are only served after the plugin is re-registered. The symptom
- * is "I changed the code and the app still behaves like the old version".
- *
- * The fix: the build id (a hash of the client sources, written by build.mjs)
- * is embedded in the bundle, and the Host serves the CURRENT id from disk.
- * A browser running an older id reloads itself once, which fetches the new
- * URL. The reload is guarded per server build so a rebuild loop cannot trap
- * the page.
- */
 function syncClientBuild() {
-  if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
-  try {
-    postJson('/api/client-ping', { build: BUILD_ID }).catch(() => {})
-  } catch {
-    /* the Host may be gone; ignore */
-  }
-  checkClientBuild()
+if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
+try {
+postJson('/api/client-ping', { build: BUILD_ID }).catch(() => {})
+} catch {
 }
-
-/**
- * Reload the page when the Host serves a newer bundle than this one runs.
- *
- * This runs PERIODICALLY, not only at load: the Harness hot-swaps the client
- * module when the bundle is rebuilt, and the OLD module instance stays alive
- * (its document listeners and timers keep running). An old instance is what
- * kept re-creating the round-7 「已复制路径」 toast in the window, so the page
- * has to be reloaded to get rid of it - which this check does as soon as it
- * sees that the served build is not its own.
- *
- * The reload is guarded per served build (sessionStorage), so a rebuild loop
- * cannot trap the page: after the reload the fresh instance matches the served
- * build and nothing reloads again.
- */
+checkClientBuild()
+}
 function checkClientBuild() {
-  if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
-  try {
-    fetchJson('/api/client-build')
-      .then((payload) => {
-        const server = payload && payload.build
-        if (!server || server === BUILD_ID) return
-        const key = `mdr.reload.${server}`
-        try {
-          if (window.sessionStorage.getItem(key)) return
-          window.sessionStorage.setItem(key, '1')
-        } catch {
-          /* private mode: reload once anyway */
-        }
-        window.location.reload()
-      })
-      .catch(() => {})
-  } catch {
-    /* ignore */
-  }
+if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
+try {
+fetchJson('/api/client-build')
+.then((payload) => {
+const server = payload && payload.build
+if (!server || server === BUILD_ID) return
+const key = `mdr.reload.${server}`
+try {
+if (window.sessionStorage.getItem(key)) return
+window.sessionStorage.setItem(key, '1')
+} catch {
 }
-
-/**
- * Report what the markdown view actually did with a document.
- *
- * The diff fence renders in the CLIENT, so "the block did not render" can only
- * be answered by the client itself: how many fences it saw, how many became
- * diff views, how long it took, and whether something threw. The Host keeps the
- * last report, so the behaviour of the running app can be read instead of
- * guessed.
- */
+window.location.reload()
+})
+.catch(() => {})
+} catch {
+}
+}
 function reportMdRender(stats) {
-  try {
-    postJson('/api/client-ping', {
-      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
-      md: {
-        path: String((stats && stats.path) || ''),
-        fences: Number((stats && stats.fences) || 0),
-        diffBlocks: Number((stats && stats.diffBlocks) || 0),
-        ms: Number((stats && stats.ms) || 0),
-        error: String((stats && stats.error) || ''),
-        // Cache hits/misses: "is the document re-highlighting on every open?"
-        cache: stats && stats.cache ? stats.cache : null,
-        at: new Date().toISOString(),
-      },
-    }).catch(() => {})
-  } catch {
-    /* ignore */
-  }
+try {
+postJson('/api/client-ping', {
+build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+md: {
+path: String((stats && stats.path) || ''),
+fences: Number((stats && stats.fences) || 0),
+diffBlocks: Number((stats && stats.diffBlocks) || 0),
+ms: Number((stats && stats.ms) || 0),
+error: String((stats && stats.error) || ''),
+cache: stats && stats.cache ? stats.cache : null,
+at: new Date().toISOString(),
+},
+}).catch(() => {})
+} catch {
+}
 }
 function resolveRel(mdPath, href, multi, rootNames) {
-  const raw = String(href || '').replace(/\\/g, '/')
-  const clean = raw.replace(/^\/+/, '')
-  const segs = clean.split('/').filter((part) => part && part !== '.')
-  const baseDir = dirnameOf(mdPath)
-  const docRootName = multi ? String(mdPath || '').split('/')[0] : ''
-  let parts
-  if (raw.startsWith('/')) {
-    // Root-absolute links (`/docs/x.md`) mean "from the project root". In a
-    // multi-root session that is the CURRENT document's project unless the
-    // first segment already names an open root.
-    if (multi && rootNames && rootNames.includes(segs[0])) parts = segs
-    else if (multi) parts = [docRootName, ...segs]
-    else parts = segs
-  } else {
-    parts = [...(baseDir ? baseDir.split('/') : []), ...segs]
-  }
-  const out = []
-  for (const part of parts) {
-    if (!part || part === '.') continue
-    if (part === '..') out.pop()
-    else out.push(part)
-  }
-  return out.join('/')
+const raw = String(href || '').replace(/\\/g, '/')
+const clean = raw.replace(/^\/+/, '')
+const segs = clean.split('/').filter((part) => part && part !== '.')
+const baseDir = dirnameOf(mdPath)
+const docRootName = multi ? String(mdPath || '').split('/')[0] : ''
+let parts
+if (raw.startsWith('/')) {
+if (multi && rootNames && rootNames.includes(segs[0])) parts = segs
+else if (multi) parts = [docRootName, ...segs]
+else parts = segs
+} else {
+parts = [...(baseDir ? baseDir.split('/') : []), ...segs]
 }
-
+const out = []
+for (const part of parts) {
+if (!part || part === '.') continue
+if (part === '..') out.pop()
+else out.push(part)
+}
+return out.join('/')
+}
 function splitHref(href) {
-  const text = String(href || '')
-  const hashAt = text.indexOf('#')
-  if (hashAt < 0) return { path: text, hash: '' }
-  return { path: text.slice(0, hashAt), hash: text.slice(hashAt + 1) }
+const text = String(href || '')
+const hashAt = text.indexOf('#')
+if (hashAt < 0) return { path: text, hash: '' }
+return { path: text.slice(0, hashAt), hash: text.slice(hashAt + 1) }
 }
-
-/* ---------------------------------------------------------- fence rendering */
-
-/**
- * Cache of rendered fence HTML.
- *
- * Opening a document renders every fenced block again, and a diff block costs
- * TWO highlight.js passes (the OLD side and the NEW side are highlighted as
- * separate blocks, so multi-line comments/strings keep their colours). A design
- * document with ~20 diff blocks therefore spends seconds in hljs on EVERY tab
- * switch - the user reported "每次打开 markdown 都会全量重新渲染 diff 代码块,
- * 详设/codereview 这类文档很卡".
- *
- * The rendered HTML depends only on the fence text and its language, so it is
- * cached by CONTENT: the second time a document is opened the blocks are
- * restored as ready-made HTML and the document appears immediately.
- *
- * The cache lives in the module instance, so a new bundle (a hot swap by the
- * Harness) starts with an empty cache - the colours of a new bundle must not
- * be served from an old one.
- */
 const FENCE_CACHE_MAX_CHARS = 6 * 1024 * 1024
 const fenceCache = new Map()
 let fenceCacheChars = 0
 const fenceCacheStats = { hits: 0, misses: 0, evicted: 0 }
-
-/** FNV-1a: cheap, stable, good enough for a cache key (the source is verified). */
 function fenceHash(text) {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash.toString(36)
+let hash = 0x811c9dc5
+for (let index = 0; index < text.length; index += 1) {
+hash ^= text.charCodeAt(index)
+hash = Math.imul(hash, 0x01000193) >>> 0
 }
-
-/**
- * Render a fence through the cache.
- *
- * @param {string} prefix  cache namespace ('diff', 'code:xml', …)
- * @param {string} source  the fence text
- * @param {Function} produce  the actual renderer (called on a miss)
- */
+return hash.toString(36)
+}
 function cachedFenceHtml(prefix, source, produce) {
-  const text = String(source == null ? '' : source)
-  loadFenceCacheFromStorage()
-  const key = `${prefix}|${text.length}|${fenceHash(text)}`
-  const hit = fenceCache.get(key)
-  if (hit && hit.source === text) {
-    // Refresh the LRU order.
-    fenceCache.delete(key)
-    fenceCache.set(key, hit)
-    fenceCacheStats.hits += 1
-    return hit.html
-  }
-  fenceCacheStats.misses += 1
-  let html = ''
-  try {
-    html = produce()
-  } catch (error) {
-    html = ''
-    // A silent empty block is the worst possible failure mode: say what broke.
-    if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
-      console.warn('[markdown-reader] fence render failed:', error)
-    }
-  }
-  fenceCache.set(key, { source: text, html })
-  fenceCacheChars += text.length + html.length
-  while (fenceCacheChars > FENCE_CACHE_MAX_CHARS && fenceCache.size > 1) {
-    const oldest = fenceCache.keys().next().value
-    const entry = fenceCache.get(oldest)
-    fenceCache.delete(oldest)
-    fenceCacheChars -= entry.source.length + entry.html.length
-    fenceCacheStats.evicted += 1
-  }
-  scheduleFenceCacheSave()
-  return html
+const text = String(source == null ? '' : source)
+loadFenceCacheFromStorage()
+const key = `${prefix}|${text.length}|${fenceHash(text)}`
+const hit = fenceCache.get(key)
+if (hit && hit.source === text) {
+fenceCache.delete(key)
+fenceCache.set(key, hit)
+fenceCacheStats.hits += 1
+return hit.html
 }
-
-/** Cache statistics for the render report. */
+fenceCacheStats.misses += 1
+let html = ''
+try {
+html = produce()
+} catch (error) {
+html = ''
+if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+console.warn('[markdown-reader] fence render failed:', error)
+}
+}
+fenceCache.set(key, { source: text, html })
+fenceCacheChars += text.length + html.length
+while (fenceCacheChars > FENCE_CACHE_MAX_CHARS && fenceCache.size > 1) {
+const oldest = fenceCache.keys().next().value
+const entry = fenceCache.get(oldest)
+fenceCache.delete(oldest)
+fenceCacheChars -= entry.source.length + entry.html.length
+fenceCacheStats.evicted += 1
+}
+scheduleFenceCacheSave()
+return html
+}
 function fenceCacheReport() {
-  return {
-    ...fenceCacheStats,
-    entries: fenceCache.size,
-    chars: fenceCacheChars,
-  }
+return {
+...fenceCacheStats,
+entries: fenceCache.size,
+chars: fenceCacheChars,
 }
-
-/**
- * The cache also survives a PAGE RELOAD (sessionStorage).
- *
- * A window that is reloaded would otherwise pay the full highlight.js cost
- * again on the first document it opens - the design document needs ~3.5 s of
- * hljs for its 19 diff blocks. The persisted copy is namespaced by the bundle
- * id: a new bundle starts with an empty cache, so old markup is never served
- * for a new build.
- */
+}
 const FENCE_CACHE_STORAGE_PREFIX = 'mdr.fencecache.'
 const FENCE_CACHE_STORAGE_MAX = 2 * 1024 * 1024
 let fenceCacheLoaded = false
 let fenceCacheSaveTimer = null
-
 function fenceCacheStorageKey() {
-  return FENCE_CACHE_STORAGE_PREFIX + (typeof BUILD_ID === 'undefined' ? 'x' : BUILD_ID)
+return FENCE_CACHE_STORAGE_PREFIX + (typeof BUILD_ID === 'undefined' ? 'x' : BUILD_ID)
 }
-
 function loadFenceCacheFromStorage() {
-  if (fenceCacheLoaded) return
-  fenceCacheLoaded = true
-  try {
-    if (typeof sessionStorage === 'undefined' || !sessionStorage) return
-    const raw = sessionStorage.getItem(fenceCacheStorageKey())
-    if (!raw) return
-    const list = JSON.parse(raw)
-    if (!Array.isArray(list)) return
-    for (const item of list) {
-      if (!item || item.length < 3) continue
-      const key = String(item[0])
-      const source = String(item[1])
-      const html = String(item[2])
-      if (fenceCache.has(key)) continue
-      fenceCache.set(key, { source, html })
-      fenceCacheChars += source.length + html.length
-    }
-    fenceCacheStats.restored = fenceCache.size
-  } catch {
-    /* private mode / quota: the in-memory cache still works */
-  }
+if (fenceCacheLoaded) return
+fenceCacheLoaded = true
+try {
+if (typeof sessionStorage === 'undefined' || !sessionStorage) return
+const raw = sessionStorage.getItem(fenceCacheStorageKey())
+if (!raw) return
+const list = JSON.parse(raw)
+if (!Array.isArray(list)) return
+for (const item of list) {
+if (!item || item.length < 3) continue
+const key = String(item[0])
+const source = String(item[1])
+const html = String(item[2])
+if (fenceCache.has(key)) continue
+fenceCache.set(key, { source, html })
+fenceCacheChars += source.length + html.length
 }
-
+fenceCacheStats.restored = fenceCache.size
+} catch {
+}
+}
 function saveFenceCacheToStorage() {
-  try {
-    if (typeof sessionStorage === 'undefined' || !sessionStorage) return
-    const list = []
-    let chars = 0
-    for (const [key, entry] of fenceCache) {
-      const size = key.length + entry.source.length + entry.html.length
-      if (chars + size > FENCE_CACHE_STORAGE_MAX) break
-      list.push([key, entry.source, entry.html])
-      chars += size
-    }
-    sessionStorage.setItem(fenceCacheStorageKey(), JSON.stringify(list))
-  } catch {
-    try {
-      if (typeof sessionStorage !== 'undefined' && sessionStorage) {
-        sessionStorage.removeItem(fenceCacheStorageKey())
-      }
-    } catch {
-      /* ignore */
-    }
-  }
+try {
+if (typeof sessionStorage === 'undefined' || !sessionStorage) return
+const list = []
+let chars = 0
+for (const [key, entry] of fenceCache) {
+const size = key.length + entry.source.length + entry.html.length
+if (chars + size > FENCE_CACHE_STORAGE_MAX) break
+list.push([key, entry.source, entry.html])
+chars += size
 }
-
+sessionStorage.setItem(fenceCacheStorageKey(), JSON.stringify(list))
+} catch {
+try {
+if (typeof sessionStorage !== 'undefined' && sessionStorage) {
+sessionStorage.removeItem(fenceCacheStorageKey())
+}
+} catch {
+}
+}
+}
 function scheduleFenceCacheSave() {
-  try {
-    if (fenceCacheSaveTimer) clearTimeout(fenceCacheSaveTimer)
-    // A long debounce: saving means stringifying up to a few MB, which is a
-    // visible hitch right after a document was rendered.
-    fenceCacheSaveTimer = setTimeout(() => {
-      fenceCacheSaveTimer = null
-      saveFenceCacheToStorage()
-    }, 10000)
-    if (fenceCacheSaveTimer && typeof fenceCacheSaveTimer.unref === 'function') fenceCacheSaveTimer.unref()
-  } catch {
-    /* ignore */
-  }
+try {
+if (fenceCacheSaveTimer) clearTimeout(fenceCacheSaveTimer)
+fenceCacheSaveTimer = setTimeout(() => {
+fenceCacheSaveTimer = null
+saveFenceCacheToStorage()
+}, 10000)
+if (fenceCacheSaveTimer && typeof fenceCacheSaveTimer.unref === 'function') fenceCacheSaveTimer.unref()
+} catch {
 }
-
-/* ------------------------------------------------------- clipboard & toast */
-
-/**
- * Remove overlay nodes left behind by an EARLIER bundle.
- *
- * The Harness hot-swaps the client module when the bundle is rebuilt, so a
- * window can carry DOM nodes created by an older version of this plugin (the
- * round-7 copy menu, whose toast said 「已复制路径」). Such a node lives on
- * document.body, OUTSIDE the panel: it keeps no stylesheet and shows up as a
- * stray line at the bottom of the window - in the conversation view, where the
- * content is shorter, it becomes visible.
- *
- * The current code never creates such a node (its overlays live inside the
- * panel), so everything found there is stale: remove it.
- */
+}
 function cleanupStaleOverlays() {
-  try {
-    if (typeof document === 'undefined' || !document.body) return
-    if (typeof document.querySelectorAll !== 'function') return
-    const panel = panelRoot()
-    const nodes = document.querySelectorAll('#mdr-toast, .mdr-ctx')
-    for (const node of nodes) {
-      if (!node || node === toastNode) continue
-      if (panel && panel.contains && panel.contains(node)) continue
-      if (node.parentNode) node.parentNode.removeChild(node)
-    }
-  } catch {
-    /* ignore */
-  }
+try {
+if (typeof document === 'undefined' || !document.body) return
+if (typeof document.querySelectorAll !== 'function') return
+const panel = panelRoot()
+const nodes = document.querySelectorAll('#mdr-toast, .mdr-ctx')
+for (const node of nodes) {
+if (!node || node === toastNode) continue
+if (panel && panel.contains && panel.contains(node)) continue
+if (node.parentNode) node.parentNode.removeChild(node)
 }
-
-/**
- * The plugin's own root element (the reader panel), captured from the React
- * tree.
- *
- * Why this matters: the Harness mounts the panel into its OWN DOM scope (a
- * shadow root in the Web GUI), so `document.querySelector('.mdr-root')` cannot
- * see it. Everything this plugin appends to `document.body` therefore lands
- * OUTSIDE the panel: it loses the panel's stylesheet and shows up at the
- * bottom of the Harness window (the unstyled "复制路径" / "已复制路径" line the
- * user reported). Overlays (context menu, toast) must be mounted INSIDE the
- * panel root, with viewport coordinates for a `position:fixed` element.
- */
+} catch {
+}
+}
 let panelRootEl = null
-
-/** The panel root element, or null when the panel is not mounted. */
 function panelRoot() {
-  // `isConnected` is false once the panel is detached; a fake DOM may not have
-  // the property at all, so only an explicit false counts as detached.
-  if (panelRootEl && panelRootEl.isConnected !== false) return panelRootEl
-  if (typeof document !== 'undefined' && document && typeof document.querySelector === 'function') {
-    const found = document.querySelector('.mdr-root')
-    if (found) return found
-  }
-  return null
+if (panelRootEl && panelRootEl.isConnected !== false) return panelRootEl
+if (typeof document !== 'undefined' && document && typeof document.querySelector === 'function') {
+const found = document.querySelector('.mdr-root')
+if (found) return found
 }
-
-/** Where an overlay (context menu, toast) is mounted. */
+return null
+}
 function overlayHost() {
-  return panelRoot() || (typeof document !== 'undefined' ? document.body : null)
+return panelRoot() || (typeof document !== 'undefined' ? document.body : null)
 }
-
-/** Called by the panel component with its root element (null on unmount). */
 function setPanelRoot(element) {
-  panelRootEl = element || null
-  if (element && typeof element.addEventListener === 'function') {
-    element.addEventListener('contextmenu', onPathContextMenu)
-  }
-  // A window that hot-swapped an older bundle may still carry its overlay
-  // nodes on document.body: drop them as soon as the panel is mounted.
-  cleanupStaleOverlays()
+panelRootEl = element || null
+if (element && typeof element.addEventListener === 'function') {
+element.addEventListener('contextmenu', onPathContextMenu)
 }
-
-/**
- * Copy text with the same three-step ladder as the standalone reader:
- * navigator.clipboard → execCommand → select for a manual Ctrl+C.
- * `http://` origins have no navigator.clipboard in Chromium, so the fallback is
- * the normal path when the harness UI is served over plain HTTP.
- */
+cleanupStaleOverlays()
+}
 function copyText(value) {
-  const text = String(value == null ? '' : value)
-  if (!text) return Promise.resolve(false)
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-    return navigator.clipboard.writeText(text).then(
-      () => true,
-      () => copyTextFallback(text),
-    )
-  }
-  return Promise.resolve(copyTextFallback(text))
+const text = String(value == null ? '' : value)
+if (!text) return Promise.resolve(false)
+if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+return navigator.clipboard.writeText(text).then(
+() => true,
+() => copyTextFallback(text),
+)
 }
-
+return Promise.resolve(copyTextFallback(text))
+}
 function copyTextFallback(text) {
-  try {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
-    document.body.appendChild(area)
-    area.select()
-    const ok = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
-    area.remove()
-    return ok
-  } catch {
-    return false
-  }
+try {
+const area = document.createElement('textarea')
+area.value = text
+area.setAttribute('readonly', '')
+area.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0'
+document.body.appendChild(area)
+area.select()
+const ok = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+area.remove()
+return ok
+} catch {
+return false
 }
-
+}
 let toastTimer = null
 let toastNode = null
-
-/**
- * Transient status line INSIDE the reader panel.
- *
- * It used to be appended to `document.body` with `position:fixed`, which put it
- * at the very bottom of the Harness window - over the host UI instead of over
- * the reader, and without the panel's stylesheet at all (the panel lives in
- * its own DOM scope). It is mounted into the panel root now, so it stays
- * inside the reader and keeps the panel's look.
- */
 function toastHost() {
-  return overlayHost()
+return overlayHost()
 }
-
 function toast(message, kind) {
-  const host = toastHost()
-  if (!host) return
-  let node = toastNode
-  if (!node || node.parentNode !== host) {
-    if (node && node.parentNode) node.parentNode.removeChild(node)
-    node = document.createElement('div')
-    node.id = 'mdr-toast'
-    host.appendChild(node)
-    toastNode = node
-  }
-  node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '') + ' show' + (kind === 'err' ? ' err' : '')
-  node.textContent = String(message == null ? '' : message)
-  if (toastTimer) clearTimeout(toastTimer)
-  toastTimer = setTimeout(() => {
-    node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '')
-  }, 2600)
+const host = toastHost()
+if (!host) return
+let node = toastNode
+if (!node || node.parentNode !== host) {
+if (node && node.parentNode) node.parentNode.removeChild(node)
+node = document.createElement('div')
+node.id = 'mdr-toast'
+host.appendChild(node)
+toastNode = node
 }
-
-/**
- * Copy text and report the result to the caller.
- *
- * No floating toast here on purpose: a "已复制路径" line at the bottom of the
- * Harness window was reported as noise, so the confirmation stays inside the
- * menu the user just opened.
- */
+node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '') + ' show' + (kind === 'err' ? ' err' : '')
+node.textContent = String(message == null ? '' : message)
+if (toastTimer) clearTimeout(toastTimer)
+toastTimer = setTimeout(() => {
+node.className = 'mdr-toast' + (host === document.body ? ' mdr-toast-fixed' : '')
+}, 2600)
+}
 function copyWithFeedback(value) {
-  const text = String(value == null ? '' : value)
-  if (!text) return Promise.resolve('empty')
-  return copyText(text).then((ok) => (ok ? 'ok' : 'err'))
+const text = String(value == null ? '' : value)
+if (!text) return Promise.resolve('empty')
+return copyText(text).then((ok) => (ok ? 'ok' : 'err'))
 }
-
-/* ------------------------------------------------- path right-click menu */
-
-/**
- * Right-click a path (code modal head / code tab head / html tab head / image
- * name / search hit / tree row / tab) → copy the path or the file name.
- *
- * The standalone reader only covered the four path labels; the tree row and the
- * tab strip are included here because they are the same affordance shape and a
- * file tree is the first place a path gets copied from.
- */
 const PATH_MENU_SELECTOR = [
-  '.mdr-code-path',
-  '.mdr-cmodal-path',
-  '.mdr-html-path',
-  '.mdr-image-name',
-  '.mdr-search-path',
-  '.mdr-tr',
-  '.mdr-tab',
+'.mdr-code-path',
+'.mdr-cmodal-path',
+'.mdr-html-path',
+'.mdr-image-name',
+'.mdr-search-path',
+'.mdr-tr',
+'.mdr-tab',
 ].join(',')
-
 let pathMenu = null
-
 function pathMenuClose() {
-  if (pathMenu && pathMenu.parentNode) pathMenu.parentNode.removeChild(pathMenu)
-  pathMenu = null
-  document.removeEventListener('mousedown', pathMenuOnDocMouseDown, true)
-  document.removeEventListener('keydown', pathMenuOnKey, true)
+if (pathMenu && pathMenu.parentNode) pathMenu.parentNode.removeChild(pathMenu)
+pathMenu = null
+document.removeEventListener('mousedown', pathMenuOnDocMouseDown, true)
+document.removeEventListener('keydown', pathMenuOnKey, true)
 }
-
 function pathMenuOnDocMouseDown(event) {
-  if (pathMenu) {
-    // A click inside the menu must not close it. In a shadow root the event
-    // target at the document level is the shadow HOST, not the menu, so the
-    // composed path is what tells us where the click really happened.
-    const path = typeof event.composedPath === 'function' ? event.composedPath() : null
-    if (path && path.indexOf(pathMenu) >= 0) return
-    if (pathMenu.contains(event.target)) return
-  }
-  pathMenuClose()
+if (pathMenu) {
+const path = typeof event.composedPath === 'function' ? event.composedPath() : null
+if (path && path.indexOf(pathMenu) >= 0) return
+if (pathMenu.contains(event.target)) return
 }
-
+pathMenuClose()
+}
 function pathMenuOnKey(event) {
-  if (event.key !== 'Escape') return
-  event.preventDefault()
-  pathMenuClose()
+if (event.key !== 'Escape') return
+event.preventDefault()
+pathMenuClose()
 }
-
 function pathMenuOpen(x, y, items) {
-  pathMenuClose()
-  const menu = document.createElement('div')
-  menu.className = 'mdr-ctx'
-  menu.setAttribute('role', 'menu')
-  for (const item of items) {
-    const button = document.createElement('button')
-    button.type = 'button'
-    button.className = 'mdr-ctx-item'
-    button.textContent = item.label
-    button.title = item.title || item.label
-    button.addEventListener('click', async (event) => {
-      event.stopPropagation()
-      const result = await item.action()
-      // The confirmation stays inside the menu item: no floating toast over
-      // the Harness window.
-      if (result === 'ok') {
-        button.textContent = `${item.label} ✓`
-        button.classList.add('mdr-ctx-ok')
-        button.disabled = true
-        setTimeout(pathMenuClose, 900)
-      } else if (result === 'err') {
-        button.textContent = '复制失败，请手动复制'
-        button.classList.add('mdr-ctx-err')
-        button.disabled = true
-        setTimeout(pathMenuClose, 1800)
-      } else {
-        pathMenuClose()
-      }
-    })
-    menu.appendChild(button)
-  }
-  // Mount the menu INSIDE the panel: appended to document.body it would land
-  // outside the panel's DOM scope, lose the panel's stylesheet and show up as
-  // an unstyled line at the bottom of the Harness window.
-  const host = overlayHost()
-  if (host) host.appendChild(menu)
-  else document.body.appendChild(menu)
-  const rect = menu.getBoundingClientRect()
-  menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 8))}px`
-  menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 8))}px`
-  pathMenu = menu
-  // Defer so the very right-click that opened the menu cannot close it.
-  setTimeout(() => {
-    document.addEventListener('mousedown', pathMenuOnDocMouseDown, true)
-    document.addEventListener('keydown', pathMenuOnKey, true)
-  }, 0)
+pathMenuClose()
+const menu = document.createElement('div')
+menu.className = 'mdr-ctx'
+menu.setAttribute('role', 'menu')
+for (const item of items) {
+const button = document.createElement('button')
+button.type = 'button'
+button.className = 'mdr-ctx-item'
+button.textContent = item.label
+button.title = item.title || item.label
+button.addEventListener('click', async (event) => {
+event.stopPropagation()
+const result = await item.action()
+if (result === 'ok') {
+button.textContent = `${item.label} ✓`
+button.classList.add('mdr-ctx-ok')
+button.disabled = true
+setTimeout(pathMenuClose, 900)
+} else if (result === 'err') {
+button.textContent = '复制失败，请手动复制'
+button.classList.add('mdr-ctx-err')
+button.disabled = true
+setTimeout(pathMenuClose, 1800)
+} else {
+pathMenuClose()
 }
-
-/** Path shown by an element: explicit attribute → title → text. */
+})
+menu.appendChild(button)
+}
+const host = overlayHost()
+if (host) host.appendChild(menu)
+else document.body.appendChild(menu)
+const rect = menu.getBoundingClientRect()
+menu.style.left = `${Math.max(4, Math.min(x, window.innerWidth - rect.width - 8))}px`
+menu.style.top = `${Math.max(4, Math.min(y, window.innerHeight - rect.height - 8))}px`
+pathMenu = menu
+setTimeout(() => {
+document.addEventListener('mousedown', pathMenuOnDocMouseDown, true)
+document.addEventListener('keydown', pathMenuOnKey, true)
+}, 0)
+}
 function pathOfElement(element) {
-  if (!element) return ''
-  const explicit = element.getAttribute('data-mdr-path') || element.getAttribute('data-path')
-  if (explicit) return explicit
-  const title = (element.getAttribute('title') || '').trim()
-  if (title) return title.split('\n')[0].replace(/:\d+$/, '')
-  return (element.textContent || '').trim()
+if (!element) return ''
+const explicit = element.getAttribute('data-mdr-path') || element.getAttribute('data-path')
+if (explicit) return explicit
+const title = (element.getAttribute('title') || '').trim()
+if (title) return title.split('\n')[0].replace(/:\d+$/, '')
+return (element.textContent || '').trim()
 }
-
 function pathMenuTarget(event) {
-  if (!event.target || !event.target.closest) return null
-  const hit = event.target.closest(PATH_MENU_SELECTOR)
-  if (!hit) return null
-  const path = pathOfElement(hit)
-  if (!path || /\s/.test(path)) return null
-  return path
+if (!event.target || !event.target.closest) return null
+const hit = event.target.closest(PATH_MENU_SELECTOR)
+if (!hit) return null
+const path = pathOfElement(hit)
+if (!path || /\s/.test(path)) return null
+return path
 }
-
-/**
- * Right-click a path → open the copy menu.
- *
- * The listener is attached BOTH to the document and to the panel root: when the
- * Harness mounts the panel into its own DOM scope, the document-level listener
- * sees the retargeted host element instead of the path element, so the panel
- * listener is the one that works there. The same event object reaches both
- * listeners, so it is handled exactly once.
- */
 function onPathContextMenu(event) {
-  if (event.__mdrPathMenuHandled) return
-  event.__mdrPathMenuHandled = true
-  const path = pathMenuTarget(event)
-  if (!path) return
-  event.preventDefault()
-  const fileName = path.split(/[\\/]/).pop()
-  pathMenuOpen(event.clientX, event.clientY, [
-    { label: '复制路径', title: path, action: () => copyWithFeedback(path) },
-    { label: '复制文件名', title: fileName, action: () => copyWithFeedback(fileName) },
-  ])
+if (event.__mdrPathMenuHandled) return
+event.__mdrPathMenuHandled = true
+const path = pathMenuTarget(event)
+if (!path) return
+event.preventDefault()
+const fileName = path.split(/[\\/]/).pop()
+pathMenuOpen(event.clientX, event.clientY, [
+{ label: '复制路径', title: path, action: () => copyWithFeedback(path) },
+{ label: '复制文件名', title: fileName, action: () => copyWithFeedback(fileName) },
+])
 }
-
 if (typeof document !== 'undefined' && document && typeof document.addEventListener === 'function') {
-  document.addEventListener('contextmenu', onPathContextMenu)
+document.addEventListener('contextmenu', onPathContextMenu)
 }
-
-/**
- * Find every node IN THE PANEL whose text is a copy confirmation.
- *
- * This is a DIAGNOSTIC, not a feature. It must stay CHEAP: an earlier version
- * walked the WHOLE document body every 8 seconds - with a large conversation
- * in the window that walk took seconds and pegged a CPU core, so the whole
- * machine (even the mouse) stuttered. Now it only walks the plugin's own panel
- * and stops after a bounded number of nodes.
- */
 const FIND_COPY_MAX_NODES = 3000
 function findCopyConfirmationNodes() {
-  const hits = []
-  const panel = panelRoot()
-  if (!panel) return hits
-  let walker = null
-  try {
-    walker = document.createTreeWalker(panel, 4 /* NodeFilter.SHOW_TEXT */)
-  } catch {
-    return hits
-  }
-  let visited = 0
-  let node = walker.nextNode()
-  while (node && visited < FIND_COPY_MAX_NODES) {
-    visited += 1
-    const text = String(node.textContent || '').trim()
-    // Short texts only: a sentence in the conversation view ("…已复制路径…")
-    // is not the stray overlay this diagnostic is looking for.
-    if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
-      const element = node.parentElement
-      if (element) {
-        let rect = { top: 0, left: 0, width: 0, height: 0 }
-        try {
-          rect = element.getBoundingClientRect()
-        } catch {
-          /* ignore */
-        }
-        hits.push({
-          text,
-          tag: element.tagName,
-          cls: String(element.className || '').slice(0, 90),
-          id: element.id || '',
-          top: Math.round(rect.top),
-          left: Math.round(rect.left),
-          inPanel: true,
-        })
-        if (hits.length >= 8) return hits
-      }
-    }
-    node = walker.nextNode()
-  }
-  return hits
+const hits = []
+const panel = panelRoot()
+if (!panel) return hits
+let walker = null
+try {
+walker = document.createTreeWalker(panel, 4 /* NodeFilter.SHOW_TEXT */)
+} catch {
+return hits
 }
-
-/**
- * Report what the DOM around the panel looks like.
- *
- * "Why does this overlay end up at the bottom of the Harness window?" is a
- * question about the DOM scope, so the client answers it instead of guessing:
- * whether the panel root is reachable from the document, which scope it lives
- * in, and which nodes carry a copy confirmation.
- */
+let visited = 0
+let node = walker.nextNode()
+while (node && visited < FIND_COPY_MAX_NODES) {
+visited += 1
+const text = String(node.textContent || '').trim()
+if (text && text.length <= 12 && /^(已复制|复制路径|复制文件名)/.test(text)) {
+const element = node.parentElement
+if (element) {
+let rect = { top: 0, left: 0, width: 0, height: 0 }
+try {
+rect = element.getBoundingClientRect()
+} catch {
+}
+hits.push({
+text,
+tag: element.tagName,
+cls: String(element.className || '').slice(0, 90),
+id: element.id || '',
+top: Math.round(rect.top),
+left: Math.round(rect.left),
+inPanel: true,
+})
+if (hits.length >= 8) return hits
+}
+}
+node = walker.nextNode()
+}
+return hits
+}
 function reportClientDom() {
-  try {
-    const root = panelRoot()
-    const scope = root && typeof root.getRootNode === 'function' ? root.getRootNode() : null
-    const shadow = !!(scope && scope !== document && scope.host)
-    const reachable = !!(
-      typeof document !== 'undefined' &&
-      document &&
-      typeof document.querySelector === 'function' &&
-      document.querySelector('.mdr-root')
-    )
-    postJson('/api/client-ping', {
-      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
-      dom: {
-        shadow,
-        reachable,
-        inPanel: !!root,
-        host: overlayHost() === root,
-        view: typeof location !== 'undefined' ? String(location.href).slice(0, 120) : '',
-        copyTexts: findCopyConfirmationNodes(),
-      },
-    }).catch(() => {})
-  } catch {
-    /* ignore */
-  }
+try {
+const root = panelRoot()
+const scope = root && typeof root.getRootNode === 'function' ? root.getRootNode() : null
+const shadow = !!(scope && scope !== document && scope.host)
+const reachable = !!(
+typeof document !== 'undefined' &&
+document &&
+typeof document.querySelector === 'function' &&
+document.querySelector('.mdr-root')
+)
+postJson('/api/client-ping', {
+build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+dom: {
+shadow,
+reachable,
+inPanel: !!root,
+host: overlayHost() === root,
+view: typeof location !== 'undefined' ? String(location.href).slice(0, 120) : '',
+copyTexts: findCopyConfirmationNodes(),
+},
+}).catch(() => {})
+} catch {
 }
-
-/**
- * Keep the DOM report fresh.
- *
- * The interval is deliberately SLOW (30 s) and the DOM scan only runs while
- * the plugin panel is mounted: an 8 s interval that walked the whole document
- * pegged a CPU core and made the whole machine stutter ("鼠标都会一卡一卡").
- */
+}
 const DOM_REPORT_INTERVAL_MS = 30000
 let domReportTimer = null
 function startDomReport() {
-  if (domReportTimer) return
-  try {
-    domReportTimer = setInterval(() => {
-      cleanupStaleOverlays()
-      // An older module instance may still be alive in this window; it must
-      // take the page down so only the current bundle survives.
-      if (typeof checkClientBuild === 'function') checkClientBuild()
-      // The scan is only useful while the panel exists.
-      if (panelRoot()) reportClientDom()
-    }, DOM_REPORT_INTERVAL_MS)
-    // A harness (Node) must not be held open by this timer.
-    if (domReportTimer && typeof domReportTimer.unref === 'function') domReportTimer.unref()
-  } catch {
-    /* ignore */
-  }
+if (domReportTimer) return
+try {
+domReportTimer = setInterval(() => {
+cleanupStaleOverlays()
+if (typeof checkClientBuild === 'function') checkClientBuild()
+if (panelRoot()) reportClientDom()
+}, DOM_REPORT_INTERVAL_MS)
+if (domReportTimer && typeof domReportTimer.unref === 'function') domReportTimer.unref()
+} catch {
 }
-
-/* ------------------------------------------------------------------ vendor */
-
+}
 let vendorPromise = null
-
 function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script')
-    script.src = src
-    script.async = false
-    script.onload = () => resolve()
-    script.onerror = () => reject(new Error(`加载失败: ${src}`))
-    document.head.appendChild(script)
-  })
+return new Promise((resolve, reject) => {
+const script = document.createElement('script')
+script.src = src
+script.async = false
+script.onload = () => resolve()
+script.onerror = () => reject(new Error(`加载失败: ${src}`))
+document.head.appendChild(script)
+})
 }
-
 function ensureVendor() {
-  if (vendorPromise) return vendorPromise
-  vendorPromise = (async () => {
-    if (!window.marked) await loadScript(`${ROUTE}/vendor/marked.min.js`)
-    if (!window.hljs) await loadScript(`${ROUTE}/vendor/highlight.min.js`)
-    if (!window.marked || !window.hljs) throw new Error('本地渲染库加载失败')
-    return { marked: window.marked, hljs: window.hljs }
-  })()
-  return vendorPromise
+if (vendorPromise) return vendorPromise
+vendorPromise = (async () => {
+if (!window.marked) await loadScript(`${ROUTE}/vendor/marked.min.js`)
+if (!window.hljs) await loadScript(`${ROUTE}/vendor/highlight.min.js`)
+if (!window.marked || !window.hljs) throw new Error('本地渲染库加载失败')
+return { marked: window.marked, hljs: window.hljs }
+})()
+return vendorPromise
 }
-
-/* ----------------------------------------------------------------- storage */
-
 const treeStorage = {  load() {
-    try {
-      const value = JSON.parse(localStorage.getItem(TREE_KEY) || '[]')
-      return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
-    } catch {
-      return []
-    }
-  },
-  save(paths) {
-    try {
-      localStorage.setItem(TREE_KEY, JSON.stringify([...paths]))
-    } catch {
-      // private mode / quota: expansion stays in memory only
-    }
-  },
+try {
+const value = JSON.parse(localStorage.getItem(TREE_KEY) || '[]')
+return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : []
+} catch {
+return []
 }
-
+},
+save(paths) {
+try {
+localStorage.setItem(TREE_KEY, JSON.stringify([...paths]))
+} catch {
+}
+},
+}
 const TABS_KEY = 'mdreader.plugin.tabs.v1'
 const SCROLL_KEY = 'mdreader.plugin.scroll.v1'
-
 const tabsStorage = {
-  load() {
-    try {
-      const value = JSON.parse(localStorage.getItem(TABS_KEY) || 'null')
-      if (!value || !Array.isArray(value.tabs)) return null
-      const tabs = value.tabs
-        .filter((tab) => tab && typeof tab.path === 'string' && (tab.kind === 'md' || tab.kind === 'code'))
-        .map((tab) => ({ id: `${tab.kind}:${tab.path}`, kind: tab.kind, path: tab.path, line: Number(tab.line) || 0 }))
-      if (!tabs.length) return null
-      const activeId = tabs.some((tab) => tab.id === value.activeId) ? value.activeId : tabs[tabs.length - 1].id
-      return { tabs, activeId }
-    } catch {
-      return null
-    }
-  },
-  save(tabs, activeId) {
-    try {
-      localStorage.setItem(
-        TABS_KEY,
-        JSON.stringify({ tabs: tabs.map((tab) => ({ kind: tab.kind, path: tab.path, line: tab.line || 0 })), activeId }),
-      )
-    } catch {
-      // ignore storage failures
-    }
-  },
+load() {
+try {
+const value = JSON.parse(localStorage.getItem(TABS_KEY) || 'null')
+if (!value || !Array.isArray(value.tabs)) return null
+const tabs = value.tabs
+.filter((tab) => tab && typeof tab.path === 'string' && (tab.kind === 'md' || tab.kind === 'code'))
+.map((tab) => ({ id: `${tab.kind}:${tab.path}`, kind: tab.kind, path: tab.path, line: Number(tab.line) || 0 }))
+if (!tabs.length) return null
+const activeId = tabs.some((tab) => tab.id === value.activeId) ? value.activeId : tabs[tabs.length - 1].id
+return { tabs, activeId }
+} catch {
+return null
 }
-
-/* ------------------------------------------------ workbench (项目 → 任务) keys */
-
-/**
- * The standalone reader's two layers need two independent stores per project:
- *
- *   任务集/标签页  curProject ? mdreader.plugin.tasks.<project>.v1
- *                              : mdreader.plugin.tasks.v1   (全部项目 / legacy)
- *   目录树展开态   mdreader.plugin.tree.<project|all>.v1
- *
- * Migration sources: the earlier plugin stored one flat tab set under
- * mdreader.plugin.tabs.v1 (see tabsStorage above); the standalone tool used
- * mdreader.tasks.v1 / mdreader.tree.v1. The tree legacy key is read once as the
- * default for the 全部 view, then re-saved under the new key.
- */
+},
+save(tabs, activeId) {
+try {
+localStorage.setItem(
+TABS_KEY,
+JSON.stringify({ tabs: tabs.map((tab) => ({ kind: tab.kind, path: tab.path, line: tab.line || 0 })), activeId }),
+)
+} catch {
+}
+},
+}
 const LEGACY_TREE_KEY = TREE_KEY
 const PROJECT_KEY = 'mdreader.plugin.project.v1'
-
 function taskStoreKey(project) {
-  return project ? `mdreader.plugin.tasks.${project}.v1` : 'mdreader.plugin.tasks.v1'
+return project ? `mdreader.plugin.tasks.${project}.v1` : 'mdreader.plugin.tasks.v1'
 }
-
 function treeStoreKey(project) {
-  return `mdreader.plugin.tree.${project || 'all'}.v1`
+return `mdreader.plugin.tree.${project || 'all'}.v1`
 }
-
 function readStoredJson(key, fallback) {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) || 'null')
-    return value == null ? fallback : value
-  } catch {
-    return fallback
-  }
+try {
+const value = JSON.parse(localStorage.getItem(key) || 'null')
+return value == null ? fallback : value
+} catch {
+return fallback
 }
-
+}
 function writeStoredJson(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // private mode / quota: the in-memory state still works for this page
-  }
+try {
+localStorage.setItem(key, JSON.stringify(value))
+} catch {
 }
-
-/** Persisted project selection (null = 全部). */
+}
 function loadProjectSelection() {
-  const value = readStoredJson(PROJECT_KEY, null)
-  return value && typeof value.name === 'string' && value.name ? value.name : null
+const value = readStoredJson(PROJECT_KEY, null)
+return value && typeof value.name === 'string' && value.name ? value.name : null
 }
-
 function saveProjectSelection(project) {
-  writeStoredJson(PROJECT_KEY, { name: project || '' })
+writeStoredJson(PROJECT_KEY, { name: project || '' })
 }
-
-/** Expansion paths for one project view; migrates the pre-project tree key. */
 function loadTreeExpansion(project) {
-  const stored = readStoredJson(treeStoreKey(project), null)
-  let paths = stored && Array.isArray(stored.paths) ? stored.paths.filter((item) => typeof item === 'string') : null
-  if (!paths && !project) {
-    const legacy = readStoredJson(LEGACY_TREE_KEY, null)
-    paths = Array.isArray(legacy) ? legacy.filter((item) => typeof item === 'string') : []
-  }
-  return paths || []
+const stored = readStoredJson(treeStoreKey(project), null)
+let paths = stored && Array.isArray(stored.paths) ? stored.paths.filter((item) => typeof item === 'string') : null
+if (!paths && !project) {
+const legacy = readStoredJson(LEGACY_TREE_KEY, null)
+paths = Array.isArray(legacy) ? legacy.filter((item) => typeof item === 'string') : []
 }
-
+return paths || []
+}
 function saveTreeExpansion(project, paths) {
-  writeStoredJson(treeStoreKey(project), { paths: [...paths] })
+writeStoredJson(treeStoreKey(project), { paths: [...paths] })
 }
-
-/**
- * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
- * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
- * is authoritative when storage is unavailable.
- *
- * The key carries the TASK id: the tab id is `<kind>:<path>` (the same document
- * opened in two tasks is two tab instances with the SAME id), so a path-only key
- * would make the two tasks share one reading position - and switching tasks
- * would restore the other task's position instead of this task's.
- */
 const scrollStorage = (() => {
-  const cache = { value: null, timer: 0 }
-  const read = () => {
-    if (cache.value) return cache.value
-    try {
-      const parsed = JSON.parse(localStorage.getItem(SCROLL_KEY) || '{}')
-      cache.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-    } catch {
-      cache.value = {}
-    }
-    return cache.value
-  }
-  const flush = () => {
-    cache.timer = 0
-    try {
-      localStorage.setItem(SCROLL_KEY, JSON.stringify(read()))
-    } catch {
-      // quota / private mode: in-memory copy still works for this page
-    }
-  }
-  return {
-    get(key) {
-      const value = Number(read()[key])
-      return Number.isFinite(value) && value > 0 ? value : 0
-    },
-    set(key, value) {
-      if (!key) return
-      read()[key] = Math.max(0, Math.round(Number(value) || 0))
-      if (!cache.timer) cache.timer = setTimeout(flush, 350)
-    },
-    /** Write the in-memory map right now (used when the page is about to unload). */
-    flushNow() {
-      if (cache.timer) {
-        clearTimeout(cache.timer)
-        cache.timer = 0
-      }
-      flush()
-    },
-  }
+const cache = { value: null, timer: 0 }
+const read = () => {
+if (cache.value) return cache.value
+try {
+const parsed = JSON.parse(localStorage.getItem(SCROLL_KEY) || '{}')
+cache.value = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+} catch {
+cache.value = {}
+}
+return cache.value
+}
+const flush = () => {
+cache.timer = 0
+try {
+localStorage.setItem(SCROLL_KEY, JSON.stringify(read()))
+} catch {
+}
+}
+return {
+get(key) {
+const value = Number(read()[key])
+return Number.isFinite(value) && value > 0 ? value : 0
+},
+set(key, value) {
+if (!key) return
+read()[key] = Math.max(0, Math.round(Number(value) || 0))
+if (!cache.timer) cache.timer = setTimeout(flush, 350)
+},
+flushNow() {
+if (cache.timer) {
+clearTimeout(cache.timer)
+cache.timer = 0
+}
+flush()
+},
+}
 })()
-
-/* ------------------------------------------------------------------- icons */
-
-/**
- * Reading-position key of a markdown tab.
- *
- * Keyed by TASK + path: the tab id (`<kind>:<path>`) is shared between tasks,
- * so a path-only key would let the tasks overwrite each other's position.
- */
 function mdScrollKey(taskId, path) {
-  return `${taskId || 'task'}:md:${path}`
+return `${taskId || 'task'}:md:${path}`
 }
-
-/** Reading-position key of a tab inside a task (the persisted per-tab scroll). */
 function tabScrollKey(taskId, tabId) {
-  return `${taskId || 'task'}:${tabId}`
+return `${taskId || 'task'}:${tabId}`
 }
-
 function svgIcon(paths, viewBox) {
-  return (props) => {
-    const size = (props && props.size) || 16
-    return h(
-      'svg',
-      {
-        width: size,
-        height: size,
-        viewBox: viewBox || '0 0 24 24',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.8,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-        'aria-hidden': true,
-        style: { display: 'block', flex: '0 0 auto' },
-      },
-      paths.map((d, index) => h('path', { key: index, d })),
-    )
-  }
+return (props) => {
+const size = (props && props.size) || 16
+return h(
+'svg',
+{
+width: size,
+height: size,
+viewBox: viewBox || '0 0 24 24',
+fill: 'none',
+stroke: 'currentColor',
+strokeWidth: 1.8,
+strokeLinecap: 'round',
+strokeLinejoin: 'round',
+'aria-hidden': true,
+style: { display: 'block', flex: '0 0 auto' },
+},
+paths.map((d, index) => h('path', { key: index, d })),
+)
 }
-
+}
 const Icons = {
-  doc: svgIcon(['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5']),
-  code: svgIcon(['M8 9l-3 3 3 3', 'M16 9l3 3-3 3', 'M13 5l-2 14']),
-  image: svgIcon(['M4 5h16v14H4z', 'M4 15l4-4 4 4 3-3 5 5', 'M9 9.5h.01']),
-  folder: svgIcon(['M4 6h5l2 2h9v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z']),
-  refresh: svgIcon(['M20 11a8 8 0 1 0-2.3 6.4', 'M20 4v7h-7']),
-  close: svgIcon(['M6 6l12 12', 'M18 6L6 18']),
-  layers: svgIcon(['M12 3l9 5-9 5-9-5z', 'M3 13l9 5 9-5']),
-  search: svgIcon(['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z', 'M20 20l-4-4']),
+doc: svgIcon(['M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z', 'M14 3v5h5']),
+code: svgIcon(['M8 9l-3 3 3 3', 'M16 9l3 3-3 3', 'M13 5l-2 14']),
+image: svgIcon(['M4 5h16v14H4z', 'M4 15l4-4 4 4 3-3 5 5', 'M9 9.5h.01']),
+folder: svgIcon(['M4 6h5l2 2h9v10a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z']),
+refresh: svgIcon(['M20 11a8 8 0 1 0-2.3 6.4', 'M20 4v7h-7']),
+close: svgIcon(['M6 6l12 12', 'M18 6L6 18']),
+layers: svgIcon(['M12 3l9 5-9 5-9-5z', 'M3 13l9 5 9-5']),
+search: svgIcon(['M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14z', 'M20 20l-4-4']),
 }
-
 function fileIcon(ext) {
-  if (MD_EXTS.has(ext)) return { kind: 'doc', color: '#4E9BD6' }
-  if (['.json', '.xml', '.yml', '.yaml', '.properties', '.toml'].includes(ext)) return { kind: 'code', color: '#C9A227' }
-  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext)) return { kind: 'image', color: '#8A6FD1' }
-  return { kind: 'code', color: '#57A773' }
+if (MD_EXTS.has(ext)) return { kind: 'doc', color: '#4E9BD6' }
+if (['.json', '.xml', '.yml', '.yaml', '.properties', '.toml'].includes(ext)) return { kind: 'code', color: '#C9A227' }
+if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext)) return { kind: 'image', color: '#8A6FD1' }
+return { kind: 'code', color: '#57A773' }
 }
-
-/* ------------------------------------------------------------------- style */
-
 const APP_CSS = `
 .mdr-root{position:relative;display:flex;flex-direction:column;height:100%;min-height:0;min-width:0;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
 .mdr-topbar{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);flex:0 0 auto;background:var(--dsw-alias-bg-layer-1)}
@@ -1097,8 +758,6 @@ const APP_CSS = `
 .mdr-tab.dragging{opacity:.45}
 .mdr-tab[draggable="true"]{cursor:grab}
 .mdr-tab[draggable="true"]:active{cursor:grabbing}
-/* The close button is a button, not a drag handle: it must not show the grab
-   cursor (the user asked for exactly that). */
 .mdr-tab .mdr-tab-close{cursor:pointer}
 .mdr-tab .mdr-tab-close:active{cursor:pointer}
 .mdr-tab.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
@@ -1111,8 +770,6 @@ const APP_CSS = `
 .mdr-err{position:absolute;left:16px;right:16px;top:8px;z-index:5;padding:7px 10px;border-radius:6px;background:var(--dsw-alias-bg-overlay);border:1px solid var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary);font-size:12px;box-shadow:0 4px 16px rgba(0,0,0,.18)}
 .mdr-tree-toolbar{display:flex;align-items:center;gap:6px;padding:4px 10px 6px;position:sticky;top:0;left:0;background:var(--dsw-alias-bg-layer-1);z-index:1}
 .mdr-tree-tip{font-size:11.5px;color:var(--dsw-alias-label-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 行宽跟内容 + 横向滚动（对齐原版）：每行至少铺满树宽，文件名不截断；
-   前导列（缩进箭头 / 图标）固定宽度，保证同级行的左侧严格对齐。 */
 .mdr-tr{display:flex;align-items:center;gap:4px;padding:2px 8px;cursor:pointer;white-space:nowrap;color:var(--dsw-alias-label-secondary);width:max-content;min-width:100%}
 .mdr-tr:hover{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
 .mdr-tr.on{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);box-shadow:inset 2px 0 0 var(--dsw-alias-brand-primary)}
@@ -1194,543 +851,433 @@ const APP_CSS = `
 .mdr-ctx-item:disabled{cursor:default}
 .mdr-ctx-ok{color:#7ee787}
 .mdr-ctx-err{color:#ff9a9a}
-/* 提示条锚在插件面板内（面板根是 position:relative），不再压到 Harness 窗口底部 */
 .mdr-toast{position:absolute;left:50%;bottom:18px;z-index:2147483000;transform:translateX(-50%) translateY(8px);padding:7px 14px;border:1px solid var(--dsw-alias-border-l1);border-radius:999px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-label-primary);font-size:12.5px;box-shadow:0 8px 26px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;max-width:70%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mdr-toast-fixed{position:fixed;bottom:38px}
 .mdr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .mdr-toast.err{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
 `
-
 // ---- 10-markdown.js ----
-/** Markdown rendering: marked -> DOM -> jumps (code/md/html/image/git links), hljs. */
-
 const REPO_BLOB_MARKERS = ['/-/blob/', '/blob/', '/-/raw/', '/raw/']
-
 function looksLikePath(text) {
-  if (!text || text.length > 260) return false
-  if (/^[a-z]+:\/\//i.test(text)) return false
-  if (/\s/.test(text)) return false
-  if (!/\.[a-z0-9]{1,10}$/i.test(text)) return false
-  return true
+if (!text || text.length > 260) return false
+if (/^[a-z]+:\/\//i.test(text)) return false
+if (/\s/.test(text)) return false
+if (!/\.[a-z0-9]{1,10}$/i.test(text)) return false
+return true
 }
-
 function findLineToken(anchor) {
-  let node = anchor.nextSibling
-  while (node && node.nodeType === 3 && !node.textContent.trim()) node = node.nextSibling
-  if (node && node.nodeType === 1 && node.tagName === 'CODE' && /^\d+$/.test(node.textContent.trim())) {
-    return { node, line: Number(node.textContent.trim()) }
-  }
-  return null
+let node = anchor.nextSibling
+while (node && node.nodeType === 3 && !node.textContent.trim()) node = node.nextSibling
+if (node && node.nodeType === 1 && node.tagName === 'CODE' && /^\d+$/.test(node.textContent.trim())) {
+return { node, line: Number(node.textContent.trim()) }
 }
-
+return null
+}
 function isRepoBlobUrl(href) {
-  if (!/^https?:\/\//i.test(href)) return false
-  return REPO_BLOB_MARKERS.some((marker) => href.includes(marker))
+if (!/^https?:\/\//i.test(href)) return false
+return REPO_BLOB_MARKERS.some((marker) => href.includes(marker))
 }
-
-/**
- * Tab kind for a resolved path. Ordered so `.html` is a rendered tab (not
- * source), images preview, markdown stays markdown, everything else code.
- */
 function linkKindFor(resolved) {
-  const ext = extOf(resolved)
-  if (ext === '.md' || ext === '.markdown') return 'md'
-  if (ext === '.html' || ext === '.htm') return 'html'
-  if (isImageFile(resolved)) return 'image'
-  if (isCodeFile(resolved)) return 'code'
-  return ''
+const ext = extOf(resolved)
+if (ext === '.md' || ext === '.markdown') return 'md'
+if (ext === '.html' || ext === '.htm') return 'html'
+if (isImageFile(resolved)) return 'image'
+if (isCodeFile(resolved)) return 'code'
+return ''
 }
-
 function appendLineBadge(anchor, line) {
-  if (line == null) return
-  anchor.dataset.line = String(line)
-  const badge = document.createElement('span')
-  badge.className = 'mdr-badge'
-  badge.textContent = String(line)
-  anchor.appendChild(badge)
+if (line == null) return
+anchor.dataset.line = String(line)
+const badge = document.createElement('span')
+badge.className = 'mdr-badge'
+badge.textContent = String(line)
+anchor.appendChild(badge)
 }
-
 function parseBranchCommit(query) {
-  const result = { branch: '', commit: '' }
-  if (!query) return result
-  let params
-  try {
-    params = new URLSearchParams(query)
-  } catch {
-    return result
-  }
-  const branch = params.get('branch') || params.get('ref') || ''
-  const commit = params.get('commit') || params.get('sha') || ''
-  if (branch && /^[A-Za-z0-9._/-]+$/.test(branch)) result.branch = branch
-  if (commit && /^[A-Za-z0-9._/-]+$/.test(commit)) result.commit = commit
-  return result
+const result = { branch: '', commit: '' }
+if (!query) return result
+let params
+try {
+params = new URLSearchParams(query)
+} catch {
+return result
 }
-
-/** Attach the data-* contract that 50-app.js routes on. */
+const branch = params.get('branch') || params.get('ref') || ''
+const commit = params.get('commit') || params.get('sha') || ''
+if (branch && /^[A-Za-z0-9._/-]+$/.test(branch)) result.branch = branch
+if (commit && /^[A-Za-z0-9._/-]+$/.test(commit)) result.commit = commit
+return result
+}
 function applyLocalLink(anchor, resolved, line, branch, commit) {
-  const kind = linkKindFor(resolved)
-  if (!kind) return
-  anchor.dataset.path = resolved
-  anchor.dataset.kind = kind
-  if (line != null) anchor.dataset.line = String(line)
-  if (branch) anchor.dataset.branch = branch
-  if (commit) anchor.dataset.commit = commit
-  const suffix = (line != null ? ` :${line}` : '') + (branch ? `（${branch} 版本）` : '')
-  if (kind === 'code') {
-    anchor.classList.add('mdr-jump')
-    anchor.removeAttribute('href')
-    anchor.title = `${resolved}${suffix}（点击弹窗；Ctrl/Cmd+点击开为标签页）`
-    appendLineBadge(anchor, line)
-  } else {
-    anchor.classList.add('mdr-local-link')
-    anchor.removeAttribute('href')
-    anchor.title = `${resolved}${suffix}`
-    if (kind === 'md') {
-      anchor.removeAttribute('target')
-      anchor.classList.add('mdr-md-link')
-    }
-  }
+const kind = linkKindFor(resolved)
+if (!kind) return
+anchor.dataset.path = resolved
+anchor.dataset.kind = kind
+if (line != null) anchor.dataset.line = String(line)
+if (branch) anchor.dataset.branch = branch
+if (commit) anchor.dataset.commit = commit
+const suffix = (line != null ? ` :${line}` : '') + (branch ? `（${branch} 版本）` : '')
+if (kind === 'code') {
+anchor.classList.add('mdr-jump')
+anchor.removeAttribute('href')
+anchor.title = `${resolved}${suffix}（点击弹窗；Ctrl/Cmd+点击开为标签页）`
+appendLineBadge(anchor, line)
+} else {
+anchor.classList.add('mdr-local-link')
+anchor.removeAttribute('href')
+anchor.title = `${resolved}${suffix}`
+if (kind === 'md') {
+anchor.removeAttribute('target')
+anchor.classList.add('mdr-md-link')
 }
-
+}
+}
 function enhanceMarkdown(container, mdPath, multi, rootNames) {
-  // The diff fence renders in the CLIENT, so "the block did not render" can
-  // only be answered by the client: how many fences it saw, how many became
-  // diff views, how long it took. The Host keeps the last report.
-  const renderStarted = performance.now()
-  let fenceCount = 0
-  let diffCount = 0
-  let renderError = ''
-  const report = () => {
-    if (typeof reportMdRender !== 'function') return
-    reportMdRender({
-      path: mdPath,
-      fences: fenceCount,
-      diffBlocks: diffCount,
-      ms: Math.round(performance.now() - renderStarted),
-      error: renderError,
-      cache: typeof fenceCacheReport === 'function' ? fenceCacheReport() : null,
-    })
-  }
-  // 1) local images -> raw endpoint
-  container.querySelectorAll('img[src]').forEach((img) => {
-    const raw = img.getAttribute('src') || ''
-    if (/^(https?:|data:)/i.test(raw)) return
-    const { path: href } = splitHref(raw)
-    let decoded = href
-    try {
-      decoded = decodeURIComponent(href)
-    } catch {
-      decoded = href
-    }
-    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
-    img.src = `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}`
-    img.loading = 'lazy'
-    img.alt = img.alt || ''
-  })
-
-  // 2) anchors: repository links are resolved in a batch below; everything else
-  //    is classified locally into md/code/html/image jumps.
-  const repoLinks = []
-  for (const anchor of [...container.querySelectorAll('a[href]')]) {
-    const raw = anchor.getAttribute('href') || ''
-    if (isRepoBlobUrl(raw)) {
-      // Keep the remote href: Shift+click / right-click stay native. Styled like
-      // the original tool's repository links while the local target is resolved.
-      anchor.classList.add('mdr-jump', 'mdr-repo-link')
-      anchor.target = '_blank'
-      anchor.rel = 'noopener noreferrer'
-      anchor.title = '在仓库中新标签页打开（正在解析本地文件…）'
-      repoLinks.push({ anchor, url: raw })
-      continue
-    }
-    if (/^(https?:|mailto:)/i.test(raw)) {
-      anchor.target = '_blank'
-      anchor.rel = 'noopener noreferrer'
-      continue
-    }
-    if (raw.startsWith('#')) continue
-    const { path: beforeHash, hash } = splitHref(raw)
-    const queryAt = beforeHash.indexOf('?')
-    const query = queryAt < 0 ? '' : beforeHash.slice(queryAt + 1)
-    const cleanHref = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt)
-    let decoded = cleanHref
-    try {
-      decoded = decodeURIComponent(cleanHref)
-    } catch {
-      decoded = cleanHref
-    }
-    const resolved = resolveRel(mdPath, decoded, multi, rootNames)
-    const extra = parseBranchCommit(query)
-    let line = null
-    const token = findLineToken(anchor)
-    if (token) {
-      line = token.line
-      token.node.classList.add('mdr-line-token')
-    }
-    if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
-    applyLocalLink(anchor, resolved, line, extra.branch, extra.commit)
-  }
-
-  // 2b) resolve remote repo-view links to local workspace files
-  if (repoLinks.length) {
-    const unique = [...new Set(repoLinks.map((item) => item.url))]
-    fetchJson('/api/git/resolve', { url: unique, path: mdPath })
-      .then((payload) => {
-        const map = (payload && payload.resolved) || {}
-        for (const item of repoLinks) {
-          const hit = map[item.url]
-          if (!hit || !hit.path) continue
-          const anchor = item.anchor
-          anchor.classList.add('mdr-jump')
-          anchor.classList.remove('mdr-repo-link')
-          anchor.dataset.path = hit.path
-          anchor.dataset.kind = linkKindFor(hit.path) || 'code'
-          if (hit.line) {
-            anchor.dataset.line = String(hit.line)
-            appendLineBadge(anchor, hit.line)
-          }
-          if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
-          // Keep href so Shift+click / right-click / copy-link still reach the
-          // repository page; plain click is routed in-app by 50-app.js.
-          anchor.title =
-            `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
-            (hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
-            '（Shift+点击 / 右键打开仓库原链接）'
-        }
-      })
-      .catch(() => {})
-  }
-
-  // 3) bare backtick paths become links when the file actually resolves
-  const candidates = []
-  for (const code of container.querySelectorAll('code')) {
-    if (code.closest('a') || code.closest('pre')) continue
-    const text = (code.textContent || '').trim()
-    if (!looksLikePath(text)) continue
-    candidates.push({ code, text })
-  }
-  if (candidates.length) {
-    const unique = [...new Set(candidates.map((item) => item.text))]
-    // `from` lets the Host prefer THIS document's project root when the same
-    // basename exists in several opened projects.
-    //
-    // The Host resolves the bare paths through a basename index over the whole
-    // workspace; that index is built in the background, so the first answer can
-    // be incomplete. The Host says so (`indexReady: false`) and the client asks
-    // again a moment later - the document is readable meanwhile.
-    const linkBarePaths = (payload) => {
-      const results = (payload && payload.results) || {}
-      for (const item of candidates) {
-        // A retry must not link the same code element twice.
-        if (item.code.firstElementChild) continue
-        const hit = results[item.text]
-        if (!hit || !hit.exists || !hit.abs) continue
-        const anchor = document.createElement('a')
-        anchor.className = 'mdr-jump'
-        anchor.dataset.path = hit.abs
-        anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
-        anchor.title = hit.abs
-        anchor.textContent = item.text
-        item.code.textContent = ''
-        item.code.appendChild(anchor)
-      }
-    }
-    const ask = (attempt) => {
-      fetchJson('/api/exists', { path: unique, from: mdPath })
-        .then((payload) => {
-          linkBarePaths(payload)
-          if (payload && payload.indexReady === false && attempt < 5) {
-            setTimeout(() => ask(attempt + 1), 900 + attempt * 300)
-          }
-        })
-        .catch(() => {})
-    }
-    ask(0)
-  }
-
-  // 4) fenced code blocks -> the SAME pipeline as the code view (hljs language
-  //    aliases + Java/Kotlin post passes), sliced so a doc with hundreds of
-  //    blocks does not block the main thread.
-  const fenceBlocks = []
-  for (const code of container.querySelectorAll('pre > code')) {
-    const match = /language-([\w+-]+)/.exec(code.className || '')
-    const lang = match ? match[1] : ''
-    if (lang === 'mermaid') {
-      code.dataset.mermaidSource = code.textContent || ''
-      code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
-      continue
-    }
-    fenceBlocks.push({ code, lang })
-  }
-  fenceCount = fenceBlocks.length
-  const diffFences = []
-  if (fenceBlocks.length) {
-    let index = 0
-    // Run the slices on IDLE time with a small budget.
-    // A document with ~90 fences (plus the diff fences, which highlight two
-    // sides each) otherwise monopolises the main thread in 60ms chunks: the
-    // page stopped responding exactly where a mermaid diagram rendered (its
-    // parse+layout is a long task of its own), which the user reported as
-    // "卡在 §10 时序与协作 那个 mermaid 图前后".
-    const schedule =
-      typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
-        ? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
-        : (fn) => window.setTimeout(fn, 16)
-    const step = () => {
-      const started = performance.now()
-      for (; index < fenceBlocks.length; index += 1) {
-        const { code, lang } = fenceBlocks[index]
-        const source = code.textContent || ''
-        if (typeof isDiffFenceLang === 'function' && isDiffFenceLang(lang)) {
-          // ```diff → the commit-diff view inside the document: the code part
-          // only, highlighted with the language of the file the diff belongs
-          // to, added rows green and deleted rows red + strike-through.
-          //
-          // The block is NOT rendered here: a diff block is the most expensive
-          // thing in a document (two hljs passes, one DOM row per line) and a
-          // review document has dozens of them - rendering them all up front
-          // froze the window for seconds on every open. The block is a
-          // PLACEHOLDER here and is rendered when it approaches the viewport
-          // (14-diffflazy.js); the rendered HTML is cached by content.
-          try {
-            if (typeof ensureFenceCss === 'function') ensureFenceCss()
-            const wrap =
-              typeof diffLazyPlaceholder === 'function' ? diffLazyPlaceholder(source) : document.createElement('div')
-            wrap.className = 'mdr-md-diff mdr-md-diff-pending'
-            const pre = code.parentElement
-            if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
-            else code.innerHTML = ''
-            diffFences.push({ el: wrap, source, kind: 'diff' })
-            diffCount += 1
-          } catch {
-            code.innerHTML = escapeHtml(source)
-            renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
-          }
-        } else {
-          // A BIG code block is rendered lazily as well: highlighting a few
-          // hundred lines of java/xml costs real time, and a review document
-          // has dozens of them.
-          const lines = source.split('\n').length
-          if (typeof LAZY_CODE_MIN_LINES === 'number' && lines > LAZY_CODE_MIN_LINES && typeof lazyFencePlaceholder === 'function') {
-            try {
-              const wrap = lazyFencePlaceholder(source, 'code')
-              wrap.dataset.lang = lang || ''
-              const pre = code.parentElement
-              if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
-              else code.innerHTML = ''
-              diffFences.push({ el: wrap, source, kind: 'code', lang: lang || '' })
-            } catch {
-              code.innerHTML = escapeHtml(source)
-            }
-          } else {
-            try {
-              code.innerHTML =
-                typeof cachedFenceHtml === 'function'
-                  ? cachedFenceHtml(`code:${lang}`, source, () =>
-                      typeof renderFenceCodeHtml === 'function'
-                        ? renderFenceCodeHtml(source, lang)
-                        : escapeHtml(source),
-                    )
-                  : typeof renderFenceCodeHtml === 'function'
-                    ? renderFenceCodeHtml(source, lang)
-                    : escapeHtml(source)
-              code.classList.add('hljs')
-            } catch {
-              code.innerHTML = escapeHtml(source)
-            }
-          }
-        }
-        if (performance.now() - started > 12) {
-          index += 1
-          break
-        }
-      }
-      if (index < fenceBlocks.length) schedule(step)
-      else {
-        // The diff placeholders are wired to the viewport here: they render
-        // when they come close to the visible area.
-        try {
-          if (typeof enhanceDiffFences === 'function') enhanceDiffFences(container, diffFences)
-        } catch {
-          /* the diff blocks are an enhancement; the raw text stays visible */
-        }
-        report()
-      }
-    }
-    schedule(step)
-  } else {
-    report()
-  }
-
-  // 5) mermaid fences are rendered lazily by the mermaid slice
-  try {
-    enhanceMermaid(container)
-  } catch {
-    // mermaid rendering must never break the document
-  }
+const renderStarted = performance.now()
+let fenceCount = 0
+let diffCount = 0
+let renderError = ''
+const report = () => {
+if (typeof reportMdRender !== 'function') return
+reportMdRender({
+path: mdPath,
+fences: fenceCount,
+diffBlocks: diffCount,
+ms: Math.round(performance.now() - renderStarted),
+error: renderError,
+cache: typeof fenceCacheReport === 'function' ? fenceCacheReport() : null,
+})
 }
-
-/**
- * Restore a saved markdown scroll offset, re-applying it while lazy content
- * (mermaid diagrams, images) grows the document. Stops the moment the user
- * scrolls/wheels/keys by themselves.
- */
+container.querySelectorAll('img[src]').forEach((img) => {
+const raw = img.getAttribute('src') || ''
+if (/^(https?:|data:)/i.test(raw)) return
+const { path: href } = splitHref(raw)
+let decoded = href
+try {
+decoded = decodeURIComponent(href)
+} catch {
+decoded = href
+}
+const resolved = resolveRel(mdPath, decoded, multi, rootNames)
+img.src = `${ROUTE}/api/raw?path=${encodeURIComponent(resolved)}`
+img.loading = 'lazy'
+img.alt = img.alt || ''
+})
+const repoLinks = []
+for (const anchor of [...container.querySelectorAll('a[href]')]) {
+const raw = anchor.getAttribute('href') || ''
+if (isRepoBlobUrl(raw)) {
+anchor.classList.add('mdr-jump', 'mdr-repo-link')
+anchor.target = '_blank'
+anchor.rel = 'noopener noreferrer'
+anchor.title = '在仓库中新标签页打开（正在解析本地文件…）'
+repoLinks.push({ anchor, url: raw })
+continue
+}
+if (/^(https?:|mailto:)/i.test(raw)) {
+anchor.target = '_blank'
+anchor.rel = 'noopener noreferrer'
+continue
+}
+if (raw.startsWith('#')) continue
+const { path: beforeHash, hash } = splitHref(raw)
+const queryAt = beforeHash.indexOf('?')
+const query = queryAt < 0 ? '' : beforeHash.slice(queryAt + 1)
+const cleanHref = queryAt < 0 ? beforeHash : beforeHash.slice(0, queryAt)
+let decoded = cleanHref
+try {
+decoded = decodeURIComponent(cleanHref)
+} catch {
+decoded = cleanHref
+}
+const resolved = resolveRel(mdPath, decoded, multi, rootNames)
+const extra = parseBranchCommit(query)
+let line = null
+const token = findLineToken(anchor)
+if (token) {
+line = token.line
+token.node.classList.add('mdr-line-token')
+}
+if (line == null && /^L\d+$/.test(hash)) line = Number(hash.slice(1))
+applyLocalLink(anchor, resolved, line, extra.branch, extra.commit)
+}
+if (repoLinks.length) {
+const unique = [...new Set(repoLinks.map((item) => item.url))]
+fetchJson('/api/git/resolve', { url: unique, path: mdPath })
+.then((payload) => {
+const map = (payload && payload.resolved) || {}
+for (const item of repoLinks) {
+const hit = map[item.url]
+if (!hit || !hit.path) continue
+const anchor = item.anchor
+anchor.classList.add('mdr-jump')
+anchor.classList.remove('mdr-repo-link')
+anchor.dataset.path = hit.path
+anchor.dataset.kind = linkKindFor(hit.path) || 'code'
+if (hit.line) {
+anchor.dataset.line = String(hit.line)
+appendLineBadge(anchor, hit.line)
+}
+if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
+anchor.title =
+`打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
+(hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
+'（Shift+点击 / 右键打开仓库原链接）'
+}
+})
+.catch(() => {})
+}
+const candidates = []
+for (const code of container.querySelectorAll('code')) {
+if (code.closest('a') || code.closest('pre')) continue
+const text = (code.textContent || '').trim()
+if (!looksLikePath(text)) continue
+candidates.push({ code, text })
+}
+if (candidates.length) {
+const unique = [...new Set(candidates.map((item) => item.text))]
+const linkBarePaths = (payload) => {
+const results = (payload && payload.results) || {}
+for (const item of candidates) {
+if (item.code.firstElementChild) continue
+const hit = results[item.text]
+if (!hit || !hit.exists || !hit.abs) continue
+const anchor = document.createElement('a')
+anchor.className = 'mdr-jump'
+anchor.dataset.path = hit.abs
+anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
+anchor.title = hit.abs
+anchor.textContent = item.text
+item.code.textContent = ''
+item.code.appendChild(anchor)
+}
+}
+const ask = (attempt) => {
+fetchJson('/api/exists', { path: unique, from: mdPath })
+.then((payload) => {
+linkBarePaths(payload)
+if (payload && payload.indexReady === false && attempt < 5) {
+setTimeout(() => ask(attempt + 1), 900 + attempt * 300)
+}
+})
+.catch(() => {})
+}
+ask(0)
+}
+const fenceBlocks = []
+for (const code of container.querySelectorAll('pre > code')) {
+const match = /language-([\w+-]+)/.exec(code.className || '')
+const lang = match ? match[1] : ''
+if (lang === 'mermaid') {
+code.dataset.mermaidSource = code.textContent || ''
+code.innerHTML = '<span class="mdr-mermaid-note">▦ mermaid 图 · 滚动到可见时渲染</span>'
+continue
+}
+fenceBlocks.push({ code, lang })
+}
+fenceCount = fenceBlocks.length
+const diffFences = []
+if (fenceBlocks.length) {
+let index = 0
+const schedule =
+typeof window !== 'undefined' && typeof window.requestIdleCallback === 'function'
+? (fn) => window.requestIdleCallback(fn, { timeout: 400 })
+: (fn) => window.setTimeout(fn, 16)
+const step = () => {
+const started = performance.now()
+for (; index < fenceBlocks.length; index += 1) {
+const { code, lang } = fenceBlocks[index]
+const source = code.textContent || ''
+if (typeof isDiffFenceLang === 'function' && isDiffFenceLang(lang)) {
+try {
+if (typeof ensureFenceCss === 'function') ensureFenceCss()
+const wrap =
+typeof diffLazyPlaceholder === 'function' ? diffLazyPlaceholder(source) : document.createElement('div')
+wrap.className = 'mdr-md-diff mdr-md-diff-pending'
+const pre = code.parentElement
+if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
+else code.innerHTML = ''
+diffFences.push({ el: wrap, source, kind: 'diff' })
+diffCount += 1
+} catch {
+code.innerHTML = escapeHtml(source)
+renderError = 'diff fence failed: ' + String(source && source.slice(0, 40))
+}
+} else {
+const lines = source.split('\n').length
+if (typeof LAZY_CODE_MIN_LINES === 'number' && lines > LAZY_CODE_MIN_LINES && typeof lazyFencePlaceholder === 'function') {
+try {
+const wrap = lazyFencePlaceholder(source, 'code')
+wrap.dataset.lang = lang || ''
+const pre = code.parentElement
+if (pre && pre.parentNode) pre.parentNode.replaceChild(wrap, pre)
+else code.innerHTML = ''
+diffFences.push({ el: wrap, source, kind: 'code', lang: lang || '' })
+} catch {
+code.innerHTML = escapeHtml(source)
+}
+} else {
+try {
+code.innerHTML =
+typeof cachedFenceHtml === 'function'
+? cachedFenceHtml(`code:${lang}`, source, () =>
+typeof renderFenceCodeHtml === 'function'
+? renderFenceCodeHtml(source, lang)
+: escapeHtml(source),
+)
+: typeof renderFenceCodeHtml === 'function'
+? renderFenceCodeHtml(source, lang)
+: escapeHtml(source)
+code.classList.add('hljs')
+} catch {
+code.innerHTML = escapeHtml(source)
+}
+}
+}
+if (performance.now() - started > 12) {
+index += 1
+break
+}
+}
+if (index < fenceBlocks.length) schedule(step)
+else {
+try {
+if (typeof enhanceDiffFences === 'function') enhanceDiffFences(container, diffFences)
+} catch {
+}
+report()
+}
+}
+schedule(step)
+} else {
+report()
+}
+try {
+enhanceMermaid(container)
+} catch {
+}
+}
 function restoreMarkdownScroll(scroller, target) {
-  if (!scroller || !target) return () => {}
-  let cancelled = false
-  let userMoved = false
-  const markUser = () => {
-    userMoved = true
-  }
-  const apply = () => {
-    if (cancelled || userMoved) return
-    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
-    scroller.scrollTop = Math.min(target, max)
-  }
-  scroller.addEventListener('wheel', markUser, { passive: true })
-  scroller.addEventListener('touchstart', markUser, { passive: true })
-  scroller.addEventListener('keydown', markUser)
-  apply()
-  const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
-  return () => {
-    cancelled = true
-    timers.forEach((timer) => clearTimeout(timer))
-    scroller.removeEventListener('wheel', markUser)
-    scroller.removeEventListener('touchstart', markUser)
-    scroller.removeEventListener('keydown', markUser)
-  }
+if (!scroller || !target) return () => {}
+let cancelled = false
+let userMoved = false
+const markUser = () => {
+userMoved = true
 }
-
+const apply = () => {
+if (cancelled || userMoved) return
+const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+scroller.scrollTop = Math.min(target, max)
+}
+scroller.addEventListener('wheel', markUser, { passive: true })
+scroller.addEventListener('touchstart', markUser, { passive: true })
+scroller.addEventListener('keydown', markUser)
+apply()
+const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
+return () => {
+cancelled = true
+timers.forEach((timer) => clearTimeout(timer))
+scroller.removeEventListener('wheel', markUser)
+scroller.removeEventListener('touchstart', markUser)
+scroller.removeEventListener('keydown', markUser)
+}
+}
 function MarkdownView(props) {
-  const { tab, multi, rootNames, taskId } = props
-  const boxRef = React.useRef(null)
-  const [error, setError] = React.useState('')
-  // The reading position belongs to the TASK, not to the path: the tab id is
-  // `<kind>:<path>` and the same document can be open in two tasks.
-  const scrollKey = mdScrollKey(taskId, tab.path)
-
-  // In-file search (Ctrl+F): the widget drives this controller. The markdown
-  // is searched by RENDERED TEXT - the matches are wrapped in <mark> and the
-  // current one is scrolled into view.
-  const fsRef = React.useRef({ marks: [], index: -1 })
-  React.useEffect(() => {
-    const controller = {
-      kind: 'md',
-      search(query, options) {
-        const marks = mdSearchFind(boxRef.current, query, options)
-        fsRef.current = { marks, index: marks.length ? 0 : -1 }
-        if (marks.length) {
-          marks[0].classList.add('mdr-fs-cur')
-          scrollFileSearchMark(marks[0])
-        }
-        return { count: marks.length, index: fsRef.current.index }
-      },
-      goto(delta) {
-        const state = fsRef.current
-        const total = state.marks.length
-        if (!total) return { count: 0, index: -1 }
-        let next = state.index + delta
-        if (next < 0) next = total - 1
-        if (next >= total) next = 0
-        for (const mark of state.marks) mark.classList.remove('mdr-fs-cur')
-        const mark = state.marks[next]
-        mark.classList.add('mdr-fs-cur')
-        state.index = next
-        scrollFileSearchMark(mark)
-        return { count: total, index: next }
-      },
-      clear() {
-        mdSearchClear(boxRef.current)
-        fsRef.current = { marks: [], index: -1 }
-      },
-    }
-    registerFileSearchController(tab.id, controller)
-    return () => unregisterFileSearchController(tab.id)
-  }, [tab.id])
-
-  // Persist while visible. No save on cleanup: by then the tab may already be
-  // replaced/switched (scrollTop clamped to 0) and would overwrite the good
-  // value. App saves explicitly before switching and on beforeunload.
-  React.useEffect(() => {
-    const box = boxRef.current
-    const scroller = box ? box.closest('.mdr-content') : null
-    if (!scroller) return undefined
-    const save = () => scrollStorage.set(scrollKey, scroller.scrollTop)
-    scroller.addEventListener('scroll', save, { passive: true })
-    return () => scroller.removeEventListener('scroll', save)
-  }, [scrollKey])
-
-  React.useEffect(() => {
-    let cancelled = false
-    let disposeRestore = () => {}
-    ensureVendor()
-      .then(() => {
-        if (cancelled || !boxRef.current) return
-        try {
-          const html = window.marked.parse(String(tab.content == null ? '' : tab.content), {
-            gfm: true,
-            breaks: false,
-            mangle: false,
-            headerIds: false,
-          })
-          boxRef.current.innerHTML = html
-          enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
-          setError('')
-          const scroller = boxRef.current.closest('.mdr-content')
-          const target = scrollStorage.get(scrollKey)
-          if (target > 0) disposeRestore = restoreMarkdownScroll(scroller, target)
-          else if (scroller) scroller.scrollTop = 0
-        } catch (err) {
-          setError(String((err && err.message) || err))
-        }
-      })
-      .catch((err) => setError(String((err && err.message) || err)))
-    return () => {
-      cancelled = true
-      disposeRestore()
-      // The lazy diff observers of this view must not outlive it.
-      try {
-        if (boxRef.current && typeof stopDiffFences === 'function') stopDiffFences(boxRef.current)
-      } catch {
-        /* ignore */
-      }
-    }
-  }, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
-
-  return h(
-    'div',
-    { className: 'mdr-md-wrap' },
-    error ? h('div', { className: 'mdr-err' }, error) : null,
-    h('div', { className: 'mdr-md', ref: boxRef }),
-  )
+const { tab, multi, rootNames, taskId } = props
+const boxRef = React.useRef(null)
+const [error, setError] = React.useState('')
+const scrollKey = mdScrollKey(taskId, tab.path)
+const fsRef = React.useRef({ marks: [], index: -1 })
+React.useEffect(() => {
+const controller = {
+kind: 'md',
+search(query, options) {
+const marks = mdSearchFind(boxRef.current, query, options)
+fsRef.current = { marks, index: marks.length ? 0 : -1 }
+if (marks.length) {
+marks[0].classList.add('mdr-fs-cur')
+scrollFileSearchMark(marks[0])
 }
-
+return { count: marks.length, index: fsRef.current.index }
+},
+goto(delta) {
+const state = fsRef.current
+const total = state.marks.length
+if (!total) return { count: 0, index: -1 }
+let next = state.index + delta
+if (next < 0) next = total - 1
+if (next >= total) next = 0
+for (const mark of state.marks) mark.classList.remove('mdr-fs-cur')
+const mark = state.marks[next]
+mark.classList.add('mdr-fs-cur')
+state.index = next
+scrollFileSearchMark(mark)
+return { count: total, index: next }
+},
+clear() {
+mdSearchClear(boxRef.current)
+fsRef.current = { marks: [], index: -1 }
+},
+}
+registerFileSearchController(tab.id, controller)
+return () => unregisterFileSearchController(tab.id)
+}, [tab.id])
+React.useEffect(() => {
+const box = boxRef.current
+const scroller = box ? box.closest('.mdr-content') : null
+if (!scroller) return undefined
+const save = () => scrollStorage.set(scrollKey, scroller.scrollTop)
+scroller.addEventListener('scroll', save, { passive: true })
+return () => scroller.removeEventListener('scroll', save)
+}, [scrollKey])
+React.useEffect(() => {
+let cancelled = false
+let disposeRestore = () => {}
+ensureVendor()
+.then(() => {
+if (cancelled || !boxRef.current) return
+try {
+const html = window.marked.parse(String(tab.content == null ? '' : tab.content), {
+gfm: true,
+breaks: false,
+mangle: false,
+headerIds: false,
+})
+boxRef.current.innerHTML = html
+enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
+setError('')
+const scroller = boxRef.current.closest('.mdr-content')
+const target = scrollStorage.get(scrollKey)
+if (target > 0) disposeRestore = restoreMarkdownScroll(scroller, target)
+else if (scroller) scroller.scrollTop = 0
+} catch (err) {
+setError(String((err && err.message) || err))
+}
+})
+.catch((err) => setError(String((err && err.message) || err)))
+return () => {
+cancelled = true
+disposeRestore()
+try {
+if (boxRef.current && typeof stopDiffFences === 'function') stopDiffFences(boxRef.current)
+} catch {
+}
+}
+}, [tab.id, tab.content, tab.path, multi, rootNames, scrollKey])
+return h(
+'div',
+{ className: 'mdr-md-wrap' },
+error ? h('div', { className: 'mdr-err' }, error) : null,
+h('div', { className: 'mdr-md', ref: boxRef }),
+)
+}
 // ---- 12-mermaid.js ----
-/** Mermaid rendering for fenced ```mermaid blocks: lazy, sequential, cached.
- *
- * Why so much machinery for a diagram: the vendored mermaid bundle is 3.3MB and a
- * single flowchart render runs the dagre layout plus DOM measurement on the main
- * thread. Rendering every diagram of a document at once is what made the original
- * tool lag ("whole machine lags"), so here:
- *   - the library is fetched only when a diagram actually scrolls into view;
- *   - at most ONE diagram renders at a time (a queue drains serially);
- *   - rendered results are cached as base64 data URLs keyed by hash(source)+theme,
- *     so a re-mounted tab gets its diagrams back instantly without re-rendering.
- *
- * The SVG is inserted as <img src="data:image/svg+xml;base64,...">, never inline.
- * An inline mermaid SVG carries a <style> block scoped to every node of every
- * diagram; 50+ of them leak thousands of global CSS rules into the page (the
- * original performance bug). SVG inside an <img> is an isolated document: no CSS
- * leak and no hundreds of SVG nodes in the main DOM.
- */
-
 const MMD_THEME = 'dark'
 const MMD_LIB_SRC = `${ROUTE}/vendor/mermaid.min.js`
 const MMD_CACHE_MAX_ENTRIES = 200
 const MMD_CACHE_MAX_CHARS = 24 * 1024 * 1024
 const MMD_DATA_URL_PREFIX = 'data:image/svg+xml;base64,'
 const MMD_SCROLL_MARGIN = '200px 0px'
-
 const MMD_CSS = `
 .mdr-mermaid{margin:1em 0;padding:2px 0;text-align:center;overflow-x:auto}
 .mdr-mermaid>img{max-width:100%;height:auto;display:inline-block;border-radius:6px}
@@ -1740,1065 +1287,838 @@ const MMD_CSS = `
 .mdr-mermaid-details>summary{cursor:pointer;user-select:none}
 .mdr-mermaid-details>pre{margin:6px 0 0;padding:8px 10px;border-radius:6px;background:#1e1e1e;color:#d4d4d4;font:12px/1.5 "Cascadia Code",Consolas,monospace;white-space:pre-wrap;word-break:break-all;overflow:auto;text-align:left}
 `
-
-/* --------------------------------------------------------------- module state */
-
-/** Rendered diagrams: key = theme + hash(source) -> {source, url, width, chars}. */
 const mmdCache = new Map()
 let mmdCacheChars = 0
-/** Single shared library-load promise: the 3.3MB script is requested at most once. */
 let mmdLibPromise = null
 let mmdInited = false
-/** Unique suffix for mermaid.render ids (ids are global in the document). */
 let mmdRenderSeq = 0
 let mmdMountSeq = 0
-/** Serial render queue: at most one mermaid.render() in flight. */
 const mmdQueue = []
 let mmdPumping = false
-/** A pump is already scheduled on idle time. */
 let mmdPumpScheduled = false
-/** Live observers, pruned whenever their container has been detached. */
 const mmdLiveRecs = new Set()
 const mmdContainerRecs = new WeakMap()
-/** IntersectionObserver target -> queued render entry. */
 const mmdPendingByEl = new WeakMap()
-
-/* ------------------------------------------------------------------ hash/cache */
-
 function mmdHash(text) {
-  const value = String(text || '')
-  let h1 = 0x811c9dc5 // FNV-1a
-  let h2 = 5381 // djb2
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i)
-    h1 = Math.imul(h1 ^ code, 0x01000193)
-    h2 = (Math.imul(h2, 33) + code) | 0
-  }
-  // Two independent 32-bit hashes + length: a wrong-diagram collision is not
-  // realistic, and the cached source is compared again on every hit anyway.
-  return `${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}-${value.length.toString(36)}`
+const value = String(text || '')
+let h1 = 0x811c9dc5 // FNV-1a
+let h2 = 5381 // djb2
+for (let i = 0; i < value.length; i++) {
+const code = value.charCodeAt(i)
+h1 = Math.imul(h1 ^ code, 0x01000193)
+h2 = (Math.imul(h2, 33) + code) | 0
 }
-
+return `${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}-${value.length.toString(36)}`
+}
 function mmdCacheKey(source) {
-  return `${MMD_THEME}|${mmdHash(source)}`
+return `${MMD_THEME}|${mmdHash(source)}`
 }
-
 function mmdCacheGet(key, source) {
-  const entry = mmdCache.get(key)
-  if (!entry || entry.source !== source) return null
-  // LRU touch: move the entry to the tail of the insertion-ordered Map.
-  mmdCache.delete(key)
-  mmdCache.set(key, entry)
-  return entry
+const entry = mmdCache.get(key)
+if (!entry || entry.source !== source) return null
+mmdCache.delete(key)
+mmdCache.set(key, entry)
+return entry
 }
-
 function mmdCacheSet(key, source, svg) {
-  const url = mmdSvgDataUrl(svg)
-  if (!url) return null
-  const entry = { source, url, width: mmdSvgHintWidth(svg), chars: url.length + source.length }
-  const previous = mmdCache.get(key)
-  if (previous) {
-    mmdCache.delete(key)
-    mmdCacheChars -= previous.chars
-  }
-  mmdCache.set(key, entry)
-  mmdCacheChars += entry.chars
-  // Bounded LRU: cap both entry count and approximate character weight. Keep the
-  // just-inserted entry even if it alone exceeds the budget.
-  while (mmdCache.size > 1 && (mmdCache.size > MMD_CACHE_MAX_ENTRIES || mmdCacheChars > MMD_CACHE_MAX_CHARS)) {
-    const oldest = mmdCache.keys().next()
-    if (oldest.done) break
-    const dropped = mmdCache.get(oldest.value)
-    mmdCache.delete(oldest.value)
-    if (dropped) mmdCacheChars -= dropped.chars
-  }
-  if (mmdCacheChars < 0) mmdCacheChars = 0
-  return entry
+const url = mmdSvgDataUrl(svg)
+if (!url) return null
+const entry = { source, url, width: mmdSvgHintWidth(svg), chars: url.length + source.length }
+const previous = mmdCache.get(key)
+if (previous) {
+mmdCache.delete(key)
+mmdCacheChars -= previous.chars
 }
-
-/** UTF-8 safe base64 data URL. Plain btoa() throws on non-Latin1 diagram labels. */
+mmdCache.set(key, entry)
+mmdCacheChars += entry.chars
+while (mmdCache.size > 1 && (mmdCache.size > MMD_CACHE_MAX_ENTRIES || mmdCacheChars > MMD_CACHE_MAX_CHARS)) {
+const oldest = mmdCache.keys().next()
+if (oldest.done) break
+const dropped = mmdCache.get(oldest.value)
+mmdCache.delete(oldest.value)
+if (dropped) mmdCacheChars -= dropped.chars
+}
+if (mmdCacheChars < 0) mmdCacheChars = 0
+return entry
+}
 function mmdSvgDataUrl(svg) {
-  const text = String(svg || '')
-  if (!text) return ''
-  try {
-    let base64 = ''
-    if (typeof TextEncoder === 'function') {
-      const bytes = new TextEncoder().encode(text)
-      const chunk = 0x8000
-      let binary = ''
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
-      }
-      base64 = btoa(binary)
-    } else {
-      base64 = btoa(unescape(encodeURIComponent(text)))
-    }
-    return MMD_DATA_URL_PREFIX + base64
-  } catch {
-    try {
-      return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text)
-    } catch {
-      return ''
-    }
-  }
+const text = String(svg || '')
+if (!text) return ''
+try {
+let base64 = ''
+if (typeof TextEncoder === 'function') {
+const bytes = new TextEncoder().encode(text)
+const chunk = 0x8000
+let binary = ''
+for (let i = 0; i < bytes.length; i += chunk) {
+binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk))
 }
-
-/** Design width from the SVG root's viewBox (mermaid often emits width="100%"). */
+base64 = btoa(binary)
+} else {
+base64 = btoa(unescape(encodeURIComponent(text)))
+}
+return MMD_DATA_URL_PREFIX + base64
+} catch {
+try {
+return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(text)
+} catch {
+return ''
+}
+}
+}
 function mmdSvgHintWidth(svg) {
-  const text = String(svg || '')
-  const root = /<svg\b[^>]*>/i.exec(text)
-  const head = root ? root[0] : text.slice(0, 4000)
-  const viewBox = /viewBox\s*=\s*["']\s*[-+\d.]+[\s,]+[-+\d.]+[\s,]+([-+\d.]+)[\s,]+[-+\d.]+/i.exec(head)
-  if (viewBox) {
-    const width = Number(viewBox[1])
-    if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
-  }
-  const widthAttr = /\bwidth\s*=\s*["']([\d.]+)(?:px)?["']/i.exec(head)
-  if (widthAttr) {
-    const width = Number(widthAttr[1])
-    if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
-  }
-  return 0
+const text = String(svg || '')
+const root = /<svg\b[^>]*>/i.exec(text)
+const head = root ? root[0] : text.slice(0, 4000)
+const viewBox = /viewBox\s*=\s*["']\s*[-+\d.]+[\s,]+[-+\d.]+[\s,]+([-+\d.]+)[\s,]+[-+\d.]+/i.exec(head)
+if (viewBox) {
+const width = Number(viewBox[1])
+if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
 }
-
-/* ---------------------------------------------------------------- local style */
-
+const widthAttr = /\bwidth\s*=\s*["']([\d.]+)(?:px)?["']/i.exec(head)
+if (widthAttr) {
+const width = Number(widthAttr[1])
+if (Number.isFinite(width) && width > 0 && width <= 20000) return Math.round(width)
+}
+return 0
+}
 function mmdEnsureStyle() {
-  if (document.getElementById('mdr-mermaid-style')) return
-  const style = document.createElement('style')
-  style.id = 'mdr-mermaid-style'
-  style.textContent = MMD_CSS
-  document.head.appendChild(style)
+if (document.getElementById('mdr-mermaid-style')) return
+const style = document.createElement('style')
+style.id = 'mdr-mermaid-style'
+style.textContent = MMD_CSS
+document.head.appendChild(style)
 }
-
-/* -------------------------------------------------------------- library load */
-
 function mmdEnsureLib() {
-  if (mmdLibPromise) return mmdLibPromise
-  mmdLibPromise = new Promise((resolve, reject) => {
-    const activate = () => {
-      try {
-        const lib = window.mermaid
-        if (!lib || typeof lib.render !== 'function' || typeof lib.initialize !== 'function') {
-          reject(new Error('mermaid 全局对象不可用'))
-          return
-        }
-        if (!mmdInited) {
-          lib.initialize({ startOnLoad: false, theme: MMD_THEME, securityLevel: 'strict' })
-          mmdInited = true
-        }
-        resolve(lib)
-      } catch (err) {
-        reject(err)
-      }
-    }
-    if (window.mermaid && typeof window.mermaid.render === 'function') {
-      activate()
-      return
-    }
-    const script = document.createElement('script')
-    script.src = MMD_LIB_SRC
-    script.async = true
-    script.setAttribute('data-mdr-mermaid-lib', '1')
-    script.onload = () => activate()
-    script.onerror = () => reject(new Error(`mermaid 库加载失败: ${MMD_LIB_SRC}`))
-    document.head.appendChild(script)
-  })
-  return mmdLibPromise
+if (mmdLibPromise) return mmdLibPromise
+mmdLibPromise = new Promise((resolve, reject) => {
+const activate = () => {
+try {
+const lib = window.mermaid
+if (!lib || typeof lib.render !== 'function' || typeof lib.initialize !== 'function') {
+reject(new Error('mermaid 全局对象不可用'))
+return
 }
-
-/* ------------------------------------------------------------------- rendering */
-
+if (!mmdInited) {
+lib.initialize({ startOnLoad: false, theme: MMD_THEME, securityLevel: 'strict' })
+mmdInited = true
+}
+resolve(lib)
+} catch (err) {
+reject(err)
+}
+}
+if (window.mermaid && typeof window.mermaid.render === 'function') {
+activate()
+return
+}
+const script = document.createElement('script')
+script.src = MMD_LIB_SRC
+script.async = true
+script.setAttribute('data-mdr-mermaid-lib', '1')
+script.onload = () => activate()
+script.onerror = () => reject(new Error(`mermaid 库加载失败: ${MMD_LIB_SRC}`))
+document.head.appendChild(script)
+})
+return mmdLibPromise
+}
 function mmdExtractSvg(result) {
-  if (typeof result === 'string') return result
-  if (result && typeof result.svg === 'string') return result.svg
-  return ''
+if (typeof result === 'string') return result
+if (result && typeof result.svg === 'string') return result.svg
+return ''
 }
-
 function mmdErrorMessage(err) {
-  if (!err) return '未知错误'
-  const raw = typeof err === 'string' ? err : err.message || err.reason || String(err)
-  const text = String(raw).replace(/\s+/g, ' ').trim()
-  if (!text) return '未知错误'
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text
+if (!err) return '未知错误'
+const raw = typeof err === 'string' ? err : err.message || err.reason || String(err)
+const text = String(raw).replace(/\s+/g, ' ').trim()
+if (!text) return '未知错误'
+return text.length > 300 ? `${text.slice(0, 300)}…` : text
 }
-
-/** mermaid.render creates temporary #id / #d{id} / #i{id} nodes in <body>. */
 function mmdCleanupRenderNodes(id) {
-  for (const prefix of ['', 'd', 'i']) {
-    const node = document.getElementById(prefix + id)
-    if (node && node.parentNode) node.parentNode.removeChild(node)
-  }
+for (const prefix of ['', 'd', 'i']) {
+const node = document.getElementById(prefix + id)
+if (node && node.parentNode) node.parentNode.removeChild(node)
 }
-
+}
 async function mmdRenderOne(entry) {
-  const el = entry.el
-  if (!el || !el.isConnected) return
-  const cached = mmdCacheGet(entry.key, entry.source)
-  if (cached) {
-    mmdApplyCached(el, cached, entry.source)
-    return
-  }
-  let lib
-  try {
-    lib = await mmdEnsureLib()
-  } catch (err) {
-    if (el.isConnected) mmdShowError(el, entry.source, err)
-    return
-  }
-  if (!el.isConnected) return
-  const id = `mdr-mermaid-${entry.mount}-${++mmdRenderSeq}`
-  let result
-  try {
-    result = await lib.render(id, entry.source)
-  } catch (err) {
-    mmdCleanupRenderNodes(id)
-    if (el.isConnected) mmdShowError(el, entry.source, err)
-    return
-  }
-  mmdCleanupRenderNodes(id)
-  const svg = mmdExtractSvg(result)
-  if (!svg) {
-    if (el.isConnected) mmdShowError(el, entry.source, new Error('渲染结果为空'))
-    return
-  }
-  // Cache first: if the tab was switched away while rendering, the next mount of
-  // the same document still gets the diagram instantly from the cache.
-  const stored = mmdCacheSet(entry.key, entry.source, svg)
-  if (!el.isConnected) return
-  if (stored) mmdApplyCached(el, stored, entry.source)
-  else mmdShowError(el, entry.source, new Error('SVG 编码失败'))
+const el = entry.el
+if (!el || !el.isConnected) return
+const cached = mmdCacheGet(entry.key, entry.source)
+if (cached) {
+mmdApplyCached(el, cached, entry.source)
+return
 }
-
-/* -------------------------------------------------------------- serial queue */
-
+let lib
+try {
+lib = await mmdEnsureLib()
+} catch (err) {
+if (el.isConnected) mmdShowError(el, entry.source, err)
+return
+}
+if (!el.isConnected) return
+const id = `mdr-mermaid-${entry.mount}-${++mmdRenderSeq}`
+let result
+try {
+result = await lib.render(id, entry.source)
+} catch (err) {
+mmdCleanupRenderNodes(id)
+if (el.isConnected) mmdShowError(el, entry.source, err)
+return
+}
+mmdCleanupRenderNodes(id)
+const svg = mmdExtractSvg(result)
+if (!svg) {
+if (el.isConnected) mmdShowError(el, entry.source, new Error('渲染结果为空'))
+return
+}
+const stored = mmdCacheSet(entry.key, entry.source, svg)
+if (!el.isConnected) return
+if (stored) mmdApplyCached(el, stored, entry.source)
+else mmdShowError(el, entry.source, new Error('SVG 编码失败'))
+}
 function mmdEnqueue(entry) {
-  if (!entry || !entry.el || !entry.el.isConnected) return
-  mmdQueue.push(entry)
-  mmdSchedulePump()
+if (!entry || !entry.el || !entry.el.isConnected) return
+mmdQueue.push(entry)
+mmdSchedulePump()
 }
-
-/** Start the render queue when the browser is idle.
- *
- * mermaid's parse + layout is a long main-thread task (hundreds of ms) and its
- * library is ~3 MB. Rendering it the moment the diagram intersects stole the
- * main thread from the document's own code highlighting, and the page froze
- * for seconds right around the diagram. On idle time the browser can finish
- * the pending work (and paint) first. */
 function mmdSchedulePump() {
-  if (mmdPumpScheduled) return
-  mmdPumpScheduled = true
-  const run = () => {
-    mmdPumpScheduled = false
-    mmdPump()
-  }
-  if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 })
-  else window.setTimeout(run, 120)
+if (mmdPumpScheduled) return
+mmdPumpScheduled = true
+const run = () => {
+mmdPumpScheduled = false
+mmdPump()
 }
-
+if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 })
+else window.setTimeout(run, 120)
+}
 async function mmdPump() {
-  if (mmdPumping) return
-  mmdPumping = true
-  try {
-    while (mmdQueue.length) {
-      const entry = mmdQueue.shift()
-      if (!entry || !entry.el || !entry.el.isConnected) continue
-      if (entry.el.classList.contains('mdr-mermaid-done')) continue
-      try {
-        await mmdRenderOne(entry)
-      } catch (err) {
-        // A broken diagram must never stop the queue or break the document.
-        if (entry.el && entry.el.isConnected) mmdShowError(entry.el, entry.source, err)
-      }
-    }
-  } finally {
-    mmdPumping = false
-  }
+if (mmdPumping) return
+mmdPumping = true
+try {
+while (mmdQueue.length) {
+const entry = mmdQueue.shift()
+if (!entry || !entry.el || !entry.el.isConnected) continue
+if (entry.el.classList.contains('mdr-mermaid-done')) continue
+try {
+await mmdRenderOne(entry)
+} catch (err) {
+if (entry.el && entry.el.isConnected) mmdShowError(entry.el, entry.source, err)
 }
-
-/* ------------------------------------------------------------------- observers */
-
+}
+} finally {
+mmdPumping = false
+}
+}
 function mmdStopRec(rec) {
-  if (!rec) return
-  try {
-    rec.observer.disconnect()
-  } catch {
-    // already gone
-  }
-  mmdLiveRecs.delete(rec)
-  if (rec.container && mmdContainerRecs.get(rec.container) === rec) {
-    mmdContainerRecs.delete(rec.container)
-  }
+if (!rec) return
+try {
+rec.observer.disconnect()
+} catch {
 }
-
-/** Disconnect observers whose container was detached (tab switch / refresh). */
+mmdLiveRecs.delete(rec)
+if (rec.container && mmdContainerRecs.get(rec.container) === rec) {
+mmdContainerRecs.delete(rec.container)
+}
+}
 function mmdPruneRecs() {
-  for (const rec of [...mmdLiveRecs]) {
-    if (!rec.container || !rec.container.isConnected) mmdStopRec(rec)
-  }
+for (const rec of [...mmdLiveRecs]) {
+if (!rec.container || !rec.container.isConnected) mmdStopRec(rec)
 }
-
+}
 function mmdHandleIntersect(rec, entries) {
-  if (!rec.container || !rec.container.isConnected) {
-    mmdStopRec(rec)
-    return
-  }
-  for (const change of entries) {
-    if (!change.isIntersecting) continue
-    const el = change.target
-    const entry = mmdPendingByEl.get(el)
-    mmdPendingByEl.delete(el)
-    try {
-      rec.observer.unobserve(el)
-    } catch {
-      // already unobserved
-    }
-    rec.left = Math.max(0, rec.left - 1)
-    if (entry) mmdEnqueue(entry)
-  }
-  if (rec.left <= 0) mmdStopRec(rec)
+if (!rec.container || !rec.container.isConnected) {
+mmdStopRec(rec)
+return
 }
-
-/* ---------------------------------------------------------------------- DOM */
-
+for (const change of entries) {
+if (!change.isIntersecting) continue
+const el = change.target
+const entry = mmdPendingByEl.get(el)
+mmdPendingByEl.delete(el)
+try {
+rec.observer.unobserve(el)
+} catch {
+}
+rec.left = Math.max(0, rec.left - 1)
+if (entry) mmdEnqueue(entry)
+}
+if (rec.left <= 0) mmdStopRec(rec)
+}
 function mmdCreatePlaceholder(source) {
-  const el = document.createElement('div')
-  el.className = 'mdr-mermaid mdr-mermaid-pending'
-  el.dataset.mermaidSource = source
-  const note = document.createElement('span')
-  note.className = 'mdr-mermaid-note'
-  note.textContent = '▦ mermaid 图 · 滚动到可见时渲染'
-  el.appendChild(note)
-  return el
+const el = document.createElement('div')
+el.className = 'mdr-mermaid mdr-mermaid-pending'
+el.dataset.mermaidSource = source
+const note = document.createElement('span')
+note.className = 'mdr-mermaid-note'
+note.textContent = '▦ mermaid 图 · 滚动到可见时渲染'
+el.appendChild(note)
+return el
 }
-
-/** Collapsed source block: keeps the mermaid source copyable without noise. */
 function mmdSourceDetails(source) {
-  const details = document.createElement('details')
-  details.className = 'mdr-mermaid-details'
-  const summary = document.createElement('summary')
-  summary.textContent = 'mermaid 源码'
-  const pre = document.createElement('pre')
-  pre.textContent = source
-  details.appendChild(summary)
-  details.appendChild(pre)
-  return details
+const details = document.createElement('details')
+details.className = 'mdr-mermaid-details'
+const summary = document.createElement('summary')
+summary.textContent = 'mermaid 源码'
+const pre = document.createElement('pre')
+pre.textContent = source
+details.appendChild(summary)
+details.appendChild(pre)
+return details
 }
-
 function mmdApplyCached(el, cached, source) {
-  if (!el || !el.isConnected) return
-  if (el.classList.contains('mdr-mermaid-done')) return
-  mmdPendingByEl.delete(el)
-  el.classList.remove('mdr-mermaid-pending')
-  el.classList.add('mdr-mermaid-done')
-  el.textContent = ''
-  const img = document.createElement('img')
-  img.alt = 'mermaid 图'
-  img.title = 'mermaid 图'
-  img.loading = 'lazy'
-  if (cached.width > 0) img.style.width = `${cached.width}px`
-  img.onerror = () => {
-    el.textContent = ''
-    const note = document.createElement('div')
-    note.className = 'mdr-mermaid-error'
-    note.textContent = 'mermaid 图片加载失败'
-    el.appendChild(note)
-  }
-  img.src = cached.url
-  el.appendChild(img)
-  el.appendChild(mmdSourceDetails(source))
+if (!el || !el.isConnected) return
+if (el.classList.contains('mdr-mermaid-done')) return
+mmdPendingByEl.delete(el)
+el.classList.remove('mdr-mermaid-pending')
+el.classList.add('mdr-mermaid-done')
+el.textContent = ''
+const img = document.createElement('img')
+img.alt = 'mermaid 图'
+img.title = 'mermaid 图'
+img.loading = 'lazy'
+if (cached.width > 0) img.style.width = `${cached.width}px`
+img.onerror = () => {
+el.textContent = ''
+const note = document.createElement('div')
+note.className = 'mdr-mermaid-error'
+note.textContent = 'mermaid 图片加载失败'
+el.appendChild(note)
 }
-
+img.src = cached.url
+el.appendChild(img)
+el.appendChild(mmdSourceDetails(source))
+}
 function mmdShowError(el, source, err) {
-  if (!el || !el.isConnected) return
-  mmdPendingByEl.delete(el)
-  el.classList.remove('mdr-mermaid-pending')
-  el.classList.add('mdr-mermaid-failed')
-  el.textContent = ''
-  const note = document.createElement('div')
-  note.className = 'mdr-mermaid-error'
-  note.textContent = `mermaid 渲染失败: ${mmdErrorMessage(err)}`
-  el.appendChild(note)
-  el.appendChild(mmdSourceDetails(source))
+if (!el || !el.isConnected) return
+mmdPendingByEl.delete(el)
+el.classList.remove('mdr-mermaid-pending')
+el.classList.add('mdr-mermaid-failed')
+el.textContent = ''
+const note = document.createElement('div')
+note.className = 'mdr-mermaid-error'
+note.textContent = `mermaid 渲染失败: ${mmdErrorMessage(err)}`
+el.appendChild(note)
+el.appendChild(mmdSourceDetails(source))
 }
-
-/* ------------------------------------------------------------------- entry */
-
 function enhanceMermaid(container, scroller) {
-  if (!container || typeof container.querySelectorAll !== 'function') return
-  try {
-    const codes = container.querySelectorAll('code[data-mermaid-source]')
-    const pendingEls = container.querySelectorAll('.mdr-mermaid[data-mermaid-source]')
-    if ((!codes || !codes.length) && (!pendingEls || !pendingEls.length)) {
-      // No mermaid fence in this document: never touch / load the 3.3MB library.
-      return
-    }
-    mmdEnsureStyle()
-    mmdPruneRecs()
-    // Refresh replaces innerHTML of the SAME .mdr-md container, so the previous
-    // observer can outlive its placeholders. Drop it here, before the early return
-    // paths below (cache-hit rebuilds register no new observer at all).
-    const previous = mmdContainerRecs.get(container)
-    if (previous) mmdStopRec(previous)
-    const mount = ++mmdMountSeq
-
-    const items = []
-    const created = new Set()
-    if (codes && codes.length) {
-      for (const code of codes) {
-        const source = code.getAttribute('data-mermaid-source') || ''
-        if (!source.trim()) continue
-        const holder = code.closest('pre') || code
-        if (!holder.parentNode) continue
-        const el = mmdCreatePlaceholder(source)
-        created.add(el)
-        holder.replaceWith(el)
-        items.push({ el, source })
-      }
-    }
-    // A re-run on the same container (defensive: 10-markdown re-enhances after a
-    // rebuild in place) may find already-created placeholders instead of <code>.
-    for (const el of pendingEls || []) {
-      if (created.has(el)) continue
-      if (el.classList.contains('mdr-mermaid-done') || el.classList.contains('mdr-mermaid-failed')) continue
-      if (el.querySelector('img')) continue
-      const source = el.getAttribute('data-mermaid-source') || ''
-      if (!source.trim()) continue
-      items.push({ el, source })
-    }
-    if (!items.length) return
-
-    // Cache hits are restored synchronously during insert -> rebuilt tab has its
-    // diagrams back before the first paint and its scroll height is correct again.
-    const waiting = []
-    for (const item of items) {
-      const key = mmdCacheKey(item.source)
-      const hit = mmdCacheGet(key, item.source)
-      if (hit) mmdApplyCached(item.el, hit, item.source)
-      else waiting.push({ el: item.el, source: item.source, key, mount })
-    }
-    if (!waiting.length) return
-
-    if (typeof window.IntersectionObserver !== 'function') {
-      // Degrade gracefully: still serial through the queue, so only one renders.
-      waiting.forEach((entry) => mmdEnqueue(entry))
-      return
-    }
-    const scrollRoot = scroller || (container.closest ? container.closest('.mdr-content') : null)
-    const rec = { container, left: waiting.length, observer: null }
-    rec.observer = new window.IntersectionObserver((entries) => mmdHandleIntersect(rec, entries), {
-      root: scrollRoot || null,
-      rootMargin: MMD_SCROLL_MARGIN,
-      threshold: 0,
-    })
-    mmdContainerRecs.set(container, rec)
-    mmdLiveRecs.add(rec)
-    for (const entry of waiting) {
-      mmdPendingByEl.set(entry.el, entry)
-      rec.observer.observe(entry.el)
-    }
-  } catch (err) {
-    // Mermaid rendering is an enhancement: a failure must not break the document.
-    if (window.console && console.warn) console.warn('[markdown-reader] mermaid:', err)
-  }
+if (!container || typeof container.querySelectorAll !== 'function') return
+try {
+const codes = container.querySelectorAll('code[data-mermaid-source]')
+const pendingEls = container.querySelectorAll('.mdr-mermaid[data-mermaid-source]')
+if ((!codes || !codes.length) && (!pendingEls || !pendingEls.length)) {
+return
 }
-
+mmdEnsureStyle()
+mmdPruneRecs()
+const previous = mmdContainerRecs.get(container)
+if (previous) mmdStopRec(previous)
+const mount = ++mmdMountSeq
+const items = []
+const created = new Set()
+if (codes && codes.length) {
+for (const code of codes) {
+const source = code.getAttribute('data-mermaid-source') || ''
+if (!source.trim()) continue
+const holder = code.closest('pre') || code
+if (!holder.parentNode) continue
+const el = mmdCreatePlaceholder(source)
+created.add(el)
+holder.replaceWith(el)
+items.push({ el, source })
+}
+}
+for (const el of pendingEls || []) {
+if (created.has(el)) continue
+if (el.classList.contains('mdr-mermaid-done') || el.classList.contains('mdr-mermaid-failed')) continue
+if (el.querySelector('img')) continue
+const source = el.getAttribute('data-mermaid-source') || ''
+if (!source.trim()) continue
+items.push({ el, source })
+}
+if (!items.length) return
+const waiting = []
+for (const item of items) {
+const key = mmdCacheKey(item.source)
+const hit = mmdCacheGet(key, item.source)
+if (hit) mmdApplyCached(item.el, hit, item.source)
+else waiting.push({ el: item.el, source: item.source, key, mount })
+}
+if (!waiting.length) return
+if (typeof window.IntersectionObserver !== 'function') {
+waiting.forEach((entry) => mmdEnqueue(entry))
+return
+}
+const scrollRoot = scroller || (container.closest ? container.closest('.mdr-content') : null)
+const rec = { container, left: waiting.length, observer: null }
+rec.observer = new window.IntersectionObserver((entries) => mmdHandleIntersect(rec, entries), {
+root: scrollRoot || null,
+rootMargin: MMD_SCROLL_MARGIN,
+threshold: 0,
+})
+mmdContainerRecs.set(container, rec)
+mmdLiveRecs.add(rec)
+for (const entry of waiting) {
+mmdPendingByEl.set(entry.el, entry)
+rec.observer.observe(entry.el)
+}
+} catch (err) {
+if (window.console && console.warn) console.warn('[markdown-reader] mermaid:', err)
+}
+}
 // ---- 14-diffflazy.js ----
-/**
- * Lazy fenced blocks (```diff and big code blocks).
- *
- * A ```diff block costs TWO highlight.js passes (the OLD side and the NEW side
- * are highlighted as separate blocks so multi-line comments/strings keep their
- * colours) and it produces one DOM row per line. The codereview document has
- * 44 diff blocks = 2346 rows ≈ 24k DOM nodes, and rendering them all up front
- * froze the whole Harness window for ~2.4 s EVERY time the document was opened
- * ("每次打开那个文件都会卡，而且是电脑卡" - the mouse stuttered too, because the
- * GPU process was compositing that huge tree).
- *
- * So a fenced block starts as a PLACEHOLDER with a reserved height and is
- * rendered when it approaches the viewport - the same trick the mermaid slice
- * already uses for diagrams. The blocks that are already in view are rendered
- * immediately, so the user never sees a placeholder where the content belongs.
- * The rendered HTML is cached by content, so a block that was already rendered
- * comes back instantly.
- */
-
-/** How far ahead of the viewport a block is rendered. */
 const LAZY_FENCE_MARGIN = '900px'
-/**
- * How far the rendered block is KEPT.
- *
- * A rendered diff block is ~50 DOM rows; a review document has 44 of them, so
- * scrolling through the whole document builds the same ~24k nodes as before and
- * the GPU starts compositing that huge tree (the machine stutters). So a block
- * that scrolls far away is RELEASED again - back to its placeholder - and is
- * restored from the cache (instantly) when it comes back.
- */
 const LAZY_KEEP_MARGIN = '300% 0px'
-/** One code line is about this tall. */
 const LAZY_LINE_HEIGHT = 19
-/** A code block with more lines than this is rendered lazily. */
 const LAZY_CODE_MIN_LINES = 30
-
-/** container -> { observer, left } */
 const lazyFenceRecs = new Map()
-/** element -> { el, source, kind, lang, height } */
 const lazyFencePending = new Map()
-
 function lazyFenceStop(rec) {
-  if (!rec) return
-  try {
-    if (rec.observer) rec.observer.disconnect()
-  } catch {
-    /* already gone */
-  }
-  lazyFenceRecs.delete(rec.container)
-  rec.left = 0
+if (!rec) return
+try {
+if (rec.observer) rec.observer.disconnect()
+} catch {
 }
-
-/**
- * Release a rendered block: back to the placeholder, keeping the exact height
- * so the scroll position does not jump.
- */
+lazyFenceRecs.delete(rec.container)
+rec.left = 0
+}
 function lazyFenceRelease(entry) {
-  const el = entry && entry.el
-  if (!el || !el.isConnected) return
-  if (!el.classList.contains('mdr-md-diff-pending') && !el.classList.contains('mdr-md-code-pending')) {
-    // It is rendered: remember its height and empty it.
-    let height = entry.height || 0
-    try {
-      height = el.offsetHeight || height
-    } catch {
-      /* ignore */
-    }
-    entry.height = height
-    el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
-    el.innerHTML = ''
-    if (height) el.style.height = `${height}px`
-  }
+const el = entry && entry.el
+if (!el || !el.isConnected) return
+if (!el.classList.contains('mdr-md-diff-pending') && !el.classList.contains('mdr-md-code-pending')) {
+let height = entry.height || 0
+try {
+height = el.offsetHeight || height
+} catch {
 }
-
-/** Render one fenced block into its placeholder. */
+entry.height = height
+el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
+el.innerHTML = ''
+if (height) el.style.height = `${height}px`
+}
+}
 function lazyFenceRender(entry) {
-  const el = entry && entry.el
-  if (!el || !el.isConnected) return
-  const source = entry.source || ''
-  const kind = entry.kind === 'diff' ? 'diff' : 'code'
-  let html = ''
-  try {
-    if (kind === 'diff') {
-      html =
-        typeof cachedFenceHtml === 'function'
-          ? cachedFenceHtml('diff', source, () =>
-              typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
-            )
-          : typeof renderDiffFenceHtml === 'function'
-            ? renderDiffFenceHtml(source)
-            : escapeHtml(source)
-    } else {
-      const lang = entry.lang || ''
-      html =
-        typeof cachedFenceHtml === 'function'
-          ? cachedFenceHtml(`code:${lang}`, source, () =>
-              typeof renderFenceCodeHtml === 'function' ? renderFenceCodeHtml(source, lang) : escapeHtml(source),
-            )
-          : typeof renderFenceCodeHtml === 'function'
-            ? renderFenceCodeHtml(source, lang)
-            : escapeHtml(source)
-    }
-  } catch (error) {
-    html = escapeHtml(source)
-    // A silent empty block is the worst possible failure mode: say what broke.
-    if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
-      console.warn('[markdown-reader] fence render failed:', error)
-    }
-  }
-  el.classList.remove('mdr-md-diff-pending')
-  el.classList.remove('mdr-md-code-pending')
-  el.innerHTML = html
-  try {
-    entry.height = el.offsetHeight || entry.height || 0
-    if (entry.height) el.style.height = ''
-  } catch {
-    /* ignore */
-  }
+const el = entry && entry.el
+if (!el || !el.isConnected) return
+const source = entry.source || ''
+const kind = entry.kind === 'diff' ? 'diff' : 'code'
+let html = ''
+try {
+if (kind === 'diff') {
+html =
+typeof cachedFenceHtml === 'function'
+? cachedFenceHtml('diff', source, () =>
+typeof renderDiffFenceHtml === 'function' ? renderDiffFenceHtml(source) : escapeHtml(source),
+)
+: typeof renderDiffFenceHtml === 'function'
+? renderDiffFenceHtml(source)
+: escapeHtml(source)
+} else {
+const lang = entry.lang || ''
+html =
+typeof cachedFenceHtml === 'function'
+? cachedFenceHtml(`code:${lang}`, source, () =>
+typeof renderFenceCodeHtml === 'function' ? renderFenceCodeHtml(source, lang) : escapeHtml(source),
+)
+: typeof renderFenceCodeHtml === 'function'
+? renderFenceCodeHtml(source, lang)
+: escapeHtml(source)
 }
-
-/**
- * The placeholder for a fenced block: the note plus a reserved height, so the
- * document height (and therefore the scrollbar) is already correct.
- */
+} catch (error) {
+html = escapeHtml(source)
+if (typeof console !== 'undefined' && console && typeof console.warn === 'function') {
+console.warn('[markdown-reader] fence render failed:', error)
+}
+}
+el.classList.remove('mdr-md-diff-pending')
+el.classList.remove('mdr-md-code-pending')
+el.innerHTML = html
+try {
+entry.height = el.offsetHeight || entry.height || 0
+if (entry.height) el.style.height = ''
+} catch {
+}
+}
 function lazyFencePlaceholder(source, kind) {
-  const el = document.createElement('div')
-  const isDiff = kind === 'diff'
-  el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
-  const rows = String(source || '').split('\n').length
-  const height = Math.max(60, rows * LAZY_LINE_HEIGHT + 24)
-  el.style.minHeight = `${height}px`
-  const note = document.createElement('span')
-  note.className = isDiff ? 'mdr-md-diff-note' : 'mdr-md-code-note'
-  note.textContent = isDiff ? '▦ diff 块 · 滚动到可见时渲染' : '▦ 代码块 · 滚动到可见时渲染'
-  el.appendChild(note)
-  return el
+const el = document.createElement('div')
+const isDiff = kind === 'diff'
+el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
+const rows = String(source || '').split('\n').length
+const height = Math.max(60, rows * LAZY_LINE_HEIGHT + 24)
+el.style.minHeight = `${height}px`
+const note = document.createElement('span')
+note.className = isDiff ? 'mdr-md-diff-note' : 'mdr-md-code-note'
+note.textContent = isDiff ? '▦ diff 块 · 滚动到可见时渲染' : '▦ 代码块 · 滚动到可见时渲染'
+el.appendChild(note)
+return el
 }
-
-/** The diff flavour of the placeholder (kept for the call sites). */
 function diffLazyPlaceholder(source) {
-  return lazyFencePlaceholder(source, 'diff')
+return lazyFencePlaceholder(source, 'diff')
 }
-
-/**
- * Wire the placeholders of one document to the viewport.
- *
- * @param {Element} container  the rendered markdown
- * @param {Array} entries      [{ el, source, kind, lang }]
- */
 function enhanceLazyFences(container, entries) {
-  try {
-    if (!container || !entries || !entries.length) return
-    const scroller = container.closest ? container.closest('.mdr-content') : null
-    const viewport = window.innerHeight || 800
-    const margin = parseFloat(LAZY_FENCE_MARGIN) || 0
-    // The blocks that are already near the viewport are rendered RIGHT AWAY:
-    // the user must not see a placeholder where the content belongs. The rects
-    // are read in one pass (the first read forces the layout, the rest are
-    // cheap because nothing changed in between).
-    const near = []
-    const waiting = []
-    for (const entry of entries) {
-      const el = entry && entry.el
-      if (!el) continue
-      let rect = null
-      try {
-        rect = el.getBoundingClientRect()
-      } catch {
-        rect = null
-      }
-      if (rect && rect.top < viewport + margin && rect.bottom > -margin) near.push(entry)
-      else waiting.push(entry)
-    }
-    for (const entry of near) lazyFenceRender(entry)
-    if (!waiting.length) return
-
-    if (typeof window === 'undefined' || typeof window.IntersectionObserver !== 'function') {
-      // No observer: render everything (the old behaviour).
-      for (const entry of waiting) lazyFenceRender(entry)
-      return
-    }
-    const rec = { container, left: waiting.length, observer: null }
-    rec.observer = new window.IntersectionObserver(
-      (changes) => {
-        if (!rec.container || !rec.container.isConnected) {
-          lazyFenceStop(rec)
-          return
-        }
-        for (const change of changes) {
-          const el = change.target
-          const entry = lazyFencePending.get(el)
-          if (!entry) continue
-          if (change.isIntersecting) {
-            // Inside the keep band: render it (from the cache -> instant).
-            lazyFenceRender(entry)
-          } else {
-            // Far away: release the DOM again, the document stays small.
-            lazyFenceRelease(entry)
-          }
-        }
-      },
-      { root: scroller || null, rootMargin: LAZY_KEEP_MARGIN, threshold: 0 },
-    )
-    lazyFenceRecs.set(container, rec)
-    for (const entry of waiting) {
-      lazyFencePending.set(entry.el, entry)
-      rec.observer.observe(entry.el)
-    }
-    // The blocks that were rendered right away are observed as well, so they
-    // are released too when they scroll away.
-    for (const entry of near) {
-      lazyFencePending.set(entry.el, entry)
-      rec.observer.observe(entry.el)
-    }
-    rec.left = 0
-  } catch (err) {
-    if (typeof window !== 'undefined' && window.console && window.console.warn) {
-      window.console.warn('[markdown-reader] lazy fences:', err)
-    }
-  }
+try {
+if (!container || !entries || !entries.length) return
+const scroller = container.closest ? container.closest('.mdr-content') : null
+const viewport = window.innerHeight || 800
+const margin = parseFloat(LAZY_FENCE_MARGIN) || 0
+const near = []
+const waiting = []
+for (const entry of entries) {
+const el = entry && entry.el
+if (!el) continue
+let rect = null
+try {
+rect = el.getBoundingClientRect()
+} catch {
+rect = null
 }
-
-/** The diff flavour of the wiring (kept for the call sites). */
+if (rect && rect.top < viewport + margin && rect.bottom > -margin) near.push(entry)
+else waiting.push(entry)
+}
+for (const entry of near) lazyFenceRender(entry)
+if (!waiting.length) return
+if (typeof window === 'undefined' || typeof window.IntersectionObserver !== 'function') {
+for (const entry of waiting) lazyFenceRender(entry)
+return
+}
+const rec = { container, left: waiting.length, observer: null }
+rec.observer = new window.IntersectionObserver(
+(changes) => {
+if (!rec.container || !rec.container.isConnected) {
+lazyFenceStop(rec)
+return
+}
+for (const change of changes) {
+const el = change.target
+const entry = lazyFencePending.get(el)
+if (!entry) continue
+if (change.isIntersecting) {
+lazyFenceRender(entry)
+} else {
+lazyFenceRelease(entry)
+}
+}
+},
+{ root: scroller || null, rootMargin: LAZY_KEEP_MARGIN, threshold: 0 },
+)
+lazyFenceRecs.set(container, rec)
+for (const entry of waiting) {
+lazyFencePending.set(entry.el, entry)
+rec.observer.observe(entry.el)
+}
+for (const entry of near) {
+lazyFencePending.set(entry.el, entry)
+rec.observer.observe(entry.el)
+}
+rec.left = 0
+} catch (err) {
+if (typeof window !== 'undefined' && window.console && window.console.warn) {
+window.console.warn('[markdown-reader] lazy fences:', err)
+}
+}
+}
 function enhanceDiffFences(container, entries) {
-  enhanceLazyFences(container, entries)
+enhanceLazyFences(container, entries)
 }
-
-/** Stop the lazy rendering of a container (its view was replaced). */
 function stopDiffFences(container) {
-  const rec = lazyFenceRecs.get(container)
-  if (rec) lazyFenceStop(rec)
+const rec = lazyFenceRecs.get(container)
+if (rec) lazyFenceStop(rec)
 }
-
 // ---- 15-git.js ----
-/**
- * Code-tab git viewer (owned by the git slice): branch/commit selection, the
- * commit-version diff view, and the per-file view state / metadata caches.
- *
- * Everything here is read-only: the host exposes only git log/show/for-each-ref
- * style endpoints, the working tree is never touched. State is cached at module
- * level so switching tabs (CodeView remounts) keeps the selected branch /
- * commit, while the App still owns the tab objects themselves.
- *
- * View keys: a code tab is keyed by its path; the code modal passes its own
- * `gitKey` ("modal:<path>") so the popup's branch/commit view never mutates the
- * branch the tab underneath is showing.
- */
-
-/** Rows above this count are virtualized (only the viewport +/- buffer is painted). */
 const GIT_V_THRESHOLD = 1500
-/** Constant row height, kept in sync with .mdr-cl CSS (min-height/line-height 20px). */
 const GIT_LINE_H = 20
-/** Extra rows painted above and below the viewport in virtual mode. */
 const GIT_BUFFER = 40
-
 const gitMetaCache = new Map() // path -> Promise<meta|null>
 const gitViewCache = new Map() // view key -> mutable view state
-
 function gitViewKey(tab) {
-  const source = tab || {}
-  return String(source.gitKey || source.path || '')
+const source = tab || {}
+return String(source.gitKey || source.path || '')
 }
-
 function gitViewFor(key) {
-  const name = String(key || '')
-  let view = gitViewCache.get(name)
-  if (!view) {
-    view = {
-      ready: false,
-      readyPromise: null,
-      git: false,
-      repo: '',
-      currentBranch: '',
-      branch: '',
-      branches: [],
-      commits: [],
-      commit: null,
-      commitMeta: null,
-      fileLines: null,
-      hunks: [],
-      hint: '',
-      loading: false,
-      stats: { add: 0, del: 0 },
-      seq: 0, // race guard: bumped on every branch/commit selection
-      branchContent: null, // content of the selected branch's HEAD (null = workspace content)
-    }
-    gitViewCache.set(name, view)
-  }
-  return view
+const name = String(key || '')
+let view = gitViewCache.get(name)
+if (!view) {
+view = {
+ready: false,
+readyPromise: null,
+git: false,
+repo: '',
+currentBranch: '',
+branch: '',
+branches: [],
+commits: [],
+commit: null,
+commitMeta: null,
+fileLines: null,
+hunks: [],
+hint: '',
+loading: false,
+stats: { add: 0, del: 0 },
+seq: 0, // race guard: bumped on every branch/commit selection
+branchContent: null, // content of the selected branch's HEAD (null = workspace content)
 }
-
-/** Load /api/git/meta once per path (null = not inside a git repository). */
+gitViewCache.set(name, view)
+}
+return view
+}
 function loadGitMeta(path) {
-  const key = String(path || '')
-  const cached = gitMetaCache.get(key)
-  if (cached) return cached
-  const promise = fetchJson('/api/git/meta', { path: key })
-    .then((payload) => {
-      if (!payload || !Array.isArray(payload.branches) || payload.branches.length === 0) return null
-      return {
-        repo: payload.repo || '',
-        branch: payload.branch || payload.currentBranch || '',
-        currentBranch: payload.currentBranch || '',
-        branches: payload.branches,
-        commits: Array.isArray(payload.commits) ? payload.commits : [],
-      }
-    })
-    .catch(() => null) // non-git file / host error -> hide the bar quietly
-  gitMetaCache.set(key, promise)
-  return promise
+const key = String(path || '')
+const cached = gitMetaCache.get(key)
+if (cached) return cached
+const promise = fetchJson('/api/git/meta', { path: key })
+.then((payload) => {
+if (!payload || !Array.isArray(payload.branches) || payload.branches.length === 0) return null
+return {
+repo: payload.repo || '',
+branch: payload.branch || payload.currentBranch || '',
+currentBranch: payload.currentBranch || '',
+branches: payload.branches,
+commits: Array.isArray(payload.commits) ? payload.commits : [],
 }
-
-/**
- * Load the git meta for a view once and seed the initial branch/commits. Shared
- * by the initial mount and by `applyGitTarget` so a git-adapted link cannot race
- * the initial load.
- */
+})
+.catch(() => null) // non-git file / host error -> hide the bar quietly
+gitMetaCache.set(key, promise)
+return promise
+}
 async function ensureGitViewReady(key, path, refresh) {
-  const view = gitViewFor(key)
-  if (view.ready) return view
-  if (!view.readyPromise) {
-    view.readyPromise = loadGitMeta(path).then((meta) => {
-      if (!view.ready) {
-        view.ready = true
-        if (!meta) {
-          view.git = false
-        } else {
-          view.git = true
-          view.repo = meta.repo
-          view.branch = meta.branch
-          view.currentBranch = meta.currentBranch
-          view.branches = meta.branches
-          view.commits = meta.commits
-        }
-      }
-      refresh()
-      return view
-    })
-  }
-  return view.readyPromise
+const view = gitViewFor(key)
+if (view.ready) return view
+if (!view.readyPromise) {
+view.readyPromise = loadGitMeta(path).then((meta) => {
+if (!view.ready) {
+view.ready = true
+if (!meta) {
+view.git = false
+} else {
+view.git = true
+view.repo = meta.repo
+view.branch = meta.branch
+view.currentBranch = meta.currentBranch
+view.branches = meta.branches
+view.commits = meta.commits
 }
-
-/** Full file at a commit + this commit's hunks -> the row sequence to render. */
+}
+refresh()
+return view
+})
+}
+return view.readyPromise
+}
 function buildDiffRows(fileLines, hunks) {
-  const rows = []
-  const hasFile = Array.isArray(fileLines)
-  let fileIdx = 0 // 0-based cursor into the commit-version file
-  const pushFile = () => {
-    rows.push({ no: fileIdx + 1, kind: 'plain', text: fileLines[fileIdx] == null ? '' : fileLines[fileIdx] })
-    fileIdx += 1
-  }
-  for (const hunk of Array.isArray(hunks) ? hunks : []) {
-    const newStart = Number(hunk.new_start) || 1
-    while (hasFile && fileIdx < newStart - 1) pushFile()
-    for (const line of hunk.lines || []) {
-      const text = line.text == null ? '' : line.text
-      if (line.type === '-') {
-        // Deleted lines have no position in the commit-version file: show them
-        // inline at their old-file position, numbered with the OLD line number.
-        rows.push({ no: line.old_no, kind: 'del', text })
-      } else if (line.type === '+') {
-        rows.push({ no: line.new_no, kind: 'add', text })
-        fileIdx += 1
-      } else {
-        rows.push({ no: line.new_no, kind: 'ctx', text })
-        fileIdx += 1
-      }
-    }
-  }
-  // Unchanged tail of the commit-version file.
-  while (hasFile && fileIdx < fileLines.length) pushFile()
-  return rows
+const rows = []
+const hasFile = Array.isArray(fileLines)
+let fileIdx = 0 // 0-based cursor into the commit-version file
+const pushFile = () => {
+rows.push({ no: fileIdx + 1, kind: 'plain', text: fileLines[fileIdx] == null ? '' : fileLines[fileIdx] })
+fileIdx += 1
 }
-
+for (const hunk of Array.isArray(hunks) ? hunks : []) {
+const newStart = Number(hunk.new_start) || 1
+while (hasFile && fileIdx < newStart - 1) pushFile()
+for (const line of hunk.lines || []) {
+const text = line.text == null ? '' : line.text
+if (line.type === '-') {
+rows.push({ no: line.old_no, kind: 'del', text })
+} else if (line.type === '+') {
+rows.push({ no: line.new_no, kind: 'add', text })
+fileIdx += 1
+} else {
+rows.push({ no: line.new_no, kind: 'ctx', text })
+fileIdx += 1
+}
+}
+}
+while (hasFile && fileIdx < fileLines.length) pushFile()
+return rows
+}
 function countDiffStats(hunks) {
-  const stats = { add: 0, del: 0 }
-  for (const hunk of hunks || []) {
-    for (const line of hunk.lines || []) {
-      if (line.type === '+') stats.add += 1
-      else if (line.type === '-') stats.del += 1
-    }
-  }
-  return stats
+const stats = { add: 0, del: 0 }
+for (const hunk of hunks || []) {
+for (const line of hunk.lines || []) {
+if (line.type === '+') stats.add += 1
+else if (line.type === '-') stats.del += 1
 }
-
-/**
- * Switch branch: refetch that branch's commits AND its HEAD version of the file.
- * The meta endpoint resolves the requested branch against the real ref list, so
- * the applied view is what the dropdowns then show (`effective`), not a typo.
- */
+}
+return stats
+}
 async function selectGitBranch(key, path, branch, refresh) {
-  const view = gitViewFor(key)
-  const seq = (view.seq += 1)
-  view.branch = String(branch || '')
-  view.commit = null
-  view.commitMeta = null
-  view.fileLines = null
-  view.hunks = []
-  view.hint = ''
-  view.stats = { add: 0, del: 0 }
-  view.loading = true
-  refresh()
-  try {
-    const meta = await fetchJson('/api/git/meta', { path, branch })
-    if (view.seq !== seq) return // a newer selection already won
-    const effective = meta.branch || branch
-    view.branches = Array.isArray(meta.branches) && meta.branches.length ? meta.branches : view.branches
-    view.currentBranch = meta.currentBranch || view.currentBranch
-    view.commits = Array.isArray(meta.commits) ? meta.commits : []
-    view.branch = effective
-    // "git show <branch>:<file>" is the branch HEAD file — the first commit
-    // option must render THIS branch's content, not the working tree.
-    const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
-    if (view.seq !== seq) return
-    if (file && file.content != null) {
-      view.branchContent = String(file.content)
-    } else {
-      view.branchContent = null
-      view.hint = `⚠ 分支 ${effective} 不存在此文件`
-    }
-  } catch (error) {
-    if (view.seq !== seq) return
-    view.branchContent = null
-    view.hint = `切换分支失败: ${(error && error.message) || error}`
-  }
-  view.loading = false
-  refresh()
+const view = gitViewFor(key)
+const seq = (view.seq += 1)
+view.branch = String(branch || '')
+view.commit = null
+view.commitMeta = null
+view.fileLines = null
+view.hunks = []
+view.hint = ''
+view.stats = { add: 0, del: 0 }
+view.loading = true
+refresh()
+try {
+const meta = await fetchJson('/api/git/meta', { path, branch })
+if (view.seq !== seq) return // a newer selection already won
+const effective = meta.branch || branch
+view.branches = Array.isArray(meta.branches) && meta.branches.length ? meta.branches : view.branches
+view.currentBranch = meta.currentBranch || view.currentBranch
+view.commits = Array.isArray(meta.commits) ? meta.commits : []
+view.branch = effective
+const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
+if (view.seq !== seq) return
+if (file && file.content != null) {
+view.branchContent = String(file.content)
+} else {
+view.branchContent = null
+view.hint = `⚠ 分支 ${effective} 不存在此文件`
 }
-
-/** Select a real commit (diff view) or go back to "◎ <branch> 最新" (commit = ''). */
+} catch (error) {
+if (view.seq !== seq) return
+view.branchContent = null
+view.hint = `切换分支失败: ${(error && error.message) || error}`
+}
+view.loading = false
+refresh()
+}
 async function selectGitCommit(key, path, commit, refresh) {
-  const view = gitViewFor(key)
-  if (!commit) {
-    view.seq += 1
-    view.commit = null
-    view.commitMeta = null
-    view.fileLines = null
-    view.hunks = []
-    view.hint = ''
-    view.loading = false
-    view.stats = { add: 0, del: 0 }
-    refresh()
-    return
-  }
-  const seq = (view.seq += 1)
-  view.commit = commit
-  view.commitMeta = view.commits.find((item) => item.hash === commit || item.short === commit) || null
-  view.fileLines = null
-  view.hunks = []
-  view.hint = ''
-  view.stats = { add: 0, del: 0 }
-  view.loading = true
-  refresh()
-  try {
-    // Hunk fragments alone are not enough for a full-file diff view: fetch the
-    // commit-version file in parallel and mark the hunks inside it.
-    const [diff, file] = await Promise.all([
-      fetchJson('/api/git/diff', { path, commit }),
-      fetchJson('/api/git/file', { path, commit }).catch(() => null),
-    ])
-    if (view.seq !== seq) return
-    view.hunks = Array.isArray(diff.hunks) ? diff.hunks : []
-    view.fileLines = file && file.content != null ? String(file.content).split('\n') : null
-    if (view.hunks.length === 0) {
-      view.hint = '⚠ 此提交未修改该文件'
-    } else {
-      view.stats = countDiffStats(view.hunks)
-    }
-    view.commitMeta = view.commitMeta || (diff && diff.meta) || (file && file.meta) || null
-  } catch (error) {
-    if (view.seq !== seq) return
-    view.hunks = []
-    view.fileLines = null
-    view.hint = `加载提交改动失败: ${(error && error.message) || error}`
-  }
-  view.loading = false
-  refresh()
+const view = gitViewFor(key)
+if (!commit) {
+view.seq += 1
+view.commit = null
+view.commitMeta = null
+view.fileLines = null
+view.hunks = []
+view.hint = ''
+view.loading = false
+view.stats = { add: 0, del: 0 }
+refresh()
+return
 }
-
-/**
- * Apply a git-adapted link (`tab.branch` / `tab.commit`, modal request
- * `{path,line,branch,commit}`): a commit view wins, otherwise the requested
- * branch's HEAD file is loaded. Switching branch refetches that branch's commit
- * list AND file, so the dropdowns always reflect the applied view.
- */
+const seq = (view.seq += 1)
+view.commit = commit
+view.commitMeta = view.commits.find((item) => item.hash === commit || item.short === commit) || null
+view.fileLines = null
+view.hunks = []
+view.hint = ''
+view.stats = { add: 0, del: 0 }
+view.loading = true
+refresh()
+try {
+const [diff, file] = await Promise.all([
+fetchJson('/api/git/diff', { path, commit }),
+fetchJson('/api/git/file', { path, commit }).catch(() => null),
+])
+if (view.seq !== seq) return
+view.hunks = Array.isArray(diff.hunks) ? diff.hunks : []
+view.fileLines = file && file.content != null ? String(file.content).split('\n') : null
+if (view.hunks.length === 0) {
+view.hint = '⚠ 此提交未修改该文件'
+} else {
+view.stats = countDiffStats(view.hunks)
+}
+view.commitMeta = view.commitMeta || (diff && diff.meta) || (file && file.meta) || null
+} catch (error) {
+if (view.seq !== seq) return
+view.hunks = []
+view.fileLines = null
+view.hint = `加载提交改动失败: ${(error && error.message) || error}`
+}
+view.loading = false
+refresh()
+}
 async function applyGitTarget(tab, branch, commit, refresh) {
-  if (!tab || (!branch && !commit)) return
-  const key = gitViewKey(tab)
-  const path = tab.path
-  const view = await ensureGitViewReady(key, path, refresh)
-  if (!view.git) return
-  if (commit) {
-    if (branch && branch !== view.branch) await selectGitBranch(key, path, branch, refresh)
-    if (view.commit !== commit) await selectGitCommit(key, path, commit, refresh)
-  } else if (branch && branch !== view.branch) {
-    await selectGitBranch(key, path, branch, refresh)
-  }
+if (!tab || (!branch && !commit)) return
+const key = gitViewKey(tab)
+const path = tab.path
+const view = await ensureGitViewReady(key, path, refresh)
+if (!view.git) return
+if (commit) {
+if (branch && branch !== view.branch) await selectGitBranch(key, path, branch, refresh)
+if (view.commit !== commit) await selectGitCommit(key, path, commit, refresh)
+} else if (branch && branch !== view.branch) {
+await selectGitBranch(key, path, branch, refresh)
 }
-
-/**
- * Per-path git state for CodeView / the code modal: loads meta once, exposes
- * branch/commit actions. The view object is module-cached (mutable) so a remount
- * keeps the user's selection; `bump` re-renders after async work / mutation.
- */
+}
 function useGitView(tab) {
-  const path = tab.path
-  const key = gitViewKey(tab)
-  const [, bump] = React.useReducer((count) => count + 1, 0)
-  const view = gitViewFor(key)
-  React.useEffect(() => {
-    void ensureGitViewReady(key, path, bump)
-  }, [key, path])
-  const actions = React.useMemo(
-    () => ({
-      refresh() {
-        bump()
-      },
-      applyTarget(branch, commit) {
-        void applyGitTarget(tab, branch, commit, bump)
-      },
-      selectBranch(branch) {
-        if (!view.git || !branch || branch === view.branch) return
-        void selectGitBranch(key, path, branch, bump)
-      },
-      selectCommit(commit) {
-        const value = String(commit || '')
-        if (value === (view.commit || '')) return
-        void selectGitCommit(key, path, value, bump)
-      },
-      clearCommit() {
-        if (!view.commit) return
-        void selectGitCommit(key, path, '', bump)
-      },
-    }),
-    // `tab` is recreated on every App render; the cached `view` and `key` decide.
-    [key, path, view],
-  )
-  return { view, actions }
+const path = tab.path
+const key = gitViewKey(tab)
+const [, bump] = React.useReducer((count) => count + 1, 0)
+const view = gitViewFor(key)
+React.useEffect(() => {
+void ensureGitViewReady(key, path, bump)
+}, [key, path])
+const actions = React.useMemo(
+() => ({
+refresh() {
+bump()
+},
+applyTarget(branch, commit) {
+void applyGitTarget(tab, branch, commit, bump)
+},
+selectBranch(branch) {
+if (!view.git || !branch || branch === view.branch) return
+void selectGitBranch(key, path, branch, bump)
+},
+selectCommit(commit) {
+const value = String(commit || '')
+if (value === (view.commit || '')) return
+void selectGitCommit(key, path, value, bump)
+},
+clearCommit() {
+if (!view.commit) return
+void selectGitCommit(key, path, '', bump)
+},
+}),
+[key, path, view],
+)
+return { view, actions }
 }
-
-/** Branch + commit dropdowns and the 清除 button, shown inside .mdr-code-head. */
 function GitBar(props) {
-  const { view, actions } = props
-  const branchOptions = view.branches.map((branch) => h('option', { key: branch, value: branch }, branch))
-  const commitOptions = [h('option', { key: '__latest', value: '' }, `◎ ${view.branch || '当前分支'} 最新`)]
-  let commitListed = false
-  for (const commit of view.commits) {
-    if (view.commit && commit.hash === view.commit) commitListed = true
-    commitOptions.push(
-      h(
-        'option',
-        { key: commit.hash, value: commit.hash },
-        `${commit.short} ${commit.author} ${commit.date} ${String(commit.subject || '').slice(0, 30)}`,
-      ),
-    )
-  }
-  // A jump-adapted link may name a commit outside this branch's recent log: add
-  // it so the select reflects the view that is actually rendered.
-  if (view.commit && !commitListed) {
-    commitOptions.push(
-      h(
-        'option',
-        { key: '__jump', value: view.commit },
-        `${view.commitMeta ? view.commitMeta.short : String(view.commit).slice(0, 7)} (跳转提交)`,
-      ),
-    )
-  }
-  return h(
-    'span',
-    { className: 'mdr-git-bar' },
-    h(
-      'select',
-      {
-        className: 'mdr-git-sel',
-        title: '选择分支',
-        value: view.branch,
-        onChange: (event) => actions.selectBranch(event.target.value),
-      },
-      branchOptions,
-    ),
-    h(
-      'select',
-      {
-        className: 'mdr-git-sel',
-        title: '选择提交，查看该提交对当前文件的改动',
-        value: view.commit || '',
-        onChange: (event) => actions.selectCommit(event.target.value),
-      },
-      commitOptions,
-    ),
-    h('button', { className: 'mdr-git-btn', title: '清除提交选择，回到最新版本', onClick: actions.clearCommit }, '清除'),
-  )
+const { view, actions } = props
+const branchOptions = view.branches.map((branch) => h('option', { key: branch, value: branch }, branch))
+const commitOptions = [h('option', { key: '__latest', value: '' }, `◎ ${view.branch || '当前分支'} 最新`)]
+let commitListed = false
+for (const commit of view.commits) {
+if (view.commit && commit.hash === view.commit) commitListed = true
+commitOptions.push(
+h(
+'option',
+{ key: commit.hash, value: commit.hash },
+`${commit.short} ${commit.author} ${commit.date} ${String(commit.subject || '').slice(0, 30)}`,
+),
+)
 }
-
-/** Git-related styles; the body padding/overflow override makes the body the scroller. */
+if (view.commit && !commitListed) {
+commitOptions.push(
+h(
+'option',
+{ key: '__jump', value: view.commit },
+`${view.commitMeta ? view.commitMeta.short : String(view.commit).slice(0, 7)} (跳转提交)`,
+),
+)
+}
+return h(
+'span',
+{ className: 'mdr-git-bar' },
+h(
+'select',
+{
+className: 'mdr-git-sel',
+title: '选择分支',
+value: view.branch,
+onChange: (event) => actions.selectBranch(event.target.value),
+},
+branchOptions,
+),
+h(
+'select',
+{
+className: 'mdr-git-sel',
+title: '选择提交，查看该提交对当前文件的改动',
+value: view.commit || '',
+onChange: (event) => actions.selectCommit(event.target.value),
+},
+commitOptions,
+),
+h('button', { className: 'mdr-git-btn', title: '清除提交选择，回到最新版本', onClick: actions.clearCommit }, '清除'),
+)
+}
 const GIT_CSS = `
 .mdr-code .mdr-code-body{position:relative;overflow:auto;padding:0}
 .mdr-code .mdr-git-bar{display:flex;align-items:center;gap:6px;flex:0 0 auto;max-width:100%}
@@ -2827,8 +2147,6 @@ const GIT_CSS = `
 .mdr-code .mdr-git-vwrap{position:relative;min-width:100%}
 .mdr-code .mdr-git-vscroll .mdr-cl{position:absolute;left:0;height:${GIT_LINE_H}px;line-height:${GIT_LINE_H}px;min-height:0}
 .mdr-code .mdr-git-vscroll .mdr-cl-no{position:static}
-/* ==== VSCode Dark+ palette (kept from input/reference/index.html; the code view
-   owns these rules so tabs and the modal always agree) ==== */
 .mdr-code .hljs-keyword,.mdr-code .hljs-doctag,.mdr-code .hljs-template-tag,.mdr-code .hljs-tag,.mdr-code .hljs-name,.mdr-code .hljs-attr,.mdr-code .hljs-selector-tag,.mdr-code .hljs-meta,.mdr-code .hljs-section,.mdr-code .hljs-link,.mdr-code .hljs-variable.language_{color:#569cd6}
 .mdr-code .hljs-string,.mdr-code .hljs-meta .hljs-string,.mdr-code .hljs-code,.mdr-code .hljs-formula{color:#ce9178}
 .mdr-code .hljs-comment,.mdr-code .hljs-quote{color:#6a9955}
@@ -2841,24 +2159,14 @@ const GIT_CSS = `
 .mdr-code .hljs-operator,.mdr-code .hljs-punctuation,.mdr-code .hljs-subst{color:#d4d4d4}
 .mdr-code .hljs-addition{color:#b5cea8;background-color:rgba(46,160,67,.15)}
 .mdr-code .hljs-deletion{color:#f48771;background-color:rgba(248,81,73,.15)}
-/* Java/Kotlin 补色：全大写常量/枚举值（枚举值也要有颜色且可点） */
 .mdr-code .hljs-constant{color:#b5cea8}
-/* 参数列表整段带 hljs-params：用复合选择器把补出来的类型/变量/关键字还原成各自颜色 */
 .mdr-code .hljs-params.hljs-type{color:#4ec9b0}
 .mdr-code .hljs-params.hljs-variable{color:#9cdcfe}
 .mdr-code .hljs-params.hljs-keyword{color:#569cd6}
 .mdr-code .hljs-params.hljs-constant{color:#b5cea8}
-/* 跳转行持久高亮（黄色，直到下一次跳转 / 关闭；没有任何定时器移除） */
 .mdr-code .mdr-cl.hit{background:rgba(255,214,102,.16);box-shadow:inset 3px 0 0 #ffd33d}
 .mdr-code .mdr-cl.hit .mdr-cl-no{background:rgba(255,214,102,.22);color:#ffd33d}
 .mdr-code .mdr-cl.mdr-git-add.hit,.mdr-code .mdr-cl.mdr-git-del.hit,.mdr-code .mdr-cl.mdr-git-ctx.hit{box-shadow:inset 3px 0 0 #ffd33d}
-/* Ctrl+点击可跳转 token 的 hover 提示：仅 Java/Kotlin 视图挂 .jump-hover 时生效
-   （与原版一致：下划线 + 轻微变亮 + pointer）。覆盖所有会产生跳转的 token class：
-   function_（方法）/ hljs-type、class_（类型；泛型头与泛型实参也是 hljs-type）/
-   hljs-variable（变量、字段、参数名）/ hljs-constant（枚举值、大写常量）+
-   hljs-params 里的复合 class（参数列表整段是 hljs-params，签名里的类型/变量/常量
-   都带这个前缀，复合选择器优先级更高才能拿到类型色/下划线）。删除行不给提示——
-   它的行号是旧文件的行号，和当前渲染的新版本文本错位，跳过去必然错。 */
 .mdr-code .mdr-code-body.jump-hover span.hljs-title.function_:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-variable:hover,
 .mdr-code .mdr-code-body.jump-hover span.hljs-type:hover,
@@ -2869,445 +2177,337 @@ const GIT_CSS = `
 .mdr-code .mdr-code-body.jump-hover span.hljs-params.hljs-constant:hover{text-decoration:underline;text-decoration-color:rgba(220,220,170,.6);cursor:pointer;filter:brightness(1.2)}
 .mdr-code .mdr-code-body.jump-hover .mdr-cl.mdr-git-del span:hover{text-decoration:none;cursor:default;filter:none}
 `
-
 // ---- 20-code.js ----
-/** Code tab: VSCode-Dark+-style line-numbered viewer with hljs colors. */
-
 const LANG_MAP = {
-  '.java': 'java',
-  '.kt': 'kotlin',
-  '.kts': 'kotlin',
-  '.js': 'javascript',
-  '.jsx': 'javascript',
-  '.mjs': 'javascript',
-  '.cjs': 'javascript',
-  '.ts': 'typescript',
-  '.tsx': 'typescript',
-  '.vue': 'xml',
-  '.xml': 'xml',
-  '.html': 'xml',
-  '.htm': 'xml',
-  '.css': 'css',
-  '.scss': 'scss',
-  '.less': 'less',
-  '.json': 'json',
-  '.yml': 'yaml',
-  '.yaml': 'yaml',
-  '.properties': 'ini',
-  '.toml': 'ini',
-  '.sql': 'sql',
-  '.sh': 'bash',
-  // the vendored hljs common bundle has no 'dos' grammar: shell is the closest
-  // (the standalone reader mapped bat -> bash for the same reason).
-  '.bat': 'bash',
-  '.cmd': 'bash',
-  '.ps1': 'powershell',
-  '.py': 'python',
-  '.go': 'go',
-  '.rb': 'ruby',
-  '.php': 'php',
-  '.cs': 'csharp',
-  '.cpp': 'cpp',
-  '.c': 'c',
-  '.h': 'c',
-  '.gradle': 'groovy',
-  '.md': 'markdown',
+'.java': 'java',
+'.kt': 'kotlin',
+'.kts': 'kotlin',
+'.js': 'javascript',
+'.jsx': 'javascript',
+'.mjs': 'javascript',
+'.cjs': 'javascript',
+'.ts': 'typescript',
+'.tsx': 'typescript',
+'.vue': 'xml',
+'.xml': 'xml',
+'.html': 'xml',
+'.htm': 'xml',
+'.css': 'css',
+'.scss': 'scss',
+'.less': 'less',
+'.json': 'json',
+'.yml': 'yaml',
+'.yaml': 'yaml',
+'.properties': 'ini',
+'.toml': 'ini',
+'.sql': 'sql',
+'.sh': 'bash',
+'.bat': 'bash',
+'.cmd': 'bash',
+'.ps1': 'powershell',
+'.py': 'python',
+'.go': 'go',
+'.rb': 'ruby',
+'.php': 'php',
+'.cs': 'csharp',
+'.cpp': 'cpp',
+'.c': 'c',
+'.h': 'c',
+'.gradle': 'groovy',
+'.md': 'markdown',
 }
-
 function langForPath(rel) {
-  return LANG_MAP[extOf(rel)] || ''
+return LANG_MAP[extOf(rel)] || ''
 }
-
-/* ================= 代码高亮统一管线 =================
-   Ported from the standalone reader (input/reference/index.html):
-     highlightCodeHtml → hljs 高亮 + Java/Kotlin 类型增强 → HTML 字符串
-     highlightToLines  → HTML 字符串 → 每行 HTML（跨行注释/字符串不切坏 + Java/Kotlin 标识符补色）
-   整文件只做一次 hljs（virtual scroll 下也只算一次），按行重建时保持多行 token 的
-   span 在每行上开闭，所以多行注释/字符串的每一行颜色都正确。
-
-   与 per-line hljs 的差别（用户报的 bug）：
-     · per-line 把 `/* …` 与 `… *​/` 各自当独立文本 → 整段注释/字符串不上色；
-     · hljs 的 Java/Kotlin 语法只给「带赋值的声明」识别类型，静态调用点、无初始化声明、
-       字段/返回类型、泛型实参、方法调用名、变量/字段引用全留白 → 靠下面两个后处理补色。 */
-
-/* Java/Kotlin？这两种语言额外做类型增强与标识符补色 */
 function isJavaKtLang(lang) {
-  return lang === 'java' || lang === 'kotlin' || lang === 'kt'
+return lang === 'java' || lang === 'kotlin' || lang === 'kt'
 }
-
-/* Java/Kotlin 类型增强（VSCode Dark+ 观感）：hljs 的 Java/Kotlin 语法只对
-   「带赋值的声明」识别类型（hljs-type），静态调用点（JSONObject.parseObject）、
-   无初始化声明、字段/返回类型里的类名都不高亮。
-   精确增强（只补类型语义位置，统一用 hljs-type 类型色，不碰已高亮的 token，
-   不误伤字符串/注释/常量）：
-     · 后跟 . 或 空白 → 类名（静态调用 / 声明 / 返回类型）
-     · 后跟 < → 泛型「头」（List<…> 的 List、OutputDTO<…> 的 OutputDTO）
-     · 泛型 <Type>（hljs 会把 < 转义成 HTML 实体）
-     · 逗号后的泛型实参（Map<Long, Boolean> 里的 Boolean）
-   排除全大写标识符（常量/枚举），排除已被 span 包裹的内容。
-   注：正则里的 \x26lt; 表示「&」+「lt;」两个字符（即 < 的 HTML 实体），
-   「&」写成 \x26 是为了避免它在源码里被当成 HTML 实体起始。 */
 function enhanceJavaKtTypes(html) {
-  return html.replace(
-    /<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|\b[A-Z]\w*\b(?=\s*\x26lt;)|(?<=<|\x26lt;)\b[A-Z]\w*\b|,\s*(\b[A-Z]\w*\b)/g,
-    (m, g1) => {
-      if (m.startsWith('<span')) return m
-      if (g1) {
-        // 逗号后的泛型实参：Map<Long, Boolean> 里的 Boolean
-        if (!/[a-z]/.test(g1)) return m // 全大写 → 常量/枚举，跳过
-        const head = m.slice(0, m.length - g1.length)
-        return head + `<span class="hljs-type">${g1}</span>`
-      }
-      if (!/[a-z]/.test(m)) return m // 全大写常量/枚举 → 跳过
-      return `<span class="hljs-type">${m}</span>`
-    },
-  )
+return html.replace(
+/<span[^>]*>[\s\S]*?<\/span>|\b[A-Z]\w*\b(?=\.)|\b[A-Z]\w*\b(?=\s)|\b[A-Z]\w*\b(?=\s*\x26lt;)|(?<=<|\x26lt;)\b[A-Z]\w*\b|,\s*(\b[A-Z]\w*\b)/g,
+(m, g1) => {
+if (m.startsWith('<span')) return m
+if (g1) {
+if (!/[a-z]/.test(g1)) return m // 全大写 → 常量/枚举，跳过
+const head = m.slice(0, m.length - g1.length)
+return head + `<span class="hljs-type">${g1}</span>`
 }
-
-/* Java/Kotlin 关键字（含基本类型）—— 标识符补色与参数列表识别共用 */
+if (!/[a-z]/.test(m)) return m // 全大写常量/枚举 → 跳过
+return `<span class="hljs-type">${m}</span>`
+},
+)
+}
 const JAVA_KW = (function () {
-  const set = {}
-  ;(
-    'abstract assert boolean break byte case catch char class const continue default do double ' +
-    'else enum extends final finally float for goto if implements import instanceof int interface ' +
-    'long native new package private protected public return short static strictfp super switch ' +
-    'synchronized this throw throws transient try void volatile while true false null var record ' +
-    'sealed permits yield module requires exports opens uses provides to transitive ' +
-    'as break by catch class companion const constructor crossinline data dynamic enum expect ' +
-    'external final infix init inline inner internal lateinit noinline open operator out override ' +
-    'private protected public reified sealed suspend tailrec vararg actual abstract annotation ' +
-    'fun val typeof typealias when where in is object'
-  )
-    .split(' ')
-    .forEach((keyword) => {
-      set[keyword] = 1
-    })
-  return set
+const set = {}
+;(
+'abstract assert boolean break byte case catch char class const continue default do double ' +
+'else enum extends final finally float for goto if implements import instanceof int interface ' +
+'long native new package private protected public return short static strictfp super switch ' +
+'synchronized this throw throws transient try void volatile while true false null var record ' +
+'sealed permits yield module requires exports opens uses provides to transitive ' +
+'as break by catch class companion const constructor crossinline data dynamic enum expect ' +
+'external final infix init inline inner internal lateinit noinline open operator out override ' +
+'private protected public reified sealed suspend tailrec vararg actual abstract annotation ' +
+'fun val typeof typealias when where in is object'
+)
+.split(' ')
+.forEach((keyword) => {
+set[keyword] = 1
+})
+return set
 })()
-
-/* Java/Kotlin 标识符补色：hljs 不标方法调用名与变量/字段引用。
-   只处理「未被任何 span 包裹」的纯文本标识符（绝无双重包裹）：
-   · xxx.yyy( 的 yyy / 独立的 yyy( → hljs-title function_（函数名色）
-   · 其余小写开头标识符（变量/字段/参数引用）→ hljs-variable（变量色）
-   显式排除 Java/Kotlin 关键字与字面量、PascalCase 类型/全大写常量；
-   字符串/注释/数字已被 hljs 包裹（classes 非空），不会走到这里，本函数也不匹配数字。
-   inImport=true（import 语句里的包路径）：PascalCase 段是**类名** → 类型色。
-   返回 token 数组而不是拼好的 HTML：调用方负责转义与拼接。 */
 function hljsPostProcJavaKtTokens(txt, inImport) {
-  const out = []
-  let last = 0
-  const re = /\b[A-Za-z_$][\w$]*\b/g
-  let match
-  while ((match = re.exec(txt)) !== null) {
-    const word = match[0]
-    if (JAVA_KW[word]) continue // 关键字/字面量 → 不动
-    let cls
-    if (/^[A-Z]/.test(word)) {
-      if (/[a-z]/.test(word)) {
-        if (!inImport) continue // PascalCase → 类型归类型增强管
-        cls = 'hljs-type' // import 路径里的类名 → 类型
-      } else {
-        cls = 'hljs-constant' // 全大写 → 常量/枚举值（枚举值要能点）
-      }
-    } else {
-      cls = txt.charAt(match.index + word.length) === '(' ? 'hljs-title function_' : 'hljs-variable'
-    }
-    if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
-    out.push({ cls, txt: word })
-    last = match.index + word.length
-  }
-  if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
-  return out
+const out = []
+let last = 0
+const re = /\b[A-Za-z_$][\w$]*\b/g
+let match
+while ((match = re.exec(txt)) !== null) {
+const word = match[0]
+if (JAVA_KW[word]) continue // 关键字/字面量 → 不动
+let cls
+if (/^[A-Z]/.test(word)) {
+if (/[a-z]/.test(word)) {
+if (!inImport) continue // PascalCase → 类型归类型增强管
+cls = 'hljs-type' // import 路径里的类名 → 类型
+} else {
+cls = 'hljs-constant' // 全大写 → 常量/枚举值（枚举值要能点）
 }
-
-/* 这个文本节点是不是 import 语句里的包路径？
-   判据：前一个兄弟节点是 import/static 关键字 span（hljs 只把关键字包成 span）。 */
+} else {
+cls = txt.charAt(match.index + word.length) === '(' ? 'hljs-title function_' : 'hljs-variable'
+}
+if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
+out.push({ cls, txt: word })
+last = match.index + word.length
+}
+if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
+return out
+}
 function isImportPathText(node) {
-  let prev = node.previousSibling
-  while (prev && prev.nodeType === 3 && !prev.textContent.trim()) prev = prev.previousSibling
-  if (!prev || prev.nodeType !== 1) return false
-  const text = (prev.textContent || '').trim()
-  if (text === 'import') return true
-  if (text === 'static') {
-    let before = prev.previousSibling
-    while (before && before.nodeType === 3 && !before.textContent.trim()) before = before.previousSibling
-    return !!before && before.nodeType === 1 && (before.textContent || '').trim() === 'import'
-  }
-  return false
+let prev = node.previousSibling
+while (prev && prev.nodeType === 3 && !prev.textContent.trim()) prev = prev.previousSibling
+if (!prev || prev.nodeType !== 1) return false
+const text = (prev.textContent || '').trim()
+if (text === 'import') return true
+if (text === 'static') {
+let before = prev.previousSibling
+while (before && before.nodeType === 3 && !before.textContent.trim()) before = before.previousSibling
+return !!before && before.nodeType === 1 && (before.textContent || '').trim() === 'import'
 }
-
-/* Java/Kotlin 参数列表里的标识符。
-   背景：hljs 把整个参数列表塞进一个 <span class="hljs-params">(…)</span>，
-   而类型增强是「整段 span 跳过」→ 参数里的类型既没上色、也不是独立 token。
-   这里在按行重建时单独识别：
-     · PascalCase（首字母大写且含小写）→ 类型（hljs-type）
-     · 全大写 → 常量/枚举 → 不动
-     · 关键字/基本类型 → 关键字色（hljs-keyword）
-     · 其余小写标识符 → 参数名（hljs-variable） */
+return false
+}
 function hljsParamTokens(txt) {
-  const out = []
-  let last = 0
-  const re = /\b[A-Za-z_$][\w$]*\b/g
-  let match
-  while ((match = re.exec(txt)) !== null) {
-    const word = match[0]
-    let cls = ''
-    if (/^[A-Z]/.test(word)) {
-      if (/[a-z]/.test(word)) cls = 'hljs-type' // PascalCase → 类型
-    } else if (JAVA_KW[word]) {
-      cls = 'hljs-keyword' // 关键字 / 基本类型
-    } else {
-      cls = 'hljs-variable' // 参数名
-    }
-    if (!cls) continue
-    if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
-    out.push({ cls, txt: word })
-    last = match.index + word.length
-  }
-  if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
-  return out
+const out = []
+let last = 0
+const re = /\b[A-Za-z_$][\w$]*\b/g
+let match
+while ((match = re.exec(txt)) !== null) {
+const word = match[0]
+let cls = ''
+if (/^[A-Z]/.test(word)) {
+if (/[a-z]/.test(word)) cls = 'hljs-type' // PascalCase → 类型
+} else if (JAVA_KW[word]) {
+cls = 'hljs-keyword' // 关键字 / 基本类型
+} else {
+cls = 'hljs-variable' // 参数名
 }
-
-/* hljs 高亮 → HTML 字符串（未收录语言 / 高亮异常 → 转义后的原文） */
+if (!cls) continue
+if (match.index > last) out.push({ cls: '', txt: txt.slice(last, match.index) })
+out.push({ cls, txt: word })
+last = match.index + word.length
+}
+if (last < txt.length) out.push({ cls: '', txt: txt.slice(last) })
+return out
+}
 function highlightCodeHtml(content, lang) {
-  const lib = typeof window !== 'undefined' ? window.hljs : null
-  const source = String(content == null ? '' : content)
-  const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
-  if (!lib || !name) return escapeHtml(source)
-  let html
-  try {
-    html = lib.highlight(source, { language: name, ignoreIllegals: true }).value
-  } catch {
-    return escapeHtml(source)
-  }
-  if (isJavaKtLang(lang)) html = enhanceJavaKtTypes(html)
-  return html
+const lib = typeof window !== 'undefined' ? window.hljs : null
+const source = String(content == null ? '' : content)
+const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
+if (!lib || !name) return escapeHtml(source)
+let html
+try {
+html = lib.highlight(source, { language: name, ignoreIllegals: true }).value
+} catch {
+return escapeHtml(source)
 }
-
-/* HTML 字符串 → 每行 HTML（按行重建 DOM，跨行 token 保持正确）
-   · 文本节点是【解码后】的内容（HTML 实体已还原成 < > 等字符），
-     重新拼回 HTML 时必须再转义一次，否则 < 会被浏览器当成标签开头。
-   · Java/Kotlin：未被 span 包裹的纯文本 → 补方法调用名与变量/字段引用；
-     参数列表（hljs-params 里的纯文本）→ 补类型与参数名。 */
+if (isJavaKtLang(lang)) html = enhanceJavaKtTypes(html)
+return html
+}
 function highlightToLines(html, isJavaKt) {
-  const tmpl = document.createElement('template')
-  tmpl.innerHTML = html
-  const lines = []
-  let current = []
-  lines.push(current)
-  function walk(node, classes) {
-    if (node.nodeType === 3) {
-      // text node：取出跨行文本逐行切开
-      const parts = node.textContent.split('\n')
-      const inParams = isJavaKt && classes.length && classes[classes.length - 1] === 'hljs-params'
-      const inImport = isJavaKt && !classes.length && isImportPathText(node)
-      for (let index = 0; index < parts.length; index += 1) {
-        if (index > 0) {
-          current = []
-          lines.push(current)
-        }
-        if (parts[index] !== '') {
-          const tokens = isJavaKt
-            ? inParams
-              ? hljsParamTokens(parts[index])
-              : !classes.length
-                ? hljsPostProcJavaKtTokens(parts[index], inImport)
-                : [{ cls: '', txt: parts[index] }]
-            : [{ cls: '', txt: parts[index] }]
-          for (const token of tokens) {
-            current.push({ cls: classes.concat(token.cls ? token.cls.split(' ') : []), txt: escapeHtml(token.txt) })
-          }
-        }
-      }
-    } else if (node.nodeType === 1 || node.nodeType === 11) {
-      // 保留 title 的语义子类（class_/function_/inherited__/invoke__），
-      // 使函数名与类名在配色下可区分
-      const cls = String(node.className || '')
-        .split(' ')
-        .filter(
-          (one) =>
-            one.startsWith('hljs-') || one === 'class_' || one === 'function_' || one === 'inherited__' || one === 'invoke__',
-        )
-      const childClasses = classes.concat(cls)
-      for (const child of node.childNodes || []) walk(child, childClasses)
-    }
-  }
-  walk(tmpl.content, [])
-  return lines.map((tokens) =>
-    tokens.map((token) => (token.cls.length ? `<span class="${token.cls.join(' ')}">${token.txt}</span>` : token.txt)).join(''),
-  )
+const tmpl = document.createElement('template')
+tmpl.innerHTML = html
+const lines = []
+let current = []
+lines.push(current)
+function walk(node, classes) {
+if (node.nodeType === 3) {
+const parts = node.textContent.split('\n')
+const inParams = isJavaKt && classes.length && classes[classes.length - 1] === 'hljs-params'
+const inImport = isJavaKt && !classes.length && isImportPathText(node)
+for (let index = 0; index < parts.length; index += 1) {
+if (index > 0) {
+current = []
+lines.push(current)
 }
-
-/** One line's highlighted HTML through the same whole-line pipeline (kept for other views). */
+if (parts[index] !== '') {
+const tokens = isJavaKt
+? inParams
+? hljsParamTokens(parts[index])
+: !classes.length
+? hljsPostProcJavaKtTokens(parts[index], inImport)
+: [{ cls: '', txt: parts[index] }]
+: [{ cls: '', txt: parts[index] }]
+for (const token of tokens) {
+current.push({ cls: classes.concat(token.cls ? token.cls.split(' ') : []), txt: escapeHtml(token.txt) })
+}
+}
+}
+} else if (node.nodeType === 1 || node.nodeType === 11) {
+const cls = String(node.className || '')
+.split(' ')
+.filter(
+(one) =>
+one.startsWith('hljs-') || one === 'class_' || one === 'function_' || one === 'inherited__' || one === 'invoke__',
+)
+const childClasses = classes.concat(cls)
+for (const child of node.childNodes || []) walk(child, childClasses)
+}
+}
+walk(tmpl.content, [])
+return lines.map((tokens) =>
+tokens.map((token) => (token.cls.length ? `<span class="${token.cls.join(' ')}">${token.txt}</span>` : token.txt)).join(''),
+)
+}
 function highlightLineHtml(text, lang) {
-  try {
-    const lines = highlightByLine(String(text == null ? '' : text), lang || 'plaintext')
-    return (lines && lines[0]) || ' '
-  } catch {
-    return escapeHtml(text) || ' '
-  }
+try {
+const lines = highlightByLine(String(text == null ? '' : text), lang || 'plaintext')
+return (lines && lines[0]) || ' '
+} catch {
+return escapeHtml(text) || ' '
 }
-
-/* 整文件一次 hljs → 按行切分。开销是文件长度线性的一次调用（虚拟滚动也只是
-   一次；不再 per-row 独立高亮），并按下述内容哈希缓存，切回标签页不重复算。 */
+}
 function highlightByLine(content, lang) {
-  return highlightToLines(highlightCodeHtml(content, lang), isJavaKtLang(lang))
+return highlightToLines(highlightCodeHtml(content, lang), isJavaKtLang(lang))
 }
-
-/** 高亮结果缓存：key = lang + 内容哈希（整文件一次高亮的结果按文件缓存）。 */
 const HIGHLIGHT_CACHE_MAX = 8
 const highlightCache = new Map()
-
 function textHash(value) {
-  const text = String(value)
-  // FNV-1a 32-bit，包含长度，避免不同内容同 key
-  let hash = 2166136261
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index)
-    hash = Math.imul(hash, 16777619) >>> 0
-  }
-  return hash.toString(16)
+const text = String(value)
+let hash = 2166136261
+for (let index = 0; index < text.length; index += 1) {
+hash ^= text.charCodeAt(index)
+hash = Math.imul(hash, 16777619) >>> 0
 }
-
+return hash.toString(16)
+}
 function highlightLinesCached(content, lang) {
-  const text = String(content == null ? '' : content)
-  const key = `${lang || ''}\u0000${text.length}\u0000${textHash(text)}`
-  const hit = highlightCache.get(key)
-  if (hit) {
-    // LRU：命中后挪到末尾
-    highlightCache.delete(key)
-    highlightCache.set(key, hit)
-    return hit
-  }
-  let lines
-  try {
-    lines = highlightByLine(text, lang)
-  } catch {
-    lines = text.split('\n').map((one) => escapeHtml(one))
-  }
-  highlightCache.set(key, lines)
-  while (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
-    const oldest = highlightCache.keys().next().value
-    highlightCache.delete(oldest)
-  }
-  return lines
+const text = String(content == null ? '' : content)
+const key = `${lang || ''}\u0000${text.length}\u0000${textHash(text)}`
+const hit = highlightCache.get(key)
+if (hit) {
+highlightCache.delete(key)
+highlightCache.set(key, hit)
+return hit
 }
-
-/* ================= md fenced code blocks (same pipeline as the code view) =================
-   10-markdown.js hands every ```lang fence to renderFenceCodeHtml(source, lang) instead of
-   running hljs itself. Both views then share highlightCodeHtml → highlightToLines, so the
-   token classes (and therefore the colours) of a md code block are identical to the same
-   source in a code tab/modal: multi-line comments/strings stay coloured, and Java/Kotlin get
-   the type/method/variable post passes. */
-
-/* 代码块语言名归一化（port of the standalone reader's hljsLang):
-   ```lang 里的常见别名 → highlight.js 语言名；未收录的语言返回 ''（调用方保持原文）。 */
+let lines
+try {
+lines = highlightByLine(text, lang)
+} catch {
+lines = text.split('\n').map((one) => escapeHtml(one))
+}
+highlightCache.set(key, lines)
+while (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
+const oldest = highlightCache.keys().next().value
+highlightCache.delete(oldest)
+}
+return lines
+}
 const HLJS_LANG_ALIAS = {
-  // 前端框架模板 → xml（hljs common 包无 vue/svelte 语言）
-  vue: 'xml',
-  svelte: 'xml',
-  astro: 'xml',
-  angular: 'xml',
-  hbs: 'xml',
-  handlebars: 'xml',
-  pug: 'xml',
-  ejs: 'xml',
-  jsp: 'xml',
-  thymeleaf: 'xml',
-  html: 'xml',
-  htm: 'xml',
-  svg: 'xml',
-  xhtml: 'xml',
-  js: 'javascript',
-  mjs: 'javascript',
-  cjs: 'javascript',
-  jsx: 'javascript',
-  node: 'javascript',
-  ts: 'typescript',
-  tsx: 'typescript',
-  mts: 'typescript',
-  cts: 'typescript',
-  py: 'python',
-  py3: 'python',
-  python3: 'python',
-  ipython: 'python',
-  gyp: 'python',
-  pycon: 'python',
-  rb: 'ruby',
-  gemspec: 'ruby',
-  podspec: 'ruby',
-  yml: 'yaml',
-  sh: 'bash',
-  shell: 'bash',
-  zsh: 'bash',
-  console: 'bash',
-  golang: 'go',
-  rs: 'rust',
-  kt: 'kotlin',
-  kts: 'kotlin',
-  cs: 'csharp',
-  'c#': 'csharp',
-  'c++': 'cpp',
-  cpp: 'cpp',
-  hpp: 'cpp',
-  'h++': 'cpp',
-  hh: 'cpp',
-  cc: 'cpp',
-  objc: 'objectivec',
-  'obj-c': 'objectivec',
-  bat: 'dos',
-  cmd: 'dos',
-  dos: 'dos',
-  ps1: 'powershell',
-  powershell: 'powershell',
-  patch: 'diff',
-  md: 'markdown',
-  markdown: 'markdown',
-  jsonc: 'json',
-  json5: 'json',
-  text: '',
-  txt: '',
-  plaintext: '',
-  plain: '',
-  mermaid: '',
-  ini: 'ini',
-  properties: 'ini',
+vue: 'xml',
+svelte: 'xml',
+astro: 'xml',
+angular: 'xml',
+hbs: 'xml',
+handlebars: 'xml',
+pug: 'xml',
+ejs: 'xml',
+jsp: 'xml',
+thymeleaf: 'xml',
+html: 'xml',
+htm: 'xml',
+svg: 'xml',
+xhtml: 'xml',
+js: 'javascript',
+mjs: 'javascript',
+cjs: 'javascript',
+jsx: 'javascript',
+node: 'javascript',
+ts: 'typescript',
+tsx: 'typescript',
+mts: 'typescript',
+cts: 'typescript',
+py: 'python',
+py3: 'python',
+python3: 'python',
+ipython: 'python',
+gyp: 'python',
+pycon: 'python',
+rb: 'ruby',
+gemspec: 'ruby',
+podspec: 'ruby',
+yml: 'yaml',
+sh: 'bash',
+shell: 'bash',
+zsh: 'bash',
+console: 'bash',
+golang: 'go',
+rs: 'rust',
+kt: 'kotlin',
+kts: 'kotlin',
+cs: 'csharp',
+'c#': 'csharp',
+'c++': 'cpp',
+cpp: 'cpp',
+hpp: 'cpp',
+'h++': 'cpp',
+hh: 'cpp',
+cc: 'cpp',
+objc: 'objectivec',
+'obj-c': 'objectivec',
+bat: 'dos',
+cmd: 'dos',
+dos: 'dos',
+ps1: 'powershell',
+powershell: 'powershell',
+patch: 'diff',
+md: 'markdown',
+markdown: 'markdown',
+jsonc: 'json',
+json5: 'json',
+text: '',
+txt: '',
+plaintext: '',
+plain: '',
+mermaid: '',
+ini: 'ini',
+properties: 'ini',
 }
-
-/** Alias targets missing from the vendored common bundle → closest available grammar.
-    `dos` is mapped to bash here for the same reason LANG_MAP maps `.bat` to bash. */
 const HLJS_LANG_FALLBACK = { dos: 'bash' }
-
-/** Normalize a fence language hint to a highlight.js language name ('' = plain text).
-    The ALIAS table is applied BEFORE the "already a hljs name" check on purpose: the
-    code view resolves languages from the file extension (`langForPath`, e.g. .js →
-    javascript, .kt → kotlin, .html → xml), so a ```js / ```kt / ```html fence must
-    resolve to the same canonical name to produce byte-identical token classes. */
 function hljsLangNormalized(lang) {
-  const lib = typeof window !== 'undefined' ? window.hljs : null
-  if (!lang || !lib || typeof lib.getLanguage !== 'function') return ''
-  const raw = String(lang).trim().toLowerCase().replace(/^\./, '')
-  if (!raw) return ''
-  if (Object.prototype.hasOwnProperty.call(HLJS_LANG_ALIAS, raw)) {
-    const mapped = HLJS_LANG_ALIAS[raw]
-    if (!mapped) return '' // text / plaintext / mermaid … → keep the source as-is
-    if (lib.getLanguage(mapped)) return mapped
-    const fallback = HLJS_LANG_FALLBACK[mapped]
-    if (fallback && lib.getLanguage(fallback)) return fallback
-    return ''
-  }
-  if (lib.getLanguage(raw)) return raw // already a canonical hljs name
-  return ''
+const lib = typeof window !== 'undefined' ? window.hljs : null
+if (!lang || !lib || typeof lib.getLanguage !== 'function') return ''
+const raw = String(lang).trim().toLowerCase().replace(/^\./, '')
+if (!raw) return ''
+if (Object.prototype.hasOwnProperty.call(HLJS_LANG_ALIAS, raw)) {
+const mapped = HLJS_LANG_ALIAS[raw]
+if (!mapped) return '' // text / plaintext / mermaid … → keep the source as-is
+if (lib.getLanguage(mapped)) return mapped
+const fallback = HLJS_LANG_FALLBACK[mapped]
+if (fallback && lib.getLanguage(fallback)) return fallback
+return ''
 }
-
-/**
- * md-scoped VSCode Dark+ palette — keep in sync with the `.mdr-code` palette in
- * GIT_CSS (15-git.js). 00-core's APP_CSS already covers the common tokens for
- * `.mdr-root`, but it has no rules for the Java/Kotlin post-pass classes
- * (`hljs-constant`, `hljs-params.hljs-type`, …), so md fences would otherwise
- * leave ALL-CAPS constants white and paint parameter types as plain variables.
- * Injected once (idempotently) the first time a fence is rendered.
- */
+if (lib.getLanguage(raw)) return raw // already a canonical hljs name
+return ''
+}
 const FENCE_CSS_ID = 'mdr-fence-css'
 const FENCE_CSS = `
 .mdr-md pre code .hljs-keyword,.mdr-md pre code .hljs-doctag,.mdr-md pre code .hljs-template-tag,.mdr-md pre code .hljs-tag,.mdr-md pre code .hljs-name,.mdr-md pre code .hljs-attr,.mdr-md pre code .hljs-selector-tag,.mdr-md pre code .hljs-meta,.mdr-md pre code .hljs-section,.mdr-md pre code .hljs-link,.mdr-md pre code .hljs-variable.language_{color:#569cd6}
@@ -3344,8 +2544,6 @@ const FENCE_CSS = `
 .mdr-md .mdr-md-code{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;color:#d4d4d4}
 .mdr-md .mdr-md-code.mdr-md-code-pending{display:flex;align-items:center;justify-content:center;white-space:normal;color:#6e7681;font-size:12px}
 .mdr-md .mdr-md-code-note{opacity:.85;letter-spacing:.02em}
-/* The diff block is NOT inside <pre><code>, so the fence palette above does not
-   reach it: mirror the same token colours for the highlighted diff code. */
 .mdr-md .mdr-md-diff .hljs-keyword,.mdr-md .mdr-md-diff .hljs-doctag,.mdr-md .mdr-md-diff .hljs-template-tag,.mdr-md .mdr-md-diff .hljs-tag,.mdr-md .mdr-md-diff .hljs-name,.mdr-md .mdr-md-diff .hljs-attr,.mdr-md .mdr-md-diff .hljs-selector-tag,.mdr-md .mdr-md-diff .hljs-meta,.mdr-md .mdr-md-diff .hljs-section,.mdr-md .mdr-md-diff .hljs-link,.mdr-md .mdr-md-diff .hljs-variable.language_{color:#569cd6}
 .mdr-md .mdr-md-diff .hljs-string,.mdr-md .mdr-md-diff .hljs-meta .hljs-string,.mdr-md .mdr-md-diff .hljs-code,.mdr-md .mdr-md-diff .hljs-formula{color:#ce9178}
 .mdr-md .mdr-md-diff .hljs-comment,.mdr-md .mdr-md-diff .hljs-quote{color:#6a9955}
@@ -3361,1250 +2559,891 @@ const FENCE_CSS = `
 .mdr-md .mdr-md-diff .hljs-params.hljs-variable{color:#9cdcfe}
 .mdr-md .mdr-md-diff .hljs-params.hljs-keyword{color:#569cd6}
 `
-
-/** Inject the md-fence palette once; safe to call on every fence render. */
 function ensureFenceCss() {
-  if (typeof document === 'undefined' || !document.head) return
-  const existing = typeof document.getElementById === 'function' ? document.getElementById(FENCE_CSS_ID) : null
-  if (existing) return
-  const style = document.createElement('style')
-  style.id = FENCE_CSS_ID
-  style.textContent = FENCE_CSS
-  document.head.appendChild(style)
+if (typeof document === 'undefined' || !document.head) return
+const existing = typeof document.getElementById === 'function' ? document.getElementById(FENCE_CSS_ID) : null
+if (existing) return
+const style = document.createElement('style')
+style.id = FENCE_CSS_ID
+style.textContent = FENCE_CSS
+document.head.appendChild(style)
 }
-
-/**
- * Highlight one fenced code block exactly like the code view would: whole-source
- * hljs pass + Java/Kotlin post passes + per-line span rebuild, joined back with
- * newlines for the `<pre><code>` innerHTML. Unknown/absent language → escaped
- * plain text (never throws; synchronous, one block at a time).
- */
 function renderFenceCodeHtml(source, langHint) {
-  const text = String(source == null ? '' : source)
-  const hl = hljsLangNormalized(langHint)
-  if (!hl) return escapeHtml(text)
-  try {
-    ensureFenceCss()
-    return highlightToLines(highlightCodeHtml(text, hl), isJavaKtLang(hl)).join('\n')
-  } catch {
-    return escapeHtml(text)
-  }
+const text = String(source == null ? '' : source)
+const hl = hljsLangNormalized(langHint)
+if (!hl) return escapeHtml(text)
+try {
+ensureFenceCss()
+return highlightToLines(highlightCodeHtml(text, hl), isJavaKtLang(hl)).join('\n')
+} catch {
+return escapeHtml(text)
 }
-
-/* ------------------------------------------------------------- diff fences */
-
-/**
- * Fence languages that render as a diff view instead of highlighted source.
- * `patch` is an alias of `diff` (the same alias the code view uses for .patch).
- */
+}
 const DIFF_FENCE_LANGS = new Set(['diff', 'git-diff', 'patch'])
-
 function isDiffFenceLang(lang) {
-  return DIFF_FENCE_LANGS.has(String(lang == null ? '' : lang).trim().toLowerCase())
+return DIFF_FENCE_LANGS.has(String(lang == null ? '' : lang).trim().toLowerCase())
 }
-
-/**
- * Is this line a FILE HEADER of a diff (`--- a/x`, `+++ b/x`, `--- /dev/null`)?
- *
- * The shape decides, NOT the counts of the hunk header: the counts are only a
- * hint (hand-written diffs declare them wrong all the time), and a hunk whose
- * counts are too small would otherwise swallow the file header of the NEXT
- * file - the rest of that hunk would fall out of the diff and be rendered as
- * dim header rows instead of code rows.
- */
 function isDiffFileHeaderLine(line) {
-  return /^(---|\+\+\+) (a\/|b\/|\/dev\/null)/.test(String(line == null ? '' : line))
+return /^(---|\+\+\+) (a\/|b\/|\/dev\/null)/.test(String(line == null ? '' : line))
 }
-
-/**
- * Rows of a unified diff pasted into a ```diff fence.
- *
- * Boundary rules (the same in the Host's diff parser):
- *  - a hunk body runs until the next `@@` header, the next `diff --git`
- *    (a new file) or the FILE HEADER of the next file (`--- a/x`, `+++ b/x`,
- *    `--- /dev/null`). The counts in the hunk header are a HINT, not a hard
- *    boundary: hand-written diffs in design docs routinely declare the wrong
- *    counts (e.g. `@@ -11,21 +11,21 @@` over a 22-line body), and cutting the
- *    body there loses the tail of the change.
- *  - an EMPTY line inside a hunk body is a context row (some tools strip the
- *    trailing space of an empty context line). It used to end the hunk, which
- *    dropped the rest of the change into dim header rows.
- *  - trailing blank lines of the patch are stripped first: `git show --patch`
- *    output ends with a newline, and splitting it yields a trailing empty line
- *    that would otherwise become a phantom row (and eat a real line of the
- *    commit-version file - the bug that made the code view lose the line right
- *    after a hunk).
- */
 function parseDiffFenceRows(source) {
-  const rows = []
-  const text = String(source == null ? '' : source).replace(/\r\n/g, '\n').replace(/\n+$/, '')
-  let oldNo = 0
-  let newNo = 0
-  let oldLeft = 0
-  let newLeft = 0
-  let inHunk = false
-  for (const line of text.split('\n')) {
-    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
-    if (header) {
-      oldNo = Number(header[1])
-      newNo = Number(header[3])
-      oldLeft = header[2] === undefined ? 1 : Number(header[2])
-      newLeft = header[4] === undefined ? 1 : Number(header[4])
-      inHunk = true
-      rows.push({ kind: 'hunk', no: null, text: line })
-      continue
-    }
-    if (inHunk) {
-      if (line.startsWith('diff --git ')) {
-        inHunk = false
-      } else if (line.startsWith('\\')) {
-        // "\ No newline at end of file" - a meta row, and it does NOT end the
-        // hunk.
-        rows.push({ kind: 'meta', no: null, text: line })
-        continue
-      } else if (isDiffFileHeaderLine(line)) {
-        // The file header of the NEXT file ends this hunk.
-        inHunk = false
-      } else {
-        const kind = line[0]
-        if (kind === '+') {
-          rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
-          newNo += 1
-          if (newLeft > 0) newLeft -= 1
-          continue
-        }
-        if (kind === '-') {
-          rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
-          oldNo += 1
-          if (oldLeft > 0) oldLeft -= 1
-          continue
-        }
-        // context line (an empty line counts as a context line with no content)
-        rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
-        oldNo += 1
-        newNo += 1
-        if (oldLeft > 0) oldLeft -= 1
-        if (newLeft > 0) newLeft -= 1
-        continue
-      }
-    }
-    if (line.startsWith('\\')) {
-      rows.push({ kind: 'meta', no: null, text: line })
-      continue
-    }
-    if (line.trim() === '') continue
-    rows.push({ kind: 'meta', no: null, text: line })
-  }
-  return rows
+const rows = []
+const text = String(source == null ? '' : source).replace(/\r\n/g, '\n').replace(/\n+$/, '')
+let oldNo = 0
+let newNo = 0
+let oldLeft = 0
+let newLeft = 0
+let inHunk = false
+for (const line of text.split('\n')) {
+const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line)
+if (header) {
+oldNo = Number(header[1])
+newNo = Number(header[3])
+oldLeft = header[2] === undefined ? 1 : Number(header[2])
+newLeft = header[4] === undefined ? 1 : Number(header[4])
+inHunk = true
+rows.push({ kind: 'hunk', no: null, text: line })
+continue
 }
-
-/**
- * Split the rows into per-file sections.
- *
- * The file path comes from the patch header (`diff --git a/x b/x`, or `+++ b/x`),
- * and it decides the highlighting language - the same rule the code view uses
- * for a file (`langForPath`).
- */
+if (inHunk) {
+if (line.startsWith('diff --git ')) {
+inHunk = false
+} else if (line.startsWith('\\')) {
+rows.push({ kind: 'meta', no: null, text: line })
+continue
+} else if (isDiffFileHeaderLine(line)) {
+inHunk = false
+} else {
+const kind = line[0]
+if (kind === '+') {
+rows.push({ kind: 'add', no: newNo, text: line.slice(1) })
+newNo += 1
+if (newLeft > 0) newLeft -= 1
+continue
+}
+if (kind === '-') {
+rows.push({ kind: 'del', no: oldNo, text: line.slice(1) })
+oldNo += 1
+if (oldLeft > 0) oldLeft -= 1
+continue
+}
+rows.push({ kind: 'ctx', no: newNo, text: line.slice(1) })
+oldNo += 1
+newNo += 1
+if (oldLeft > 0) oldLeft -= 1
+if (newLeft > 0) newLeft -= 1
+continue
+}
+}
+if (line.startsWith('\\')) {
+rows.push({ kind: 'meta', no: null, text: line })
+continue
+}
+if (line.trim() === '') continue
+rows.push({ kind: 'meta', no: null, text: line })
+}
+return rows
+}
 function diffFenceSections(rows) {
-  const sections = []
-  let current = null
-  const ensure = () => {
-    if (!current) {
-      current = { path: '', rows: [] }
-      sections.push(current)
-    }
-    return current
-  }
-  for (const row of rows) {
-    if (row.kind === 'meta') {
-      const gitHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(row.text)
-      if (gitHeader) {
-        // A new file starts here: `diff --git` is the only header that opens a
-        // section (`--- a/x` / `+++ b/x` belong to the file it just announced).
-        // The header line itself is KEPT as a row - nothing of the patch may
-        // silently disappear.
-        current = { path: gitHeader[2], rows: [row] }
-        sections.push(current)
-        continue
-      }
-      const plusHeader = /^\+\+\+ b\/(.+)$/.exec(row.text)
-      if (plusHeader) {
-        const section = ensure()
-        if (!section.path) section.path = plusHeader[1]
-        section.rows.push(row)
-        continue
-      }
-    }
-    ensure().rows.push(row)
-  }
-  for (const section of sections) {
-    section.lang = section.path ? langForPath(section.path) : ''
-  }
-  return sections
+const sections = []
+let current = null
+const ensure = () => {
+if (!current) {
+current = { path: '', rows: [] }
+sections.push(current)
 }
-
-/**
- * Split the rows of a section into HUNK-scoped groups.
- *
- * Why per hunk and not per file: a hunk is a CONTIGUOUS fragment of the file,
- * and hljs treats an unterminated block comment as "comment until the end of
- * the text it was given". A javadoc opener that sits at the end of a hunk
- * (its closer is in the part of the file the diff does not show - the real
- * case: `docs/codereview/20261106_...preSync游标翻页改造_codereview.md`, whose
- * full-file diffs end every hunk with the javadoc opener of the next method)
- * therefore made hljs paint EVERY FOLLOWING LINE OF THE FILE as comment text
- * - the code after it lost all its own colours.
- *
- * Highlighting each hunk on its own keeps that damage inside the hunk that
- * really ends inside the comment: the javadoc opener row is comment-coloured
- * (correct) and the next hunk is highlighted as code (correct).
- */
+return current
+}
+for (const row of rows) {
+if (row.kind === 'meta') {
+const gitHeader = /^diff --git a\/(.+?) b\/(.+)$/.exec(row.text)
+if (gitHeader) {
+current = { path: gitHeader[2], rows: [row] }
+sections.push(current)
+continue
+}
+const plusHeader = /^\+\+\+ b\/(.+)$/.exec(row.text)
+if (plusHeader) {
+const section = ensure()
+if (!section.path) section.path = plusHeader[1]
+section.rows.push(row)
+continue
+}
+}
+ensure().rows.push(row)
+}
+for (const section of sections) {
+section.lang = section.path ? langForPath(section.path) : ''
+}
+return sections
+}
 function diffFenceRowGroups(rows) {
-  const groups = []
-  let current = null
-  for (const row of rows) {
-    // A hunk header opens a new group; everything after it belongs to it.
-    if (row.kind === 'hunk') {
-      current = { rows: [row] }
-      groups.push(current)
-      continue
-    }
-    if (!current) {
-      // The file header lines (`diff --git`, `--- a/x`, `+++ b/x`) come before
-      // the first hunk - they form a leading group of their own.
-      current = { rows: [] }
-      groups.push(current)
-    }
-    current.rows.push(row)
-  }
-  return groups
+const groups = []
+let current = null
+for (const row of rows) {
+if (row.kind === 'hunk') {
+current = { rows: [row] }
+groups.push(current)
+continue
 }
-
-/**
- * Highlight the code part of a diff fragment (one hunk, one side).
- *
- * Two fragments are highlighted, because a diff has two sides: the NEW side
- * (context + added lines) and the OLD side (context + deleted lines). Each side
- * is highlighted as ONE block, so multi-line comments/strings keep their colour
- * - per-line highlighting would break them (the reason the code view highlights
- * whole files in one pass).
- */
+if (!current) {
+current = { rows: [] }
+groups.push(current)
+}
+current.rows.push(row)
+}
+return groups
+}
 function highlightDiffFragment(rows, lang) {
-  const texts = rows.map((row) => row.text)
-  if (!texts.length) return []
-  const lib = typeof window !== 'undefined' ? window.hljs : null
-  const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
-  if (!name) return texts.map((text) => escapeHtml(text))
-  try {
-    const lines = highlightToLines(highlightCodeHtml(texts.join('\n'), name), isJavaKtLang(name))
-    if (!lines || lines.length !== texts.length) return texts.map((text) => escapeHtml(text))
-    return lines
-  } catch {
-    return texts.map((text) => escapeHtml(text))
-  }
+const texts = rows.map((row) => row.text)
+if (!texts.length) return []
+const lib = typeof window !== 'undefined' ? window.hljs : null
+const name = lang && lib && typeof lib.getLanguage === 'function' && lib.getLanguage(lang) ? lang : ''
+if (!name) return texts.map((text) => escapeHtml(text))
+try {
+const lines = highlightToLines(highlightCodeHtml(texts.join('\n'), name), isJavaKtLang(name))
+if (!lines || lines.length !== texts.length) return texts.map((text) => escapeHtml(text))
+return lines
+} catch {
+return texts.map((text) => escapeHtml(text))
 }
-
-/** 高亮后的 HTML → 纯文本（用来校验这一行和 diff 里的那一行是否一致）。 */
+}
 function diffPlainText(html) {
-  return String(html == null ? '' : html)
-    .replace(/<[^>]*>/g, '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, '&')
+return String(html == null ? '' : html)
+.replace(/<[^>]*>/g, '')
+.replace(/&lt;/g, '<')
+.replace(/&gt;/g, '>')
+.replace(/&quot;/g, '"')
+.replace(/&#39;/g, "'")
+.replace(/&amp;/g, '&')
 }
-
-/**
- * HTML for a ```diff fence: the code part only (NO line-number column),
- * highlighted with the language of the file the diff belongs to, with added
- * rows green and deleted rows red + strike-through - the same look as the
- * commit diff in the code view.
- */
 function renderDiffFenceHtml(source) {
-  const rows = parseDiffFenceRows(source)
-  if (!rows.length) return escapeHtml(String(source == null ? '' : source))
-  const parts = []
-  for (const section of diffFenceSections(rows)) {
-    // 每个 hunk 单独高亮（见 diffFenceRowGroups 的说明）：hunk 末尾未闭合的
-    // 块注释（javadoc 开头的 `/**`）不会把整个文件的后续代码都吞成注释。
-    for (const group of diffFenceRowGroups(section.rows)) {
-      const newSide = []
-      const oldSide = []
-      // 每行在两侧高亮块里的槽位要**显式记录**：上下文行在两侧各占一行，
-      // 删除行只占旧侧，新增行只占新侧。旧侧的行如果按出现顺序直接取，
-      // 就会被前面若干上下文行顶偏 —— 删除行会显示成别的行（真实案例：
-      // 详设里第一段 diff 的删除行显示成了 `@XxlJob(...)`，看着像重复一行）。
-      const slots = []
-      for (const row of group.rows) {
-        const slot = { old: -1, new: -1 }
-        if (row.kind === 'ctx') {
-          slot.new = newSide.length
-          newSide.push(row)
-          slot.old = oldSide.length
-          oldSide.push(row)
-        } else if (row.kind === 'add') {
-          slot.new = newSide.length
-          newSide.push(row)
-        } else if (row.kind === 'del') {
-          slot.old = oldSide.length
-          oldSide.push(row)
-        }
-        slots.push(slot)
-      }
-      const newHtml = highlightDiffFragment(newSide, section.lang)
-      const oldHtml = highlightDiffFragment(oldSide, section.lang)
-      for (let index = 0; index < group.rows.length; index += 1) {
-        const row = group.rows[index]
-        if (row.kind === 'meta') {
-          parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-          continue
-        }
-        if (row.kind === 'hunk') {
-          parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
-          continue
-        }
-        const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
-        const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
-        const slot = slots[index]
-        const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
-        // 兜底：高亮后的行文本必须和 diff 里的这一行完全一致，否则用原文。
-        // 这样任何高亮/映射错位都不会把 A 行画成 B 行。
-        const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
-        parts.push(
-          `<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
-        )
-      }
-    }
-  }
-  return parts.join('')
+const rows = parseDiffFenceRows(source)
+if (!rows.length) return escapeHtml(String(source == null ? '' : source))
+const parts = []
+for (const section of diffFenceSections(rows)) {
+for (const group of diffFenceRowGroups(section.rows)) {
+const newSide = []
+const oldSide = []
+const slots = []
+for (const row of group.rows) {
+const slot = { old: -1, new: -1 }
+if (row.kind === 'ctx') {
+slot.new = newSide.length
+newSide.push(row)
+slot.old = oldSide.length
+oldSide.push(row)
+} else if (row.kind === 'add') {
+slot.new = newSide.length
+newSide.push(row)
+} else if (row.kind === 'del') {
+slot.old = oldSide.length
+oldSide.push(row)
 }
-
-/* -------------------------------------------------------------- code scroll */
-
-/**
- * Per-file scroll positions of the code viewport, shared by all mounted code
- * views. The reported bug was "switch tab and the code scroll jumps back to the
- * top / to the link line", so the position is persisted per file and restored on
- * remount — an *explicit* jump request (open a link with a line number, or an
- * already-open tab that gets a new line) still wins over the memory.
- */
+slots.push(slot)
+}
+const newHtml = highlightDiffFragment(newSide, section.lang)
+const oldHtml = highlightDiffFragment(oldSide, section.lang)
+for (let index = 0; index < group.rows.length; index += 1) {
+const row = group.rows[index]
+if (row.kind === 'meta') {
+parts.push(`<div class="mdr-cl mdr-diff-meta"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+continue
+}
+if (row.kind === 'hunk') {
+parts.push(`<div class="mdr-cl mdr-diff-hunk"><span class="mdr-cl-code">${escapeHtml(row.text)}</span></div>`)
+continue
+}
+const cls = row.kind === 'add' ? 'mdr-git-add' : row.kind === 'del' ? 'mdr-git-del' : 'mdr-git-ctx'
+const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '−' : ' '
+const slot = slots[index]
+const raw = row.kind === 'del' ? oldHtml[slot.old] : newHtml[slot.new]
+const code = raw !== undefined && diffPlainText(raw) === row.text ? raw : escapeHtml(row.text)
+parts.push(
+`<div class="mdr-cl ${cls}"><span class="mdr-cl-code"><span class="mdr-diff-sign">${sign}</span>${code}</span></div>`,
+)
+}
+}
+}
+return parts.join('')
+}
 const CODE_SCROLL_KEY = 'mdreader.plugin.codescroll.v1'
-
-/** file key -> line that was explicitly jumped to this session (restore vs jump). */
 const codeJumpSeen = new Map()
-
 const codeScrollStore = (() => {
-  const MAX_ENTRIES = 400
-  let data = null
-  let timer = 0
-  const read = () => {
-    if (data) return data
-    data = {}
-    try {
-      const value = JSON.parse(localStorage.getItem(CODE_SCROLL_KEY) || '{}')
-      if (value && typeof value === 'object') {
-        for (const key of Object.keys(value)) {
-          const top = Number(value[key])
-          if (Number.isFinite(top) && top > 0) data[key] = Math.round(top)
-        }
-      }
-    } catch {
-      data = {}
-    }
-    return data
-  }
-  const flush = () => {
-    timer = 0
-    try {
-      const keys = Object.keys(data || {})
-      // Bounded store: drop the oldest inserted entries first.
-      for (let index = 0; index < keys.length - MAX_ENTRIES; index += 1) delete data[keys[index]]
-      localStorage.setItem(CODE_SCROLL_KEY, JSON.stringify(data || {}))
-    } catch {
-      // quota / private mode: the in-memory map still works for this session
-    }
-  }
-  return {
-    get(key) {
-      const top = read()[String(key)]
-      return typeof top === 'number' ? top : 0
-    },
-    save(key, top) {
-      const value = Number(top)
-      const name = String(key)
-      const map = read()
-      if (!Number.isFinite(value) || value <= 0) delete map[name]
-      else map[name] = Math.round(value)
-      if (!timer) timer = setTimeout(flush, 250)
-    },
-  }
+const MAX_ENTRIES = 400
+let data = null
+let timer = 0
+const read = () => {
+if (data) return data
+data = {}
+try {
+const value = JSON.parse(localStorage.getItem(CODE_SCROLL_KEY) || '{}')
+if (value && typeof value === 'object') {
+for (const key of Object.keys(value)) {
+const top = Number(value[key])
+if (Number.isFinite(top) && top > 0) data[key] = Math.round(top)
+}
+}
+} catch {
+data = {}
+}
+return data
+}
+const flush = () => {
+timer = 0
+try {
+const keys = Object.keys(data || {})
+for (let index = 0; index < keys.length - MAX_ENTRIES; index += 1) delete data[keys[index]]
+localStorage.setItem(CODE_SCROLL_KEY, JSON.stringify(data || {}))
+} catch {
+}
+}
+return {
+get(key) {
+const top = read()[String(key)]
+return typeof top === 'number' ? top : 0
+},
+save(key, top) {
+const value = Number(top)
+const name = String(key)
+const map = read()
+if (!Number.isFinite(value) || value <= 0) delete map[name]
+else map[name] = Math.round(value)
+if (!timer) timer = setTimeout(flush, 250)
+},
+}
 })()
-
-/** One row's HTML. diffMode adds the +/- gutter sign and diff row classes. */
 function gitRowHtml(row, index, lang, diffMode, hitIndex, codeHtml, top, extraClass) {
-  const classes = ['mdr-cl']
-  if (row.kind === 'add') classes.push('mdr-git-add')
-  else if (row.kind === 'del') classes.push('mdr-git-del')
-  else if (row.kind === 'ctx') classes.push('mdr-git-ctx')
-  // 跳转行持久高亮：只有确实落在这一行（row index）才加 .hit；删除行不加
-  // （旧文件行号与当前渲染的新版本文本错位，标上去反而误导）。
-  if (hitIndex != null && hitIndex >= 0 && index === hitIndex && row.kind !== 'del') classes.push('hit')
-  // 搜索命中标记（Ctrl+F）：.mdr-fs-line 是命中行，.mdr-fs-cur 是当前命中。
-  if (extraClass) classes.push(extraClass)
-  const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
-  const gutter = diffMode ? sign : '  '
-  const style = top == null ? '' : ` style="top:${top}px"`
-  const no = row.no == null ? '' : row.no
-  return `<div class="${classes.join(' ')}" data-line="${no}"${style}><span class="mdr-cl-no">${no}</span><span class="mdr-cl-code">${gutter}${codeHtml}</span></div>`
+const classes = ['mdr-cl']
+if (row.kind === 'add') classes.push('mdr-git-add')
+else if (row.kind === 'del') classes.push('mdr-git-del')
+else if (row.kind === 'ctx') classes.push('mdr-git-ctx')
+if (hitIndex != null && hitIndex >= 0 && index === hitIndex && row.kind !== 'del') classes.push('hit')
+if (extraClass) classes.push(extraClass)
+const sign = row.kind === 'add' ? '+ ' : row.kind === 'del' ? '− ' : '  '
+const gutter = diffMode ? sign : '  '
+const style = top == null ? '' : ` style="top:${top}px"`
+const no = row.no == null ? '' : row.no
+return `<div class="${classes.join(' ')}" data-line="${no}"${style}><span class="mdr-cl-no">${no}</span><span class="mdr-cl-code">${gutter}${codeHtml}</span></div>`
 }
-
-/**
- * Rows + diff flag for the current git view of a file. Shared by the code tab
- * and the code modal so branch/commit rendering can never drift apart.
- */
 function useCodeRows(view, workspaceContent) {
-  // "◎ branch 最新" shows the selected branch's own HEAD file when it was fetched
-  // (branch switches), otherwise the workspace content the App loaded.
-  const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
-  const diffRows = React.useMemo(
-    () => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
-    [view.commit, view.hunks, view.fileLines],
-  )
-  const rows = React.useMemo(() => {
-    if (diffRows) return diffRows
-    return String(baseContent == null ? '' : baseContent)
-      .split('\n')
-      .map((text, index) => ({ no: index + 1, kind: 'plain', text }))
-  }, [diffRows, baseContent])
-  return { rows, diffMode: !!diffRows, baseContent }
+const baseContent = view.branchContent != null ? view.branchContent : workspaceContent
+const diffRows = React.useMemo(
+() => (view.commit && view.hunks && view.hunks.length ? buildDiffRows(view.fileLines, view.hunks) : null),
+[view.commit, view.hunks, view.fileLines],
+)
+const rows = React.useMemo(() => {
+if (diffRows) return diffRows
+return String(baseContent == null ? '' : baseContent)
+.split('\n')
+.map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+}, [diffRows, baseContent])
+return { rows, diffMode: !!diffRows, baseContent }
 }
-
-/**
- * Rows viewport. Files over GIT_V_THRESHOLD rows keep full highlighting but only
- * paint the viewport +/- GIT_BUFFER rows (20px absolute rows inside a spacer).
- *
- * Props (code tab + modal):
- *   scrollKey      file key for the persisted scroll memory (omit = no persistence)
- *   contentReady   false while the file text is still loading: defer the
- *                  jump/restore decision instead of deciding against 1 empty row
- *   restoreScroll  { top } — exactly restore this position (modal ← 返回), takes
- *                  precedence over the line jump and the scroll memory
- *   jumpHover      Java/Kotlin: add `.jump-hover` so Ctrl+clickable tokens get the
- *                  original hover affordance (underline / pointer)
- *   freshOpen      true for a tab that was just opened (content not loaded yet).
- *                  A line request from a fresh open is an EXPLICIT jump and always
- *                  wins over the persisted scroll memory; a remount caused by
- *                  switching back to an open tab restores the remembered position.
- */
 function CodeBody(props) {
-  const {
-    rows,
-    lang,
-    diffMode,
-    targetLine,
-    viewKey,
-    scrollKey,
-    contentReady,
-    restoreScroll,
-    jumpHover,
-    freshOpen,
-    searchKey,
-  } = props
-  const total = rows.length
-  const virtual = total > GIT_V_THRESHOLD
-  const scrollerRef = React.useRef(null)
-  const [win, setWin] = React.useState(() => ({ first: 0, last: Math.min(total, 160) }))
-  const rafRef = React.useRef(0)
-  const rowsRef = React.useRef(rows)
-  rowsRef.current = rows
-  const lastTopRef = React.useRef(0)
-  const saveTimerRef = React.useRef(0)
-  // In-file search (Ctrl+F): the matching rows and the current one. The marks
-  // are part of the rendered rows, so they survive a virtual-scroll repaint.
-  const [fs, setFs] = React.useState({ matches: [], index: -1 })
-  const fsRef = React.useRef(fs)
-  fsRef.current = fs
-  const fsMarkSet = React.useMemo(() => new Set(fs.matches), [fs.matches])
-  const fsCurrent = fs.matches.length ? fs.matches[fs.index] : -1
-  // Captured on mount only: a fresh open keeps "explicit jump" semantics even
-  // after the content arrives and the prop flips to false.
-  const freshOpenRef = React.useRef(!!freshOpen)
-  const scrollMetaRef = React.useRef({ key: '', diff: false, ready: true })
-  scrollMetaRef.current = {
-    key: scrollKey == null ? '' : String(scrollKey),
-    diff: !!diffMode,
-    ready: contentReady !== false,
-  }
-  const restoreAppliedRef = React.useRef(null)
-  const jumpAppliedRef = React.useRef(0)
-  // Whole-file highlight once, cached by content hash: switching tabs / branch /
-  // commit back and forth never re-highlights.
-  const joinedText = React.useMemo(
-    () => rows.map((row) => (row && row.text != null ? String(row.text) : '')).join('\n'),
-    [rows],
-  )
-  const hljsReady = typeof window !== 'undefined' && !!window.hljs
-  const hlLines = React.useMemo(() => highlightLinesCached(joinedText, lang), [joinedText, lang, hljsReady])
-  // Jump target: match by file line number, preferring real rows over deleted
-  // diff rows (deleted rows carry the OLD line number and are struck through, so
-  // they may be scrolled to but are never marked as "the jumped line"). A line
-  // past EOF clamps to the last row (jump still lands somewhere sensible) but is
-  // not highlighted.
-  const jumpTarget = React.useMemo(() => {
-    const line = Number(targetLine) || 0
-    if (line <= 0) return { index: -1, hit: -1 }
-    let deleted = -1
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index]
-      if (!row || row.no !== line) continue
-      if (row.kind !== 'del') return { index, hit: index }
-      if (deleted < 0) deleted = index
-    }
-    if (deleted >= 0) return { index: deleted, hit: -1 }
-    return { index: Math.max(0, Math.min(line, rows.length) - 1), hit: -1 }
-  }, [rows, targetLine])
-  const paintWindow = () => {
-    const el = scrollerRef.current
-    if (!el) return
-    const list = rowsRef.current
-    if (list.length <= GIT_V_THRESHOLD) return
-    const scrollTop = el.scrollTop
-    const first = Math.max(0, Math.floor(scrollTop / GIT_LINE_H) - GIT_BUFFER)
-    const last = Math.min(list.length, Math.ceil((scrollTop + el.clientHeight) / GIT_LINE_H) + GIT_BUFFER)
-    setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
-  }
-
-  /**
-   * In-file search (Ctrl+F) over the code rows.
-   *
-   * The code is searched by LINE (the rows carry the plain text), so a match
-   * is a row index. The rows carry the mark class, so the highlight survives a
-   * virtual-scroll repaint.
-   */
-  const scrollToSearchRow = (index) => {
-    const el = scrollerRef.current
-    if (!el || index < 0) return
-    const top = index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
-    el.scrollTop = Math.max(0, top)
-    lastTopRef.current = el.scrollTop
-    paintWindow()
-  }
-
-  React.useEffect(() => {
-    if (!searchKey) return undefined
-    const controller = {
-      kind: 'code',
-      search(query, options) {
-        const re = fileSearchRegex(query, options)
-        if (!re) return { count: 0, index: -1, error: '正则表达式错误' }
-        const list = rowsRef.current || []
-        const matches = []
-        for (let index = 0; index < list.length; index += 1) {
-          const row = list[index]
-          const text = row && row.text != null ? String(row.text) : ''
-          if (!text) continue
-          if (fileSearchMatchesIn(text, re).length) matches.push(index)
-        }
-        setFs({ matches, index: matches.length ? 0 : -1 })
-        if (matches.length) scrollToSearchRow(matches[0])
-        return { count: matches.length, index: matches.length ? 0 : -1 }
-      },
-      goto(delta) {
-        const state = fsRef.current
-        const total = state.matches.length
-        if (!total) return { count: 0, index: -1 }
-        let next = state.index + delta
-        if (next < 0) next = total - 1
-        if (next >= total) next = 0
-        setFs({ matches: state.matches, index: next })
-        scrollToSearchRow(state.matches[next])
-        return { count: total, index: next }
-      },
-      clear() {
-        setFs({ matches: [], index: -1 })
-      },
-    }
-    registerFileSearchController(searchKey, controller)
-    return () => unregisterFileSearchController(searchKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchKey])
-
-  const flushScroll = () => {
-    const meta = scrollMetaRef.current
-    if (!meta.key || meta.diff || !meta.ready) return
-    codeScrollStore.save(meta.key, lastTopRef.current)
-  }
-
-  const scheduleScrollSave = () => {
-    if (saveTimerRef.current) return
-    saveTimerRef.current = setTimeout(() => {
-      saveTimerRef.current = 0
-      flushScroll()
-    }, 220)
-  }
-
-  React.useEffect(() => {
-    // The file text has not arrived yet: the placeholder rows would make every
-    // restore decision look like "scroll to top", so wait for the real content.
-    if (contentReady === false) return undefined
-    const el = scrollerRef.current
-    if (!el) return undefined
-    const storeKey = scrollKey == null ? '' : String(scrollKey)
-    // Modal ← 返回: an explicit restore is consumed once (a later re-render must
-    // not yank the pane back to the same position).
-    const freshRestore = !!(restoreScroll && Number.isFinite(restoreScroll.top) && restoreScroll !== restoreAppliedRef.current)
-    if (freshRestore) restoreAppliedRef.current = restoreScroll
-    const savedTop = !diffMode && storeKey ? codeScrollStore.get(storeKey) : 0
-    // An explicit jump: content settled with a target line. It wins over the
-    // scroll memory the first time this line is requested for this file; after
-    // that (switch away and back) the remembered position is restored instead.
-    const jumpPending = !freshRestore && targetLine > 0 && jumpTarget.index >= 0
-    const sameLineAlready = storeKey ? codeJumpSeen.get(storeKey) === targetLine : jumpAppliedRef.current === targetLine
-    // A just-opened tab with a requested line is explicit even if the same line
-    // was jumped to earlier in this session (e.g. reopen the same code link).
-    const jumpIsNew = freshOpenRef.current || !sameLineAlready
-    let mode = 'top'
-    if (freshRestore) mode = 'restore'
-    else if (jumpPending && jumpIsNew) mode = 'jump'
-    else if (savedTop > 0) mode = 'saved'
-    else if (jumpPending) mode = 'jump'
-    if (mode === 'restore') {
-      el.scrollTop = Math.max(0, Math.round(restoreScroll.top))
-    } else if (mode === 'saved') {
-      el.scrollTop = savedTop
-    } else if (mode === 'jump') {
-      // Centre the target row like the original scrollCodeToLine.
-      const top = jumpTarget.index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
-      el.scrollTop = Math.max(0, top)
-    } else {
-      el.scrollTop = 0
-    }
-    lastTopRef.current = el.scrollTop
-    paintWindow()
-    if (mode === 'jump') {
-      jumpAppliedRef.current = targetLine
-      if (storeKey) codeJumpSeen.set(storeKey, targetLine)
-    }
-    return undefined
-    // rows identity changes whenever the rendered content (commit/branch/file) changes.
-  }, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll, jumpTarget])
-
-  React.useEffect(
-    () => () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      flushScroll()
-    },
-    [],
-  )
-
-  const onScroll = () => {
-    const el = scrollerRef.current
-    if (el) {
-      lastTopRef.current = el.scrollTop
-      scheduleScrollSave()
-    }
-    paintWindow()
-    if (!virtual) return
-    if (rafRef.current) return
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = 0
-      paintWindow()
-    })
-  }
-
-  const windowFrom = virtual ? Math.max(0, Math.min(win.first, Math.max(0, total - 1))) : 0
-  const windowTo = virtual ? Math.min(total, Math.max(windowFrom, win.last)) : 0
-
-  const codeHtmlAt = (index) => {
-    const value = hlLines && hlLines[index]
-    if (value != null) return value
-    const row = rows[index]
-    return escapeHtml(row && row.text != null ? String(row.text) : '') || ' '
-  }
-
-  // Search marks: the current match wins over the other matches.
-  const searchClassFor = (index) => {
-    if (index === fsCurrent) return 'mdr-fs-cur'
-    if (fsMarkSet.has(index)) return 'mdr-fs-line'
-    return ''
-  }
-
-  const plainHtml = React.useMemo(() => {
-    if (virtual) return ''
-    let html = ''
-    for (let index = 0; index < rows.length; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null, searchClassFor(index))
-    }
-    return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, fsMarkSet, fsCurrent])
-
-  const windowHtml = React.useMemo(() => {
-    if (!virtual) return ''
-    let html = ''
-    for (let index = windowFrom; index < windowTo; index += 1) {
-      html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H, searchClassFor(index))
-    }
-    return html
-  }, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo, fsMarkSet, fsCurrent])
-
-  // `.jump-hover` is the original container gate for the Ctrl+click affordance;
-  // deleted diff rows are excluded by CSS (their line numbers are the OLD file's).
-  const bodyClass = 'mdr-code-body' + (virtual ? ' mdr-git-vscroll' : '') + (jumpHover ? ' jump-hover' : '')
-
-  return h(
-    'div',
-    {
-      className: bodyClass,
-      ref: scrollerRef,
-      onScroll,
-    },
-    virtual
-      ? h('div', {
-          className: 'mdr-git-vwrap',
-          style: { height: total * GIT_LINE_H + 'px' },
-          dangerouslySetInnerHTML: { __html: windowHtml },
-        })
-      : h('div', { dangerouslySetInnerHTML: { __html: plainHtml } }),
-  )
+const {
+rows,
+lang,
+diffMode,
+targetLine,
+viewKey,
+scrollKey,
+contentReady,
+restoreScroll,
+jumpHover,
+freshOpen,
+searchKey,
+} = props
+const total = rows.length
+const virtual = total > GIT_V_THRESHOLD
+const scrollerRef = React.useRef(null)
+const [win, setWin] = React.useState(() => ({ first: 0, last: Math.min(total, 160) }))
+const rafRef = React.useRef(0)
+const rowsRef = React.useRef(rows)
+rowsRef.current = rows
+const lastTopRef = React.useRef(0)
+const saveTimerRef = React.useRef(0)
+const [fs, setFs] = React.useState({ matches: [], index: -1 })
+const fsRef = React.useRef(fs)
+fsRef.current = fs
+const fsMarkSet = React.useMemo(() => new Set(fs.matches), [fs.matches])
+const fsCurrent = fs.matches.length ? fs.matches[fs.index] : -1
+const freshOpenRef = React.useRef(!!freshOpen)
+const scrollMetaRef = React.useRef({ key: '', diff: false, ready: true })
+scrollMetaRef.current = {
+key: scrollKey == null ? '' : String(scrollKey),
+diff: !!diffMode,
+ready: contentReady !== false,
 }
-
+const restoreAppliedRef = React.useRef(null)
+const jumpAppliedRef = React.useRef(0)
+const joinedText = React.useMemo(
+() => rows.map((row) => (row && row.text != null ? String(row.text) : '')).join('\n'),
+[rows],
+)
+const hljsReady = typeof window !== 'undefined' && !!window.hljs
+const hlLines = React.useMemo(() => highlightLinesCached(joinedText, lang), [joinedText, lang, hljsReady])
+const jumpTarget = React.useMemo(() => {
+const line = Number(targetLine) || 0
+if (line <= 0) return { index: -1, hit: -1 }
+let deleted = -1
+for (let index = 0; index < rows.length; index += 1) {
+const row = rows[index]
+if (!row || row.no !== line) continue
+if (row.kind !== 'del') return { index, hit: index }
+if (deleted < 0) deleted = index
+}
+if (deleted >= 0) return { index: deleted, hit: -1 }
+return { index: Math.max(0, Math.min(line, rows.length) - 1), hit: -1 }
+}, [rows, targetLine])
+const paintWindow = () => {
+const el = scrollerRef.current
+if (!el) return
+const list = rowsRef.current
+if (list.length <= GIT_V_THRESHOLD) return
+const scrollTop = el.scrollTop
+const first = Math.max(0, Math.floor(scrollTop / GIT_LINE_H) - GIT_BUFFER)
+const last = Math.min(list.length, Math.ceil((scrollTop + el.clientHeight) / GIT_LINE_H) + GIT_BUFFER)
+setWin((prev) => (prev.first === first && prev.last === last ? prev : { first, last }))
+}
+const scrollToSearchRow = (index) => {
+const el = scrollerRef.current
+if (!el || index < 0) return
+const top = index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
+el.scrollTop = Math.max(0, top)
+lastTopRef.current = el.scrollTop
+paintWindow()
+}
+React.useEffect(() => {
+if (!searchKey) return undefined
+const controller = {
+kind: 'code',
+search(query, options) {
+const re = fileSearchRegex(query, options)
+if (!re) return { count: 0, index: -1, error: '正则表达式错误' }
+const list = rowsRef.current || []
+const matches = []
+for (let index = 0; index < list.length; index += 1) {
+const row = list[index]
+const text = row && row.text != null ? String(row.text) : ''
+if (!text) continue
+if (fileSearchMatchesIn(text, re).length) matches.push(index)
+}
+setFs({ matches, index: matches.length ? 0 : -1 })
+if (matches.length) scrollToSearchRow(matches[0])
+return { count: matches.length, index: matches.length ? 0 : -1 }
+},
+goto(delta) {
+const state = fsRef.current
+const total = state.matches.length
+if (!total) return { count: 0, index: -1 }
+let next = state.index + delta
+if (next < 0) next = total - 1
+if (next >= total) next = 0
+setFs({ matches: state.matches, index: next })
+scrollToSearchRow(state.matches[next])
+return { count: total, index: next }
+},
+clear() {
+setFs({ matches: [], index: -1 })
+},
+}
+registerFileSearchController(searchKey, controller)
+return () => unregisterFileSearchController(searchKey)
+}, [searchKey])
+const flushScroll = () => {
+const meta = scrollMetaRef.current
+if (!meta.key || meta.diff || !meta.ready) return
+codeScrollStore.save(meta.key, lastTopRef.current)
+}
+const scheduleScrollSave = () => {
+if (saveTimerRef.current) return
+saveTimerRef.current = setTimeout(() => {
+saveTimerRef.current = 0
+flushScroll()
+}, 220)
+}
+React.useEffect(() => {
+if (contentReady === false) return undefined
+const el = scrollerRef.current
+if (!el) return undefined
+const storeKey = scrollKey == null ? '' : String(scrollKey)
+const freshRestore = !!(restoreScroll && Number.isFinite(restoreScroll.top) && restoreScroll !== restoreAppliedRef.current)
+if (freshRestore) restoreAppliedRef.current = restoreScroll
+const savedTop = !diffMode && storeKey ? codeScrollStore.get(storeKey) : 0
+const jumpPending = !freshRestore && targetLine > 0 && jumpTarget.index >= 0
+const sameLineAlready = storeKey ? codeJumpSeen.get(storeKey) === targetLine : jumpAppliedRef.current === targetLine
+const jumpIsNew = freshOpenRef.current || !sameLineAlready
+let mode = 'top'
+if (freshRestore) mode = 'restore'
+else if (jumpPending && jumpIsNew) mode = 'jump'
+else if (savedTop > 0) mode = 'saved'
+else if (jumpPending) mode = 'jump'
+if (mode === 'restore') {
+el.scrollTop = Math.max(0, Math.round(restoreScroll.top))
+} else if (mode === 'saved') {
+el.scrollTop = savedTop
+} else if (mode === 'jump') {
+const top = jumpTarget.index * GIT_LINE_H - Math.floor((el.clientHeight - GIT_LINE_H) / 2)
+el.scrollTop = Math.max(0, top)
+} else {
+el.scrollTop = 0
+}
+lastTopRef.current = el.scrollTop
+paintWindow()
+if (mode === 'jump') {
+jumpAppliedRef.current = targetLine
+if (storeKey) codeJumpSeen.set(storeKey, targetLine)
+}
+return undefined
+}, [viewKey, targetLine, diffMode, rows, total, scrollKey, contentReady, restoreScroll, jumpTarget])
+React.useEffect(
+() => () => {
+if (rafRef.current) cancelAnimationFrame(rafRef.current)
+if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+flushScroll()
+},
+[],
+)
+const onScroll = () => {
+const el = scrollerRef.current
+if (el) {
+lastTopRef.current = el.scrollTop
+scheduleScrollSave()
+}
+paintWindow()
+if (!virtual) return
+if (rafRef.current) return
+rafRef.current = requestAnimationFrame(() => {
+rafRef.current = 0
+paintWindow()
+})
+}
+const windowFrom = virtual ? Math.max(0, Math.min(win.first, Math.max(0, total - 1))) : 0
+const windowTo = virtual ? Math.min(total, Math.max(windowFrom, win.last)) : 0
+const codeHtmlAt = (index) => {
+const value = hlLines && hlLines[index]
+if (value != null) return value
+const row = rows[index]
+return escapeHtml(row && row.text != null ? String(row.text) : '') || ' '
+}
+const searchClassFor = (index) => {
+if (index === fsCurrent) return 'mdr-fs-cur'
+if (fsMarkSet.has(index)) return 'mdr-fs-line'
+return ''
+}
+const plainHtml = React.useMemo(() => {
+if (virtual) return ''
+let html = ''
+for (let index = 0; index < rows.length; index += 1) {
+html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), null, searchClassFor(index))
+}
+return html
+}, [virtual, rows, lang, diffMode, jumpTarget, hlLines, fsMarkSet, fsCurrent])
+const windowHtml = React.useMemo(() => {
+if (!virtual) return ''
+let html = ''
+for (let index = windowFrom; index < windowTo; index += 1) {
+html += gitRowHtml(rows[index], index, lang, diffMode, jumpTarget.hit, codeHtmlAt(index), index * GIT_LINE_H, searchClassFor(index))
+}
+return html
+}, [virtual, rows, lang, diffMode, jumpTarget, hlLines, windowFrom, windowTo, fsMarkSet, fsCurrent])
+const bodyClass = 'mdr-code-body' + (virtual ? ' mdr-git-vscroll' : '') + (jumpHover ? ' jump-hover' : '')
+return h(
+'div',
+{
+className: bodyClass,
+ref: scrollerRef,
+onScroll,
+},
+virtual
+? h('div', {
+className: 'mdr-git-vwrap',
+style: { height: total * GIT_LINE_H + 'px' },
+dangerouslySetInnerHTML: { __html: windowHtml },
+})
+: h('div', { dangerouslySetInnerHTML: { __html: plainHtml } }),
+)
+}
 function CodeGitInfo(props) {
-  const { view } = props
-  const meta = view.commitMeta
-  const parts = []
-  if (view.commit) {
-    parts.push(h('span', { className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
-    if (meta) {
-      parts.push(h('span', { className: 'mdr-git-author' }, meta.author))
-      parts.push(h('span', { className: 'mdr-git-date' }, meta.date))
-      parts.push(h('span', { className: 'mdr-git-subject', title: meta.subject }, meta.subject))
-    }
-  }
-  if (view.loading) parts.push(h('span', { className: 'mdr-git-stat' }, '加载中…'))
-  else if (view.hint) parts.push(h('span', { className: 'mdr-git-stat mdr-git-note' }, view.hint))
-  else if (view.commit) parts.push(h('span', { className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
-  return h('div', { className: 'mdr-git-info' }, parts)
+const { view } = props
+const meta = view.commitMeta
+const parts = []
+if (view.commit) {
+parts.push(h('span', { className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
+if (meta) {
+parts.push(h('span', { className: 'mdr-git-author' }, meta.author))
+parts.push(h('span', { className: 'mdr-git-date' }, meta.date))
+parts.push(h('span', { className: 'mdr-git-subject', title: meta.subject }, meta.subject))
 }
-
-/** Tab id -> `${branch}\0${commit}` already applied (so remount does not re-apply). */
+}
+if (view.loading) parts.push(h('span', { className: 'mdr-git-stat' }, '加载中…'))
+else if (view.hint) parts.push(h('span', { className: 'mdr-git-stat mdr-git-note' }, view.hint))
+else if (view.commit) parts.push(h('span', { className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
+return h('div', { className: 'mdr-git-info' }, parts)
+}
 const gitTabViewApplied = new Map()
-
-/** 「实现: XxxImpl」entry bar CSS (the original's _jumpDefbar), code-tab scoped. */
 const DEFBAR_CSS = `
 .mdr-code .mdr-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:3px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
 .mdr-code .mdr-defbar-lbl{flex:0 0 auto;color:var(--dsw-alias-label-secondary)}
 .mdr-code .mdr-defbar-btn{padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:5px;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .mdr-code .mdr-defbar-btn:hover{border-color:var(--dsw-alias-brand-primary)}
 `
-
-/** Does the git view recorded on an impl entry bar still match what is rendered? */
 function defBarViewMatches(defView, view) {
-  if (!defView) return !view.commit && view.branchContent == null
-  if (defView.commit) return defView.commit === view.commit
-  if (defView.branch) return defView.branch === view.branch && !view.commit && view.branchContent != null
-  return !view.commit && view.branchContent == null
+if (!defView) return !view.commit && view.branchContent == null
+if (defView.commit) return defView.commit === view.commit
+if (defView.branch) return defView.branch === view.branch && !view.commit && view.branchContent != null
+return !view.commit && view.branchContent == null
 }
-
 function CodeView(props) {
-  const { tab, onOpen, onBack, taskId } = props
-  const { view, actions } = useGitView(tab)
-  const lang = tab.lang || langForPath(tab.path)
-  const workspaceContent = String(tab.content == null ? '' : tab.content)
-  const viewRef = React.useRef(null)
-
-  const { rows, diffMode } = useCodeRows(view, workspaceContent)
-  // Text + git version that the jump request must carry: exactly what is
-  // rendered (commit version in a diff view, branch version in a branch view,
-  // workspace content otherwise).
-  const defText = React.useMemo(
-    () =>
-      diffMode && Array.isArray(view.fileLines)
-        ? view.fileLines.join('\n')
-        : view.branchContent != null
-          ? String(view.branchContent)
-          : workspaceContent,
-    [diffMode, view.fileLines, view.branchContent, workspaceContent],
-  )
-  // A commit only counts as the rendered version when its diff rows are shown.
-  const defView = view.commit && diffMode ? { commit: view.commit } : view.branchContent != null ? { branch: view.branch } : null
-  const defSourceRef = React.useRef({})
-  defSourceRef.current = {
-    path: tab.path,
-    text: defText,
-    branch: defView && defView.branch ? defView.branch : '',
-    commit: defView && defView.commit ? defView.commit : '',
-    line: tab.line || 0,
-  }
-
-  // Ctrl/Cmd+click → one definition, then jump (same file → line highlight;
-  // another file → open it; no candidate chooser). getSource is a ref read so the
-  // listener stays bound while branch/commit/text change under it.
-  React.useEffect(() => {
-    const root = viewRef.current
-    if (!root || typeof onOpen !== 'function') return undefined
-    return setupDefinitionClick(
-      root,
-      () => defSourceRef.current,
-      (result, source, hit) => {
-        const target = String(result.file || '').replace(/\\/g, '/')
-        if (!target) return
-        const line = Math.max(0, Number(result.line) || 0)
-        const opts = { kind: 'code' }
-        if (source.commit) opts.commit = source.commit
-        else if (source.branch) opts.branch = source.branch
-        // Push the clicked position onto the nav history first (the original's
-        // ctrlJump pushNav(src.path, lineNo) before opening the target), so the
-        // ← 返回 button / Alt+← return to the token that was clicked.
-        opts.from = {
-          path: source.path,
-          line: Math.max(0, Number(hit && hit.line) || 0),
-          branch: source.branch || '',
-          commit: source.commit || '',
-        }
-        // Interface hit → carry the 「实现: XxxImpl」entry bar onto the target tab
-        // (the original's openTargetTab/_jumpDefbar behaviour).
-        if (result.impl && result.impl.file) {
-          const implFile = String(result.impl.file)
-          opts.defBar = {
-            impl: { file: implFile, line: Math.max(0, Number(result.impl.line) || 0) },
-            label: implFile.split('/').pop().replace(/\.java$/, '') || implFile,
-            view: source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null,
-          }
-        } else {
-          opts.defBar = null
-        }
-        // Def results always open in the CODE view, even when the target file is
-        // .html/.vue/... (linkKindFor must not be applied to definitions).
-        onOpen(target, line, opts)
-      },
-    )
-  }, [tab.id, tab.path, onOpen])
-
-  // git-adapted code link: tab.branch / tab.commit must be applied to this tab's
-  // git view on open (and when an already-open tab receives a new target view).
-  // A fresh tab (`content == null`) re-applies even for the same target, so
-  // closing and reopening the link shows the requested branch again.
-  React.useEffect(() => {
-    if (!tab.branch && !tab.commit) return
-    const key = `${tab.branch || ''}\u0000${tab.commit || ''}`
-    if (gitTabViewApplied.get(tab.id) === key && tab.content != null) return
-    gitTabViewApplied.set(tab.id, key)
-    void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
-  }, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
-
-  const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
-    view.branchContent == null ? 'ws' : 'branch'
-  }`
-  const showInfo = !!view.commit || !!view.hint || !!view.loading
-  // Scroll memory is per file; the commit view gets its own slot so switching
-  // back from a diff does not restore a diff scroll position into the file view.
-  // The scroll memory is per FILE, but the tab id (`kind:path`) is shared between
-  // tasks - so the key carries the task id, otherwise two tasks showing the same
-  // file share one reading position.
-  const scrollKey = diffMode
-    ? `${taskId || 'task'}:${tab.path}\u0000commit:${view.commit || ''}`
-    : `${taskId || 'task'}:${tab.path}`
-  const contentReady = tab.content != null || view.branchContent != null
-
-  const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null
-  const showDefBar = !!defBar && defBarViewMatches(defBar.view, view)
-
-  return h(
-    'div',
-    { className: 'mdr-code' },
-    h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + DEFBAR_CSS } }),
-    h(
-      'div',
-      { className: 'mdr-code-head' },
-      h(Icons.code, { size: 14 }),
-      typeof onBack === 'function' && tab.navFrom
-        ? h(
-            'button',
-            { type: 'button', className: 'mdr-code-back', title: '返回上一次跳转位置', onClick: onBack },
-            '← 返回',
-          )
-        : null,
-      h('span', { className: 'mdr-code-path', title: tab.path }, tab.path),
-      h('span', { className: 'mdr-spacer' }),
-      view.git ? h(GitBar, { view, actions }) : null,
-      h('span', { className: 'mdr-tip', title: 'Ctrl/Cmd + 点击符号跳转到定义' }, `${lang || 'text'} · ${rows.length} 行 · Ctrl+点击跳定义`),
-    ),
-    showDefBar
-      ? h(
-          'div',
-          { className: 'mdr-defbar' },
-          h('span', { className: 'mdr-defbar-lbl' }, '实现:'),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'mdr-defbar-btn',
-              title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
-              onClick: () =>
-                onOpen(defBar.impl.file, defBar.impl.line, { kind: 'code', ...(defBar.view || {}), defBar: null }),
-            },
-            defBar.label,
-          ),
-        )
-      : null,
-    showInfo ? h(CodeGitInfo, { view }) : null,
-    h(
-      'div',
-      { className: 'mdr-code-viewwrap', ref: viewRef },
-      h(CodeBody, {
-        rows,
-        lang,
-        diffMode,
-        targetLine: tab.line || 0,
-        viewKey,
-        scrollKey,
-        contentReady,
-        jumpHover: isJavaKtLang(lang),
-        // A tab whose content has not loaded yet was just opened: its line request
-        // is an explicit jump and must beat any remembered scroll position.
-        freshOpen: tab.content == null,
-        // In-file search (Ctrl+F) keys the controller by the tab id.
-        searchKey: tab.id,
-      }),
-    ),
-  )
+const { tab, onOpen, onBack, taskId } = props
+const { view, actions } = useGitView(tab)
+const lang = tab.lang || langForPath(tab.path)
+const workspaceContent = String(tab.content == null ? '' : tab.content)
+const viewRef = React.useRef(null)
+const { rows, diffMode } = useCodeRows(view, workspaceContent)
+const defText = React.useMemo(
+() =>
+diffMode && Array.isArray(view.fileLines)
+? view.fileLines.join('\n')
+: view.branchContent != null
+? String(view.branchContent)
+: workspaceContent,
+[diffMode, view.fileLines, view.branchContent, workspaceContent],
+)
+const defView = view.commit && diffMode ? { commit: view.commit } : view.branchContent != null ? { branch: view.branch } : null
+const defSourceRef = React.useRef({})
+defSourceRef.current = {
+path: tab.path,
+text: defText,
+branch: defView && defView.branch ? defView.branch : '',
+commit: defView && defView.commit ? defView.commit : '',
+line: tab.line || 0,
 }
-
+React.useEffect(() => {
+const root = viewRef.current
+if (!root || typeof onOpen !== 'function') return undefined
+return setupDefinitionClick(
+root,
+() => defSourceRef.current,
+(result, source, hit) => {
+const target = String(result.file || '').replace(/\\/g, '/')
+if (!target) return
+const line = Math.max(0, Number(result.line) || 0)
+const opts = { kind: 'code' }
+if (source.commit) opts.commit = source.commit
+else if (source.branch) opts.branch = source.branch
+opts.from = {
+path: source.path,
+line: Math.max(0, Number(hit && hit.line) || 0),
+branch: source.branch || '',
+commit: source.commit || '',
+}
+if (result.impl && result.impl.file) {
+const implFile = String(result.impl.file)
+opts.defBar = {
+impl: { file: implFile, line: Math.max(0, Number(result.impl.line) || 0) },
+label: implFile.split('/').pop().replace(/\.java$/, '') || implFile,
+view: source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null,
+}
+} else {
+opts.defBar = null
+}
+onOpen(target, line, opts)
+},
+)
+}, [tab.id, tab.path, onOpen])
+React.useEffect(() => {
+if (!tab.branch && !tab.commit) return
+const key = `${tab.branch || ''}\u0000${tab.commit || ''}`
+if (gitTabViewApplied.get(tab.id) === key && tab.content != null) return
+gitTabViewApplied.set(tab.id, key)
+void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
+}, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
+const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
+view.branchContent == null ? 'ws' : 'branch'
+}`
+const showInfo = !!view.commit || !!view.hint || !!view.loading
+const scrollKey = diffMode
+? `${taskId || 'task'}:${tab.path}\u0000commit:${view.commit || ''}`
+: `${taskId || 'task'}:${tab.path}`
+const contentReady = tab.content != null || view.branchContent != null
+const defBar = tab.defBar && tab.defBar.impl && tab.defBar.impl.file ? tab.defBar : null
+const showDefBar = !!defBar && defBarViewMatches(defBar.view, view)
+return h(
+'div',
+{ className: 'mdr-code' },
+h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + DEFBAR_CSS } }),
+h(
+'div',
+{ className: 'mdr-code-head' },
+h(Icons.code, { size: 14 }),
+typeof onBack === 'function' && tab.navFrom
+? h(
+'button',
+{ type: 'button', className: 'mdr-code-back', title: '返回上一次跳转位置', onClick: onBack },
+'← 返回',
+)
+: null,
+h('span', { className: 'mdr-code-path', title: tab.path }, tab.path),
+h('span', { className: 'mdr-spacer' }),
+view.git ? h(GitBar, { view, actions }) : null,
+h('span', { className: 'mdr-tip', title: 'Ctrl/Cmd + 点击符号跳转到定义' }, `${lang || 'text'} · ${rows.length} 行 · Ctrl+点击跳定义`),
+),
+showDefBar
+? h(
+'div',
+{ className: 'mdr-defbar' },
+h('span', { className: 'mdr-defbar-lbl' }, '实现:'),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-defbar-btn',
+title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+onClick: () =>
+onOpen(defBar.impl.file, defBar.impl.line, { kind: 'code', ...(defBar.view || {}), defBar: null }),
+},
+defBar.label,
+),
+)
+: null,
+showInfo ? h(CodeGitInfo, { view }) : null,
+h(
+'div',
+{ className: 'mdr-code-viewwrap', ref: viewRef },
+h(CodeBody, {
+rows,
+lang,
+diffMode,
+targetLine: tab.line || 0,
+viewKey,
+scrollKey,
+contentReady,
+jumpHover: isJavaKtLang(lang),
+freshOpen: tab.content == null,
+searchKey: tab.id,
+}),
+),
+)
+}
 // ---- 22-defs.js ----
-/**
- * Ctrl+click "jump to definition" for the code views (code tab + code modal).
- *
- * Replaces the old candidate-list chooser with the original's single-target flow:
- * resolve one definition on the Host and navigate straight to it (same file →
- * scroll + persistent highlight; another file → open it), mirroring the
- * standalone reader's `ctrlTokenInfo` + `ctrlJump` + `openTarget`.
- *
- * Frozen Host contract (round 7): POST {ROUTE}/api/def
- *   request  { path, line, col, name, kind, text, branch, commit }
- *            line/col are 1-based (col inside the line's CODE TEXT)
- *            text = the full text currently rendered (workspace / branch / commit)
- *            branch/commit = the git version currently rendered (null otherwise)
- *   success  { ok: true, file, line, kind, defName, impl: {file,line}|null }
- *   failure  HTTP 400 { ok: false, error: "..." }  → postJson throws → toast(error)
- *
- * kind comes from the highlight.js token class exactly like the original:
- *   function_ → method, hljs-type / class_ → type, hljs-constant → constant
- *   (Java/Kotlin), hljs-variable → variable. Identifiers with no hljs span at all
- *   (common in JS/TS/Vue and for a couple of Java shapes) are resolved column-wise
- *   and sent as variable, so web files keep jumping too.
- *
- * Deleted rows of the commit-diff view (`.mdr-git-del`) stay non-jumpable: their
- * line number is the OLD file's and the rendered text is the new version.
- */
-
-/** The rendered row prefixes every code line with a 2-char diff/gutter marker. */
 const DEF_GUTTER_LEN = 2
 const DEF_IDENT_RE = /^[A-Za-z_$][\w$]*$/
 const DEF_WEB_PATH_RE = /\.(?:js|jsx|mjs|cjs|ts|tsx|mts|cts|vue)$/i
 const DEF_JAVA_LIKE_PATH_RE = /\.(?:java|kt|kts)$/i
-/** Web grammars have no Java/Kotlin post-pass: these hljs token classes were
-    treated as variables by the original web resolver (strings excluded). */
 const DEF_WEB_VARIABLE_CLASS_RE =
-  /^hljs-(?:keyword|title|attr|property|function|params|literal|number|regexp|built_in|symbol|selector|prompt|section|meta|subst|doctag|type|class|name|variable)(?:$|\s)/
-
+/^hljs-(?:keyword|title|attr|property|function|params|literal|number|regexp|built_in|symbol|selector|prompt|section|meta|subst|doctag|type|class|name|variable)(?:$|\s)/
 function defIsWebPath(rel) {
-  return DEF_WEB_PATH_RE.test(String(rel || ''))
+return DEF_WEB_PATH_RE.test(String(rel || ''))
 }
-
 function defIsJavaLikePath(rel) {
-  return DEF_JAVA_LIKE_PATH_RE.test(String(rel || ''))
+return DEF_JAVA_LIKE_PATH_RE.test(String(rel || ''))
 }
-
-/** The Host has a local-definition resolver only for Java/Kotlin and web sources. */
 function canJumpInFile(rel) {
-  return defIsJavaLikePath(rel) || defIsWebPath(rel)
+return defIsJavaLikePath(rel) || defIsWebPath(rel)
 }
-
-/** kind for a clicked token from its hljs class list; '' = not a jump target. */
 function defKindFromClass(className, rel) {
-  const cls = String(className || '')
-  if (!cls) return ''
-  if (cls.includes('function_')) return 'method'
-  if (cls.includes('hljs-type') || cls.includes('class_')) return 'type'
-  if (cls.includes('hljs-constant')) return defIsJavaLikePath(rel) ? 'constant' : 'variable'
-  if (cls.includes('hljs-variable')) return 'variable'
-  if (defIsWebPath(rel) && !cls.includes('hljs-string') && DEF_WEB_VARIABLE_CLASS_RE.test(cls)) return 'variable'
-  return ''
+const cls = String(className || '')
+if (!cls) return ''
+if (cls.includes('function_')) return 'method'
+if (cls.includes('hljs-type') || cls.includes('class_')) return 'type'
+if (cls.includes('hljs-constant')) return defIsJavaLikePath(rel) ? 'constant' : 'variable'
+if (cls.includes('hljs-variable')) return 'variable'
+if (defIsWebPath(rel) && !cls.includes('hljs-string') && DEF_WEB_VARIABLE_CLASS_RE.test(cls)) return 'variable'
+return ''
 }
-
-/* ------------------------------------------------------------- DOM helpers */
-
 function defParentElement(node) {
-  if (!node) return null
-  return node.nodeType === 3 ? node.parentElement || null : node
+if (!node) return null
+return node.nodeType === 3 ? node.parentElement || null : node
 }
-
 function defElementClosest(node, selector) {
-  const element = defParentElement(node)
-  if (!element) return null
-  if (typeof element.closest === 'function') return element.closest(selector)
-  // Minimal fallback (harnesses): walk parents and compare a single class name.
-  const className = selector.startsWith('.') ? selector.slice(1) : ''
-  let current = element
-  while (current) {
-    if (className && current.classList && current.classList.contains && current.classList.contains(className)) return current
-    current = current.parentElement || null
-  }
-  return null
+const element = defParentElement(node)
+if (!element) return null
+if (typeof element.closest === 'function') return element.closest(selector)
+const className = selector.startsWith('.') ? selector.slice(1) : ''
+let current = element
+while (current) {
+if (className && current.classList && current.classList.contains && current.classList.contains(className)) return current
+current = current.parentElement || null
 }
-
-/** The `.mdr-cl` row containing `node`, but only when it belongs to this view root. */
+return null
+}
 function defRowOf(node, rootEl) {
-  const row = defElementClosest(node, '.mdr-cl')
-  if (!row) return null
-  if (rootEl && typeof rootEl.contains === 'function' && !rootEl.contains(row)) return null
-  if (rootEl && typeof rootEl.contains !== 'function') return null
-  return row
+const row = defElementClosest(node, '.mdr-cl')
+if (!row) return null
+if (rootEl && typeof rootEl.contains === 'function' && !rootEl.contains(row)) return null
+if (rootEl && typeof rootEl.contains !== 'function') return null
+return row
 }
-
 function defLineOfRow(row) {
-  if (!row) return 0
-  let raw = ''
-  if (row.dataset && row.dataset.line != null) raw = String(row.dataset.line)
-  else if (typeof row.getAttribute === 'function') raw = String(row.getAttribute('data-line') || '')
-  const line = parseInt(raw, 10)
-  return Number.isFinite(line) ? line : 0
+if (!row) return 0
+let raw = ''
+if (row.dataset && row.dataset.line != null) raw = String(row.dataset.line)
+else if (typeof row.getAttribute === 'function') raw = String(row.getAttribute('data-line') || '')
+const line = parseInt(raw, 10)
+return Number.isFinite(line) ? line : 0
 }
-
-/**
- * 1-based column of (node, offset) inside the row's code text. The sticky
- * line-number column is not part of `.mdr-cl-code`; the 2-char diff/gutter
- * marker is stripped so the column matches the real source line.
- */
 function defCodeColumn(row, node, offset) {
-  if (!row || typeof row.querySelector !== 'function') return 0
-  const codeEl = row.querySelector('.mdr-cl-code')
-  if (!codeEl) return 0
-  let total = 0
-  let found = -1
-  let stop = false
-  const walk = (parent) => {
-    for (const child of parent.childNodes || []) {
-      if (stop) return
-      if (child === node) {
-        found = child.nodeType === 3 ? total + Math.max(0, Number(offset) || 0) : total
-        stop = true
-        return
-      }
-      if (child.nodeType === 3) total += (child.textContent || '').length
-      else if (child.nodeType === 1) {
-        if (child.contains && child.contains(node)) {
-          walk(child)
-          return
-        }
-        total += (child.textContent || '').length
-      }
-    }
-  }
-  walk(codeEl)
-  if (found < 0) return 0
-  return Math.max(1, found + 1 - DEF_GUTTER_LEN)
+if (!row || typeof row.querySelector !== 'function') return 0
+const codeEl = row.querySelector('.mdr-cl-code')
+if (!codeEl) return 0
+let total = 0
+let found = -1
+let stop = false
+const walk = (parent) => {
+for (const child of parent.childNodes || []) {
+if (stop) return
+if (child === node) {
+found = child.nodeType === 3 ? total + Math.max(0, Number(offset) || 0) : total
+stop = true
+return
 }
-
-/** Word under (textNode, offset): identifier plus its start offset in that node. */
+if (child.nodeType === 3) total += (child.textContent || '').length
+else if (child.nodeType === 1) {
+if (child.contains && child.contains(node)) {
+walk(child)
+return
+}
+total += (child.textContent || '').length
+}
+}
+}
+walk(codeEl)
+if (found < 0) return 0
+return Math.max(1, found + 1 - DEF_GUTTER_LEN)
+}
 function defWordFromTextNode(node, offset) {
-  if (!node || node.nodeType !== 3) return null
-  const text = String(node.textContent || '')
-  const isWord = (ch) => /[A-Za-z0-9_$]/.test(ch)
-  let at = Math.max(0, Math.min(Number(offset) || 0, text.length))
-  // A click exactly at the end of a word still means that word (caret offset).
-  if ((at >= text.length || !isWord(text[at])) && at > 0 && isWord(text[at - 1])) at -= 1
-  let start = at
-  let end = at
-  while (start > 0 && isWord(text[start - 1])) start -= 1
-  while (end < text.length && isWord(text[end])) end += 1
-  const name = text.slice(start, end)
-  if (!DEF_IDENT_RE.test(name)) return null
-  return { name, start }
+if (!node || node.nodeType !== 3) return null
+const text = String(node.textContent || '')
+const isWord = (ch) => /[A-Za-z0-9_$]/.test(ch)
+let at = Math.max(0, Math.min(Number(offset) || 0, text.length))
+if ((at >= text.length || !isWord(text[at])) && at > 0 && isWord(text[at - 1])) at -= 1
+let start = at
+let end = at
+while (start > 0 && isWord(text[start - 1])) start -= 1
+while (end < text.length && isWord(text[end])) end += 1
+const name = text.slice(start, end)
+if (!DEF_IDENT_RE.test(name)) return null
+return { name, start }
 }
-
 function defCaretAt(event) {
-  if (typeof document === 'undefined') return null
-  try {
-    if (typeof document.caretPositionFromPoint === 'function') {
-      const position = document.caretPositionFromPoint(event.clientX, event.clientY)
-      if (position && position.offsetNode) return { node: position.offsetNode, offset: position.offset || 0 }
-    }
-    if (typeof document.caretRangeFromPoint === 'function') {
-      const range = document.caretRangeFromPoint(event.clientX, event.clientY)
-      if (range && range.startContainer) return { node: range.startContainer, offset: range.startOffset || 0 }
-    }
-  } catch {
-    // caret lookup is best-effort; fall back to the event target span
-  }
-  return null
+if (typeof document === 'undefined') return null
+try {
+if (typeof document.caretPositionFromPoint === 'function') {
+const position = document.caretPositionFromPoint(event.clientX, event.clientY)
+if (position && position.offsetNode) return { node: position.offsetNode, offset: position.offset || 0 }
 }
-
-/**
- * Resolve the token under a Ctrl+click. Returns
- * { name, kind, line, col } or null when the click is not on a resolvable token.
- */
+if (typeof document.caretRangeFromPoint === 'function') {
+const range = document.caretRangeFromPoint(event.clientX, event.clientY)
+if (range && range.startContainer) return { node: range.startContainer, offset: range.startOffset || 0 }
+}
+} catch {
+}
+return null
+}
 function definitionHitAt(rootEl, event, relPath) {
-  const target = event && event.target
-  if (!target) return null
-  // Deleted diff rows are old-file lines rendered inside the new file: no jump.
-  // (Direct closest() here keeps the fast path obvious; the helper below covers
-  // nodes without Element.closest in harnesses.)
-  if (target.closest && target.closest('.mdr-git-del')) return null
-  if (defElementClosest(target, '.mdr-git-del')) return null
-  const row = defRowOf(target, rootEl)
-  if (!row) return null
-  const line = defLineOfRow(row)
-  if (!line) return null
-  const codeEl = defElementClosest(target, '.mdr-cl-code')
-  if (!codeEl) return null // clicks on the line-number column do nothing
-
-  // 1) Caret-based word extraction: exact under the pointer, works for tokens
-  //    without any hljs span (JS/TS/Vue plain identifiers) as well.
-  const caret = defCaretAt(event)
-  if (caret && caret.node && caret.node.nodeType === 3) {
-    const word = defWordFromTextNode(caret.node, caret.offset)
-    if (word) {
-      const span = defElementClosest(caret.node, 'span')
-      // `.mdr-cl-code` itself is a span: only an inner token span counts.
-      const tokenSpan = span && span !== codeEl && codeEl.contains(span) ? span : null
-      const kind = tokenSpan ? defKindFromClass(tokenSpan.className, relPath) : 'variable'
-      if (kind) {
-        const col = defCodeColumn(row, caret.node, word.start)
-        if (col > 0) return { name: word.name, kind, line, col }
-      }
-      // A non-jumpable token (keyword/punctuation/string/comment) gets no request.
-      if (tokenSpan) return null
-    }
-  }
-
-  // 2) Fallback when the caret API is unavailable: use the hljs span itself.
-  const span = defElementClosest(target, 'span')
-  if (!span || span === codeEl || !codeEl.contains(span)) return null
-  const kind = defKindFromClass(span.className, relPath)
-  if (!kind) return null
-  const name = String(span.textContent || '').trim()
-  if (!DEF_IDENT_RE.test(name)) return null
-  const col = defCodeColumn(row, span, 0)
-  if (!col) return null
-  return { name, kind, line, col }
+const target = event && event.target
+if (!target) return null
+if (target.closest && target.closest('.mdr-git-del')) return null
+if (defElementClosest(target, '.mdr-git-del')) return null
+const row = defRowOf(target, rootEl)
+if (!row) return null
+const line = defLineOfRow(row)
+if (!line) return null
+const codeEl = defElementClosest(target, '.mdr-cl-code')
+if (!codeEl) return null // clicks on the line-number column do nothing
+const caret = defCaretAt(event)
+if (caret && caret.node && caret.node.nodeType === 3) {
+const word = defWordFromTextNode(caret.node, caret.offset)
+if (word) {
+const span = defElementClosest(caret.node, 'span')
+const tokenSpan = span && span !== codeEl && codeEl.contains(span) ? span : null
+const kind = tokenSpan ? defKindFromClass(tokenSpan.className, relPath) : 'variable'
+if (kind) {
+const col = defCodeColumn(row, caret.node, word.start)
+if (col > 0) return { name: word.name, kind, line, col }
 }
-
-/* --------------------------------------------------------- Host contract */
-
-/** POST /api/def body from the clicked token + the current view source. */
+if (tokenSpan) return null
+}
+}
+const span = defElementClosest(target, 'span')
+if (!span || span === codeEl || !codeEl.contains(span)) return null
+const kind = defKindFromClass(span.className, relPath)
+if (!kind) return null
+const name = String(span.textContent || '').trim()
+if (!DEF_IDENT_RE.test(name)) return null
+const col = defCodeColumn(row, span, 0)
+if (!col) return null
+return { name, kind, line, col }
+}
 function definitionRequestBody(source, hit) {
-  const path = String((source && source.path) || '')
-  const line = Math.max(0, Number(hit && hit.line) || 0)
-  const col = Math.max(0, Number(hit && hit.col) || 0)
-  const name = String((hit && hit.name) || '')
-  if (!path || !line || !col || !name) return null
-  return {
-    path,
-    line,
-    col,
-    name,
-    kind: (hit && hit.kind) || 'variable',
-    text: String(source && source.text != null ? source.text : ''),
-    branch: (source && source.branch) || null,
-    commit: (source && source.commit) || null,
-  }
+const path = String((source && source.path) || '')
+const line = Math.max(0, Number(hit && hit.line) || 0)
+const col = Math.max(0, Number(hit && hit.col) || 0)
+const name = String((hit && hit.name) || '')
+if (!path || !line || !col || !name) return null
+return {
+path,
+line,
+col,
+name,
+kind: (hit && hit.kind) || 'variable',
+text: String(source && source.text != null ? source.text : ''),
+branch: (source && source.branch) || null,
+commit: (source && source.commit) || null,
 }
-
-/** Ask the Host for one definition; failures surface as the Host's own message. */
+}
 async function requestDefinition(source, hit) {
-  const body = definitionRequestBody(source, hit)
-  if (!body) return null
-  try {
-    const payload = await postJson('/api/def', body)
-    // The oracle-style resolver may report a failure in the body with HTTP 200
-    // (e.g. "外部/框架方法，无本地定义"); the plan's contract uses 400 (postJson
-    // throws instead). Surface the message either way.
-    if (payload && payload.error) {
-      toast(String(payload.error), 'err')
-      return null
-    }
-    if (!payload || !payload.file || !(Number(payload.line) > 0)) {
-      toast('未找到定义', 'err')
-      return null
-    }
-    return payload
-  } catch (err) {
-    toast(String((err && err.message) || err), 'err')
-    return null
-  }
+const body = definitionRequestBody(source, hit)
+if (!body) return null
+try {
+const payload = await postJson('/api/def', body)
+if (payload && payload.error) {
+toast(String(payload.error), 'err')
+return null
 }
-
-/**
- * Attach the Ctrl/Cmd+click listener. `getSource()` is called at click time so
- * the request always carries the text / branch / commit currently rendered (the
- * view can switch branch or commit without remounting). `onJump(result, source,
- * hit)` navigates: same file → line jump, another file → open it (the caller
- * decides modal in-place vs new tab); `hit` carries the clicked line so the
- * caller can push it onto the navigation history like the original ctrlJump.
- * Returns a dispose function.
- */
+if (!payload || !payload.file || !(Number(payload.line) > 0)) {
+toast('未找到定义', 'err')
+return null
+}
+return payload
+} catch (err) {
+toast(String((err && err.message) || err), 'err')
+return null
+}
+}
 function setupDefinitionClick(rootEl, getSource, onJump) {
-  if (!rootEl || typeof getSource !== 'function' || typeof onJump !== 'function') return () => {}
-  let busy = false
-  const handler = async (event) => {
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return
-    let source = null
-    try {
-      source = getSource() || null
-    } catch {
-      source = null
-    }
-    if (!source || !source.path || !canJumpInFile(source.path)) return
-    const hit = definitionHitAt(rootEl, event, source.path)
-    if (!hit) return
-    event.preventDefault()
-    event.stopPropagation()
-    if (busy) return
-    busy = true
-    if (rootEl.classList && rootEl.classList.add) rootEl.classList.add('mdr-def-busy')
-    try {
-      const result = await requestDefinition(source, hit)
-      if (result) onJump(result, source, hit)
-    } finally {
-      busy = false
-      if (rootEl.classList && rootEl.classList.remove) rootEl.classList.remove('mdr-def-busy')
-    }
-  }
-  rootEl.addEventListener('click', handler)
-  return () => rootEl.removeEventListener('click', handler)
+if (!rootEl || typeof getSource !== 'function' || typeof onJump !== 'function') return () => {}
+let busy = false
+const handler = async (event) => {
+if (!(event.ctrlKey || event.metaKey) || event.altKey) return
+let source = null
+try {
+source = getSource() || null
+} catch {
+source = null
 }
-
+if (!source || !source.path || !canJumpInFile(source.path)) return
+const hit = definitionHitAt(rootEl, event, source.path)
+if (!hit) return
+event.preventDefault()
+event.stopPropagation()
+if (busy) return
+busy = true
+if (rootEl.classList && rootEl.classList.add) rootEl.classList.add('mdr-def-busy')
+try {
+const result = await requestDefinition(source, hit)
+if (result) onJump(result, source, hit)
+} finally {
+busy = false
+if (rootEl.classList && rootEl.classList.remove) rootEl.classList.remove('mdr-def-busy')
+}
+}
+rootEl.addEventListener('click', handler)
+return () => rootEl.removeEventListener('click', handler)
+}
 // ---- 24-modal.js ----
-/**
- * Code modal (弹窗) — the standalone reader's code popup, rebuilt for the plugin.
- *
- * Contract (wired by 50-app.js):
- *   h(CodeModal, {
- *     request,          // null | { path, line, branch?, commit? } — code file to show
- *     onClose,          // close the modal
- *     onOpenTab,        // (target) => void — open the current file+line+git view as a tab
- *     onOpen,           // open another file (Ctrl+click navigation) in a tab
- *   })
- *
- * Behaviour (ported from input/reference/index.html #modal-mask):
- *   - renders the file with the shared CodeBody (same line numbers/hljs colors as
- *     the code tab) and jumps to request.line with a PERSISTENT .mdr-cl.hit
- *     (no fade timer; moves on another jump, gone when the modal closes);
- *   - header has the path, the git bar (branch/commit view, shared useGitView but
- *     with its own view key) and the ← 返回 / 开成标签页 / ✕ buttons;
- *   - request.branch / request.commit (git-adapted link): that branch/commit view
- *     is applied inside the modal and 开成标签页 carries it to the new tab;
- *   - Ctrl/Cmd+click jumps straight to the ONE definition resolved by /api/def
- *     (no candidate list): same file → in-place line jump, another file →
- *     in-place navigation that keeps the ← 返回 stack (same branch/commit view),
- *     and an interface hit shows the 「实现: XxxImpl」entry bar;
- *   - Esc closes (listener while mounted), dark-mask click closes, card clicks do
- *     not.
- */
-
 const CMODAL_CSS = `
 .mdr-cmodal-mask{position:absolute;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:12px}
 .mdr-cmodal{position:relative;display:flex;flex-direction:column;width:min(1400px,96%);height:min(88vh,860px);max-height:100%;min-height:0;overflow:hidden;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-overlay);box-shadow:0 18px 60px rgba(0,0,0,.5)}
@@ -4620,446 +3459,381 @@ const CMODAL_CSS = `
 .mdr-cmodal-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:4px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
 .mdr-cmodal-defbar .mdr-cmodal-btn{color:var(--dsw-alias-brand-primary)}
 `
-
-/** Read the current scroll offset of the modal's code viewport (for the back stack). */
 function readModalScroll(card) {
-  const body = card && card.querySelector ? card.querySelector('.mdr-code-body') : null
-  return body ? body.scrollTop : 0
+const body = card && card.querySelector ? card.querySelector('.mdr-code-body') : null
+return body ? body.scrollTop : 0
 }
-
-/**
- * Inner modal: mounted only while a request exists (the outer CodeModal returns
- * null otherwise), so every mount is a fresh session with an empty back stack.
- */
 function CodeModalInner(props) {
-  const { request, onClose, onOpenTab, onOpen } = props
-  const requestPath = String((request && request.path) || '')
-  const requestLine = Math.max(0, Number(request && request.line) || 0)
-  // Git-adapted link: the modal applies the requested branch/commit view inside
-  // the popup (its own git view key, so the tab underneath is untouched).
-  const requestBranch = String((request && request.branch) || '')
-  const requestCommit = String((request && request.commit) || '')
-  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
-
-  const [view, setView] = React.useState(() => ({
-    path: requestPath,
-    line: requestLine,
-    content: null,
-    lang: langForPath(requestPath),
-    lineCount: 0,
-    loading: true,
-    error: '',
-  }))
-  const [history, setHistory] = React.useState([])
-  const [restoreScroll, setRestoreScroll] = React.useState(null)
-  const [note, setNote] = React.useState('')
-  const [defBar, setDefBar] = React.useState(null)
-  const cardRef = React.useRef(null)
-  const seqRef = React.useRef(0)
-  const handledReqRef = React.useRef('')
-  const pendingGitRef = React.useRef('')
-  const pendingNavViewRef = React.useRef(null)
-  const currentGitRef = React.useRef(null)
-  const currentRef = React.useRef({ path: requestPath, line: requestLine })
-  const maskDownRef = React.useRef(false)
-
-  const loadFile = React.useCallback((path, line, gitView) => {
-    const seq = (seqRef.current += 1)
-    const targetLine = Math.max(0, Number(line) || 0)
-    setView({
-      path,
-      line: targetLine,
-      content: null,
-      lang: langForPath(path),
-      lineCount: 0,
-      loading: true,
-      error: '',
-    })
-    const applyViewFile = (content, realPath) => {
-      setView({
-        path: realPath,
-        line: targetLine,
-        content: String(content == null ? '' : content),
-        lang: langForPath(realPath) || langForPath(path),
-        lineCount: 0,
-        loading: false,
-        error: '',
-      })
-    }
-    fetchJson('/api/code', { path })
-      .then((payload) => {
-        if (seqRef.current !== seq) return
-        const realPath = payload && payload.path ? String(payload.path) : path
-        setView({
-          path: realPath,
-          line: targetLine,
-          content: String(payload && payload.content != null ? payload.content : ''),
-          lang: langForPath(realPath) || (payload && payload.lang) || langForPath(path),
-          lineCount: Number(payload && payload.lineCount) || 0,
-          loading: false,
-          error: '',
-        })
-      })
-      .catch((err) => {
-        if (seqRef.current !== seq) return
-        // Jump targets can exist only in the branch/commit version (workspace
-        // file removed/renamed): fall back to the git view file like the original
-        // fetchJumpFiles did.
-        const rev = gitView && (gitView.commit || gitView.branch)
-        if (!rev) {
-          const message = String((err && err.message) || err)
-          setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
-          return
-        }
-        fetchJson('/api/git/file', { path, commit: rev })
-          .then((payload) => {
-            if (seqRef.current !== seq) return
-            applyViewFile(payload && payload.content, path)
-          })
-          .catch(() => {
-            if (seqRef.current !== seq) return
-            const message = String((err && err.message) || err)
-            setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
-          })
-      })
-  }, [])
-
-  // Initial load + a new request that arrives while the modal is already open.
-  React.useEffect(() => {
-    if (handledReqRef.current === reqKey) return
-    handledReqRef.current = reqKey
-    setHistory([])
-    setRestoreScroll(null)
-    setNote('')
-    setDefBar(null)
-    pendingGitRef.current = ''
-    // The git-adapted request view is applied once, when THIS request's file
-    // text is in. In-place Ctrl+click navigation later must not re-apply it.
-    pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
-    loadFile(
-      requestPath,
-      requestLine,
-      requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
-    )
-  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
-
-  if (view) currentRef.current = { path: view.path, line: view.line }
-
-  const navigateInPlace = React.useCallback(
-    (path, line, gitView) => {
-      const nextPath = String(path || '').replace(/\\/g, '/')
-      const nextLine = Math.max(0, Number(line) || 0)
-      if (!nextPath) return
-      const current = currentRef.current
-      if (nextPath === current.path && nextLine === current.line) return
-      const snapshot = {
-        path: current.path,
-        line: current.line,
-        scrollTop: readModalScroll(cardRef.current),
-        // Remember which git version this position was showing: ← 返回 must restore
-        // it too (and the file may only exist in that version).
-        view: currentGitRef.current,
-      }
-      setHistory((prev) => [...prev, snapshot])
-      setRestoreScroll(null)
-      setNote('')
-      // A cross-file jump inside a branch/commit view keeps that version for the
-      // target file too (the original's modalOpenPath passes src.view).
-      pendingNavViewRef.current =
-        nextPath === current.path ? null : { path: nextPath, view: gitView || null }
-      if (nextPath === current.path) {
-        // Same file, another line: no refetch, just move the jump target.
-        setView((prev) => (prev ? { ...prev, line: nextLine } : prev))
-        return
-      }
-      loadFile(nextPath, nextLine, gitView)
-    },
-    [loadFile],
-  )
-
-  const goBack = React.useCallback(() => {
-    if (!history.length) return
-    const snapshot = history[history.length - 1]
-    setHistory(history.slice(0, -1))
-    setDefBar(null)
-    setNote('')
-    setRestoreScroll({ top: snapshot.scrollTop })
-    if (snapshot.path === currentRef.current.path) {
-      setView((prev) => (prev ? { ...prev, line: snapshot.line } : prev))
-      return
-    }
-    // Restore the previous file with its git version too (may only exist there).
-    pendingNavViewRef.current = snapshot.view ? { path: snapshot.path, view: snapshot.view } : null
-    loadFile(snapshot.path, snapshot.line, snapshot.view)
-  }, [history, loadFile])
-
-  // Ctrl/Cmd+click inside the modal jumps straight to the resolved definition and
-  // navigates IN PLACE (the ← 返回 stack keeps the previous position).
-  const displayPath = view ? view.path : requestPath
-  const displayContent = view && view.content != null ? view.content : null
-  const gitTab = React.useMemo(
-    () => ({
-      id: 'modal:' + displayPath,
-      kind: 'code',
-      path: displayPath,
-      content: displayContent,
-      // The modal keeps its own branch/commit view: it must not mutate the
-      // selection of the code tab showing the same file underneath.
-      gitKey: 'modal:' + displayPath,
-    }),
-    [displayPath, displayContent],
-  )
-  const { view: gitView, actions: gitActions } = useGitView(gitTab)
-  const workspaceContent = view && view.content != null ? view.content : ''
-  const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
-  // Text + git version carried by a jump request: exactly what this modal renders
-  // (commit version while viewing a commit's diff, branch version in a branch view,
-  // workspace content otherwise).
-  const defText =
-    diffMode && Array.isArray(gitView.fileLines)
-      ? gitView.fileLines.join('\n')
-      : gitView.branchContent != null
-        ? String(gitView.branchContent)
-        : workspaceContent
-  const defView =
-    gitView.commit && diffMode
-      ? { commit: gitView.commit }
-      : gitView.branchContent != null
-        ? { branch: gitView.branch }
-        : null
-  currentGitRef.current = defView
-  const defSourceRef = React.useRef({})
-  defSourceRef.current = {
-    path: displayPath || '',
-    text: defText,
-    branch: defView && defView.branch ? defView.branch : '',
-    commit: defView && defView.commit ? defView.commit : '',
-    line: view ? view.line : 0,
-  }
-  React.useEffect(() => {
-    const root = cardRef.current
-    if (!root || !displayPath || displayContent == null) return undefined
-    return setupDefinitionClick(
-      root,
-      () => defSourceRef.current,
-      (result, source) => {
-        const target = String(result.file || '').replace(/\\/g, '/')
-        if (!target) return
-        const line = Math.max(0, Number(result.line) || 0)
-        const nextView = source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null
-        // Interface hit → 「实现: XxxImpl」entry bar inside the popup.
-        setDefBar(
-          result.impl && result.impl.file
-            ? {
-                impl: { file: String(result.impl.file), line: Math.max(0, Number(result.impl.line) || 0) },
-                label: String(result.impl.file).split('/').pop().replace(/\.java$/, '') || String(result.impl.file),
-                view: nextView,
-              }
-            : null,
-        )
-        navigateInPlace(target, line, nextView)
-      },
-    )
-  }, [displayPath, displayContent, navigateInPlace])
-
-  // Apply the source view's branch/commit to a file reached by an in-place jump
-  // (once its text is loaded). Keeps 「弹窗内跳转」 consistent with the original.
-  React.useEffect(() => {
-    const pending = pendingNavViewRef.current
-    if (!pending || !view || view.loading || view.content == null) return
-    if (String(view.path) !== pending.path) return
-    pendingNavViewRef.current = null
-    const target = pending.view
-    if (target && (target.branch || target.commit)) gitActions.applyTarget(target.branch || null, target.commit || null)
-  }, [view, gitActions])
-
-  // Esc closes the modal.
-  React.useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      event.stopImmediatePropagation()
-      if (typeof onClose === 'function') onClose()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
-  // Apply the git-adapted request view (branch/commit) once the file text is in.
-  // In-place Ctrl+click navigation loads another file: the opener's branch/commit
-  // is deliberately NOT carried over (matches the original's in-place navigation).
-  React.useEffect(() => {
-    if (!requestBranch && !requestCommit) return
-    if (pendingGitRef.current !== reqKey) return
-    if (!view || view.loading || view.content == null) return
-    pendingGitRef.current = ''
-    gitActions.applyTarget(requestBranch || null, requestCommit || null)
-  }, [reqKey, requestBranch, requestCommit, view, gitActions])
-
-  const lang = (view && view.lang) || langForPath(displayPath)
-  const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
-    gitView.branchContent == null ? 'ws' : 'branch'
-  }`
-  const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
-  const openAsTab = () => {
-    if (!view || !view.path) return
-    if (typeof onOpenTab === 'function') {
-      // Carry the branch/commit view that is actually rendered so the new tab
-      // shows the same version of the file.
-      const target = { path: view.path, line: view.line }
-      if (gitView.git) {
-        if (gitView.commit) target.commit = gitView.commit
-        if (gitView.branchContent != null) target.branch = gitView.branch
-      }
-      onOpenTab(target)
-    }
-    if (typeof onClose === 'function') onClose()
-  }
-  const openFallbackTab = () => {
-    if (!view || typeof onOpen !== 'function') return
-    onOpen(view.path, view.line)
-    if (typeof onClose === 'function') onClose()
-  }
-
-  const headChildren = [
-    h(Icons.code, { key: 'icon', size: 14 }),
-    h('span', { key: 'path', className: 'mdr-cmodal-path', title: displayPath }, displayPath),
-    view && view.line > 0
-      ? h('span', { key: 'line', className: 'mdr-cmodal-badge' }, `跳转行 ${view.line}`)
-      : null,
-    view && view.lineCount > 0 ? h('span', { key: 'size', className: 'mdr-cmodal-badge' }, `${view.lineCount} 行`) : null,
-    gitView.git ? h(GitBar, { key: 'git', view: gitView, actions: gitActions }) : null,
-    h('span', { key: 'spacer', className: 'mdr-spacer' }),
-    history.length
-      ? h(
-          'button',
-          { key: 'back', type: 'button', className: 'mdr-cmodal-btn', title: '返回上一次跳转位置', onClick: goBack },
-          '← 返回',
-        )
-      : null,
-    h(
-      'button',
-      { key: 'tab', type: 'button', className: 'mdr-cmodal-btn', title: '把这一个文件按当前行开成标签页', onClick: openAsTab },
-      '开成标签页',
-    ),
-    h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
-  ]
-
-  let body = null
-  if (view && view.loading) {
-    body = h('div', { className: 'mdr-cmodal-state' }, '加载中…')
-  } else if (!view || view.error) {
-    body = h(
-      'div',
-      { className: 'mdr-cmodal-state' },
-      h('div', { className: 'mdr-cmodal-note', style: { border: 'none', background: 'transparent', padding: 0 } }, `打开失败：${(view && view.error) || '未知错误'}`),
-      h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
-    )
-  } else {
-    body = h(
-      'div',
-      { className: 'mdr-cmodal-body' },
-      h(CodeBody, {
-        rows,
-        lang,
-        diffMode,
-        targetLine: view.line || 0,
-        viewKey,
-        restoreScroll,
-        jumpHover: isJavaKtLang(lang),
-      }),
-    )
-  }
-
-  return h(
-    'div',
-    {
-      className: 'mdr-cmodal-mask',
-      onMouseDown: (event) => {
-        maskDownRef.current = event.target === event.currentTarget
-      },
-      onClick: (event) => {
-        if (event.target !== event.currentTarget) return
-        if (!maskDownRef.current) return
-        if (typeof onClose === 'function') onClose()
-      },
-    },
-    h(
-      'div',
-      {
-        className: 'mdr-cmodal mdr-code',
-        ref: cardRef,
-        onClick: (event) => event.stopPropagation(),
-      },
-      h('div', { className: 'mdr-cmodal-head' }, headChildren),
-      defBar
-        ? h(
-            'div',
-            { className: 'mdr-cmodal-defbar' },
-            h('span', null, '实现:'),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'mdr-cmodal-btn',
-                title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
-                onClick: () => navigateInPlace(defBar.impl.file, defBar.impl.line, defBar.view),
-              },
-              defBar.label,
-            ),
-          )
-        : null,
-      showInfo ? h(CodeGitInfo, { view: gitView }) : null,
-      note ? h('div', { className: 'mdr-cmodal-note' }, note) : null,
-      body,
-      h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
-    ),
-  )
+const { request, onClose, onOpenTab, onOpen } = props
+const requestPath = String((request && request.path) || '')
+const requestLine = Math.max(0, Number(request && request.line) || 0)
+const requestBranch = String((request && request.branch) || '')
+const requestCommit = String((request && request.commit) || '')
+const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
+const [view, setView] = React.useState(() => ({
+path: requestPath,
+line: requestLine,
+content: null,
+lang: langForPath(requestPath),
+lineCount: 0,
+loading: true,
+error: '',
+}))
+const [history, setHistory] = React.useState([])
+const [restoreScroll, setRestoreScroll] = React.useState(null)
+const [note, setNote] = React.useState('')
+const [defBar, setDefBar] = React.useState(null)
+const cardRef = React.useRef(null)
+const seqRef = React.useRef(0)
+const handledReqRef = React.useRef('')
+const pendingGitRef = React.useRef('')
+const pendingNavViewRef = React.useRef(null)
+const currentGitRef = React.useRef(null)
+const currentRef = React.useRef({ path: requestPath, line: requestLine })
+const maskDownRef = React.useRef(false)
+const loadFile = React.useCallback((path, line, gitView) => {
+const seq = (seqRef.current += 1)
+const targetLine = Math.max(0, Number(line) || 0)
+setView({
+path,
+line: targetLine,
+content: null,
+lang: langForPath(path),
+lineCount: 0,
+loading: true,
+error: '',
+})
+const applyViewFile = (content, realPath) => {
+setView({
+path: realPath,
+line: targetLine,
+content: String(content == null ? '' : content),
+lang: langForPath(realPath) || langForPath(path),
+lineCount: 0,
+loading: false,
+error: '',
+})
 }
-
+fetchJson('/api/code', { path })
+.then((payload) => {
+if (seqRef.current !== seq) return
+const realPath = payload && payload.path ? String(payload.path) : path
+setView({
+path: realPath,
+line: targetLine,
+content: String(payload && payload.content != null ? payload.content : ''),
+lang: langForPath(realPath) || (payload && payload.lang) || langForPath(path),
+lineCount: Number(payload && payload.lineCount) || 0,
+loading: false,
+error: '',
+})
+})
+.catch((err) => {
+if (seqRef.current !== seq) return
+const rev = gitView && (gitView.commit || gitView.branch)
+if (!rev) {
+const message = String((err && err.message) || err)
+setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+return
+}
+fetchJson('/api/git/file', { path, commit: rev })
+.then((payload) => {
+if (seqRef.current !== seq) return
+applyViewFile(payload && payload.content, path)
+})
+.catch(() => {
+if (seqRef.current !== seq) return
+const message = String((err && err.message) || err)
+setView({ path, line: targetLine, content: null, lang: langForPath(path), lineCount: 0, loading: false, error: message })
+})
+})
+}, [])
+React.useEffect(() => {
+if (handledReqRef.current === reqKey) return
+handledReqRef.current = reqKey
+setHistory([])
+setRestoreScroll(null)
+setNote('')
+setDefBar(null)
+pendingGitRef.current = ''
+pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
+loadFile(
+requestPath,
+requestLine,
+requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
+)
+}, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
+if (view) currentRef.current = { path: view.path, line: view.line }
+const navigateInPlace = React.useCallback(
+(path, line, gitView) => {
+const nextPath = String(path || '').replace(/\\/g, '/')
+const nextLine = Math.max(0, Number(line) || 0)
+if (!nextPath) return
+const current = currentRef.current
+if (nextPath === current.path && nextLine === current.line) return
+const snapshot = {
+path: current.path,
+line: current.line,
+scrollTop: readModalScroll(cardRef.current),
+view: currentGitRef.current,
+}
+setHistory((prev) => [...prev, snapshot])
+setRestoreScroll(null)
+setNote('')
+pendingNavViewRef.current =
+nextPath === current.path ? null : { path: nextPath, view: gitView || null }
+if (nextPath === current.path) {
+setView((prev) => (prev ? { ...prev, line: nextLine } : prev))
+return
+}
+loadFile(nextPath, nextLine, gitView)
+},
+[loadFile],
+)
+const goBack = React.useCallback(() => {
+if (!history.length) return
+const snapshot = history[history.length - 1]
+setHistory(history.slice(0, -1))
+setDefBar(null)
+setNote('')
+setRestoreScroll({ top: snapshot.scrollTop })
+if (snapshot.path === currentRef.current.path) {
+setView((prev) => (prev ? { ...prev, line: snapshot.line } : prev))
+return
+}
+pendingNavViewRef.current = snapshot.view ? { path: snapshot.path, view: snapshot.view } : null
+loadFile(snapshot.path, snapshot.line, snapshot.view)
+}, [history, loadFile])
+const displayPath = view ? view.path : requestPath
+const displayContent = view && view.content != null ? view.content : null
+const gitTab = React.useMemo(
+() => ({
+id: 'modal:' + displayPath,
+kind: 'code',
+path: displayPath,
+content: displayContent,
+gitKey: 'modal:' + displayPath,
+}),
+[displayPath, displayContent],
+)
+const { view: gitView, actions: gitActions } = useGitView(gitTab)
+const workspaceContent = view && view.content != null ? view.content : ''
+const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
+const defText =
+diffMode && Array.isArray(gitView.fileLines)
+? gitView.fileLines.join('\n')
+: gitView.branchContent != null
+? String(gitView.branchContent)
+: workspaceContent
+const defView =
+gitView.commit && diffMode
+? { commit: gitView.commit }
+: gitView.branchContent != null
+? { branch: gitView.branch }
+: null
+currentGitRef.current = defView
+const defSourceRef = React.useRef({})
+defSourceRef.current = {
+path: displayPath || '',
+text: defText,
+branch: defView && defView.branch ? defView.branch : '',
+commit: defView && defView.commit ? defView.commit : '',
+line: view ? view.line : 0,
+}
+React.useEffect(() => {
+const root = cardRef.current
+if (!root || !displayPath || displayContent == null) return undefined
+return setupDefinitionClick(
+root,
+() => defSourceRef.current,
+(result, source) => {
+const target = String(result.file || '').replace(/\\/g, '/')
+if (!target) return
+const line = Math.max(0, Number(result.line) || 0)
+const nextView = source.commit ? { commit: source.commit } : source.branch ? { branch: source.branch } : null
+setDefBar(
+result.impl && result.impl.file
+? {
+impl: { file: String(result.impl.file), line: Math.max(0, Number(result.impl.line) || 0) },
+label: String(result.impl.file).split('/').pop().replace(/\.java$/, '') || String(result.impl.file),
+view: nextView,
+}
+: null,
+)
+navigateInPlace(target, line, nextView)
+},
+)
+}, [displayPath, displayContent, navigateInPlace])
+React.useEffect(() => {
+const pending = pendingNavViewRef.current
+if (!pending || !view || view.loading || view.content == null) return
+if (String(view.path) !== pending.path) return
+pendingNavViewRef.current = null
+const target = pending.view
+if (target && (target.branch || target.commit)) gitActions.applyTarget(target.branch || null, target.commit || null)
+}, [view, gitActions])
+React.useEffect(() => {
+const onKeyDown = (event) => {
+if (event.key !== 'Escape') return
+event.preventDefault()
+event.stopImmediatePropagation()
+if (typeof onClose === 'function') onClose()
+}
+window.addEventListener('keydown', onKeyDown)
+return () => window.removeEventListener('keydown', onKeyDown)
+}, [onClose])
+React.useEffect(() => {
+if (!requestBranch && !requestCommit) return
+if (pendingGitRef.current !== reqKey) return
+if (!view || view.loading || view.content == null) return
+pendingGitRef.current = ''
+gitActions.applyTarget(requestBranch || null, requestCommit || null)
+}, [reqKey, requestBranch, requestCommit, view, gitActions])
+const lang = (view && view.lang) || langForPath(displayPath)
+const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|${diffMode ? 'diff' : 'base'}|${
+gitView.branchContent == null ? 'ws' : 'branch'
+}`
+const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
+const openAsTab = () => {
+if (!view || !view.path) return
+if (typeof onOpenTab === 'function') {
+const target = { path: view.path, line: view.line }
+if (gitView.git) {
+if (gitView.commit) target.commit = gitView.commit
+if (gitView.branchContent != null) target.branch = gitView.branch
+}
+onOpenTab(target)
+}
+if (typeof onClose === 'function') onClose()
+}
+const openFallbackTab = () => {
+if (!view || typeof onOpen !== 'function') return
+onOpen(view.path, view.line)
+if (typeof onClose === 'function') onClose()
+}
+const headChildren = [
+h(Icons.code, { key: 'icon', size: 14 }),
+h('span', { key: 'path', className: 'mdr-cmodal-path', title: displayPath }, displayPath),
+view && view.line > 0
+? h('span', { key: 'line', className: 'mdr-cmodal-badge' }, `跳转行 ${view.line}`)
+: null,
+view && view.lineCount > 0 ? h('span', { key: 'size', className: 'mdr-cmodal-badge' }, `${view.lineCount} 行`) : null,
+gitView.git ? h(GitBar, { key: 'git', view: gitView, actions: gitActions }) : null,
+h('span', { key: 'spacer', className: 'mdr-spacer' }),
+history.length
+? h(
+'button',
+{ key: 'back', type: 'button', className: 'mdr-cmodal-btn', title: '返回上一次跳转位置', onClick: goBack },
+'← 返回',
+)
+: null,
+h(
+'button',
+{ key: 'tab', type: 'button', className: 'mdr-cmodal-btn', title: '把这一个文件按当前行开成标签页', onClick: openAsTab },
+'开成标签页',
+),
+h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
+]
+let body = null
+if (view && view.loading) {
+body = h('div', { className: 'mdr-cmodal-state' }, '加载中…')
+} else if (!view || view.error) {
+body = h(
+'div',
+{ className: 'mdr-cmodal-state' },
+h('div', { className: 'mdr-cmodal-note', style: { border: 'none', background: 'transparent', padding: 0 } }, `打开失败：${(view && view.error) || '未知错误'}`),
+h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
+)
+} else {
+body = h(
+'div',
+{ className: 'mdr-cmodal-body' },
+h(CodeBody, {
+rows,
+lang,
+diffMode,
+targetLine: view.line || 0,
+viewKey,
+restoreScroll,
+jumpHover: isJavaKtLang(lang),
+}),
+)
+}
+return h(
+'div',
+{
+className: 'mdr-cmodal-mask',
+onMouseDown: (event) => {
+maskDownRef.current = event.target === event.currentTarget
+},
+onClick: (event) => {
+if (event.target !== event.currentTarget) return
+if (!maskDownRef.current) return
+if (typeof onClose === 'function') onClose()
+},
+},
+h(
+'div',
+{
+className: 'mdr-cmodal mdr-code',
+ref: cardRef,
+onClick: (event) => event.stopPropagation(),
+},
+h('div', { className: 'mdr-cmodal-head' }, headChildren),
+defBar
+? h(
+'div',
+{ className: 'mdr-cmodal-defbar' },
+h('span', null, '实现:'),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-cmodal-btn',
+title: `跳转到实现：${defBar.impl.file}:${defBar.impl.line}`,
+onClick: () => navigateInPlace(defBar.impl.file, defBar.impl.line, defBar.view),
+},
+defBar.label,
+),
+)
+: null,
+showInfo ? h(CodeGitInfo, { view: gitView }) : null,
+note ? h('div', { className: 'mdr-cmodal-note' }, note) : null,
+body,
+h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
+),
+)
+}
 function CodeModal(props) {
-  const { request } = props || {}
-  if (!request || !request.path) return null
-  return h(CodeModalInner, props)
+const { request } = props || {}
+if (!request || !request.path) return null
+return h(CodeModalInner, props)
 }
-
 // ---- 25-search.js ----
-/** Global search panel + quick open (owned by the search slice). */
-
 const SEARCH_MIN_CHARS = 2
 const SEARCH_DEBOUNCE_MS = 250
 const SEARCH_LIMIT = 120
 const SEARCH_MAX_ROWS = 200
 const FILES_DEBOUNCE_MS = 160
 const FILES_LIMIT = 40
-
-/**
- * Highlight every case-insensitive occurrence of `query` in a result line.
- *
- * The line text arrives as raw file text, so the match is located on the raw
- * string and each slice is escaped separately. Doing it in this order means a
- * query containing `<`, `>` or `&` cannot inject markup and cannot miss because
- * the needle was escaped into `&lt;` before comparison.
- */
 function highlightMatch(text, query) {
-  const source = String(text == null ? '' : text)
-  const needle = String(query || '')
-  if (!needle) return escapeHtml(source)
-  const haystack = source.toLowerCase()
-  const lower = needle.toLowerCase()
-  let html = ''
-  let from = 0
-  for (;;) {
-    const at = haystack.indexOf(lower, from)
-    if (at < 0) break
-    html += escapeHtml(source.slice(from, at))
-    html += `<mark>${escapeHtml(source.slice(at, at + needle.length))}</mark>`
-    from = at + Math.max(1, needle.length)
-  }
-  html += escapeHtml(source.slice(from))
-  return html
+const source = String(text == null ? '' : text)
+const needle = String(query || '')
+if (!needle) return escapeHtml(source)
+const haystack = source.toLowerCase()
+const lower = needle.toLowerCase()
+let html = ''
+let from = 0
+for (;;) {
+const at = haystack.indexOf(lower, from)
+if (at < 0) break
+html += escapeHtml(source.slice(from, at))
+html += `<mark>${escapeHtml(source.slice(at, at + needle.length))}</mark>`
+from = at + Math.max(1, needle.length)
 }
-
+html += escapeHtml(source.slice(from))
+return html
+}
 const SEARCH_CSS = `
 .mdr-search-panel{width:min(720px,88vw);height:min(78vh,660px);max-height:78vh}
 .mdr-search-head{gap:8px}
@@ -5082,249 +3856,211 @@ const SEARCH_CSS = `
 .mdr-search-row .mdr-hit-line{padding:1px 0 0;font-size:11.5px}
 @media (max-width:560px){.mdr-search-keys{display:none}}
 `
-
 function SearchPanel(props) {
-  const { mode, onClose, onOpen } = props
-  const isFiles = mode === 'files'
-  const inputRef = React.useRef(null)
-  const listRef = React.useRef(null)
-  const seqRef = React.useRef(0)
-  const [query, setQuery] = React.useState('')
-  const [status, setStatus] = React.useState('idle')
-  const [rows, setRows] = React.useState([])
-  const [meta, setMeta] = React.useState({ total: 0, truncated: false, query: '' })
-  const [error, setError] = React.useState('')
-  const [active, setActive] = React.useState(-1)
-
-  // Autofocus (and select any restored text) as soon as the panel appears.
-  React.useEffect(() => {
-    const input = inputRef.current
-    if (!input) return undefined
-    input.focus()
-    if (typeof input.select === 'function') input.select()
-    return undefined
-  }, [])
-
-  // Debounced loading. Every query change invalidates responses still in flight
-  // (seqRef), and unmounting clears the pending timer.
-  React.useEffect(() => {
-    const trimmed = query.trim()
-    const seq = ++seqRef.current
-    if (!isFiles && trimmed.length < SEARCH_MIN_CHARS) {
-      setStatus('idle')
-      setRows([])
-      setMeta({ total: 0, truncated: false, query: '' })
-      setError('')
-      setActive(-1)
-      return undefined
-    }
-    setStatus('loading')
-    setError('')
-    const timer = setTimeout(() => {
-      const endpoint = isFiles ? '/api/files' : '/api/search'
-      const params = isFiles ? { q: trimmed, limit: FILES_LIMIT } : { q: trimmed, limit: SEARCH_LIMIT }
-      fetchJson(endpoint, params)
-        .then((payload) => {
-          if (seqRef.current !== seq) return
-          let count = 0
-          if (isFiles) {
-            const items = Array.isArray(payload.items) ? payload.items : []
-            count = items.length
-            setRows(items)
-            setMeta({ total: Number(payload.total) || items.length, truncated: false, query: trimmed })
-          } else {
-            const all = Array.isArray(payload.results) ? payload.results : []
-            count = Math.min(all.length, SEARCH_MAX_ROWS)
-            setRows(all.slice(0, SEARCH_MAX_ROWS))
-            setMeta({
-              total: all.length,
-              truncated: !!payload.truncated,
-              query: typeof payload.query === 'string' ? payload.query : trimmed,
-            })
-          }
-          setStatus('ready')
-          setActive((current) => (count ? Math.min(current < 0 ? 0 : current, count - 1) : -1))
-        })
-        .catch((err) => {
-          if (seqRef.current !== seq) return
-          setRows([])
-          setError(String((err && err.message) || err))
-          setStatus('error')
-          setActive(-1)
-        })
-    }, isFiles ? FILES_DEBOUNCE_MS : SEARCH_DEBOUNCE_MS)
-    return () => {
-      clearTimeout(timer)
-      seqRef.current += 1
-    }
-  }, [query, isFiles])
-
-  // Keep the keyboard-selected row visible while arrowing through results.
-  React.useEffect(() => {
-    if (active < 0) return undefined
-    const list = listRef.current
-    if (!list) return undefined
-    const row = list.querySelector('.mdr-search-row.on, .mdr-item-row.on')
-    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
-    return undefined
-  }, [active, rows])
-
-  const openRow = (row) => {
-    if (!row || !row.path) return
-    if (isFiles) onOpen(row.path, null)
-    else onOpen(row.path, Number(row.line) || 1)
-    onClose()
-  }
-
-  const onKeyDown = (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      const row = rows[active >= 0 ? active : 0]
-      if (row) openRow(row)
-      return
-    }
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
-    if (!rows.length) return
-    event.preventDefault()
-    const delta = event.key === 'ArrowDown' ? 1 : -1
-    setActive((current) => {
-      const base = current < 0 ? 0 : current
-      return (base + delta + rows.length) % rows.length
-    })
-  }
-
-  let statusText = ''
-  let statusError = false
-  if (status === 'error') {
-    statusText = `${isFiles ? '加载文件失败' : '搜索失败'}：${error}`
-    statusError = true
-  } else if (status === 'loading') {
-    statusText = isFiles ? '加载文件清单…' : '搜索中…'
-  } else if (isFiles) {
-    if (status === 'ready') {
-      if (!rows.length) statusText = meta.query ? `无匹配文件：「${meta.query}」` : '没有可打开的文件'
-      else statusText = `共 ${meta.total} 个文件${meta.total > rows.length ? `，显示前 ${rows.length} 个` : ''}`
-    } else {
-      statusText = '输入文件名或路径片段'
-    }
-  } else if (status === 'idle') {
-    statusText = `输入关键词，至少 ${SEARCH_MIN_CHARS} 个字符`
-  } else if (status === 'ready') {
-    if (!rows.length) {
-      // A truncated walk means "not found" is not authoritative: say so.
-      statusText = `无结果：未找到包含「${meta.query}」的内容` + (meta.truncated ? '（扫描被截断，可能未覆盖全部文件）' : '')
-    } else
-      statusText =
-        `找到 ${meta.total} 条匹配` +
-        (meta.total > rows.length ? `，显示前 ${rows.length} 条` : '') +
-        (meta.truncated ? ' · 结果过多，已截断' : '')
-  }
-
-  const rowNodes = isFiles
-    ? rows.map((item, index) =>
-        h(
-          'div',
-          {
-            key: item.path || `file-${index}`,
-            className: 'mdr-item-row' + (index === active ? ' on' : ''),
-            title: item.path || '',
-            onClick: () => openRow(item),
-          },
-          h('span', { className: 'mdr-item-main' }, item.name || String(item.path || '').split('/').pop()),
-          h('span', { className: 'mdr-item-sub' }, item.dir || ''),
-        ),
-      )
-    : rows.map((row, index) =>
-        h(
-          'div',
-          {
-            key: `${row.path}:${row.line}:${index}`,
-            className: 'mdr-search-row' + (index === active ? ' on' : ''),
-            title: `${row.path}:${row.line}`,
-            onClick: () => openRow(row),
-          },
-          h(
-            'div',
-            { className: 'mdr-search-row-head' },
-            h('span', { className: 'mdr-search-path', 'data-mdr-path': row.path }, row.path),
-            h('span', { className: 'mdr-search-line' }, `:${row.line}`),
-          ),
-          h('div', { className: 'mdr-hit-line', dangerouslySetInnerHTML: { __html: highlightMatch(row.text, meta.query || query) } }),
-        ),
-      )
-
-  return h(
-    'div',
-    { className: 'mdr-overlay', onClick: onClose },
-    h(
-      'div',
-      {
-        className: 'mdr-panel mdr-search-panel',
-        onClick: (event) => event.stopPropagation(),
-      },
-      h('style', { dangerouslySetInnerHTML: { __html: SEARCH_CSS } }),
-      h(
-        'div',
-        { className: 'mdr-panel-head mdr-search-head' },
-        h('span', { className: 'mdr-search-title' }, isFiles ? '快速打开' : '搜索'),
-        h('input', {
-          ref: inputRef,
-          className: 'mdr-panel-input',
-          type: 'text',
-          value: query,
-          spellCheck: false,
-          autoComplete: 'off',
-          'aria-label': isFiles ? '按文件名或路径搜索' : '搜索关键词',
-          placeholder: isFiles ? '文件名 / 路径片段（↑↓ 选择，回车打开）' : '关键词（至少 2 个字符，回车打开首条结果）',
-          onChange: (event) => setQuery(event.target.value),
-          onKeyDown,
-        }),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn mdr-search-close', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
-          h(Icons.close, { size: 12 }),
-        ),
-      ),
-      h(
-        'div',
-        { className: 'mdr-panel-body mdr-search-body' },
-        h(
-          'div',
-          { className: 'mdr-search-status mdr-tip' + (statusError ? ' mdr-search-status-err' : '') },
-          h('span', { className: 'mdr-search-status-text' }, statusText),
-          h('span', { className: 'mdr-spacer' }),
-          h('span', { className: 'mdr-search-keys' }, '↑↓ 选择 · Enter 打开 · Esc 关闭'),
-        ),
-        h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
-      ),
-    ),
-  )
+const { mode, onClose, onOpen } = props
+const isFiles = mode === 'files'
+const inputRef = React.useRef(null)
+const listRef = React.useRef(null)
+const seqRef = React.useRef(0)
+const [query, setQuery] = React.useState('')
+const [status, setStatus] = React.useState('idle')
+const [rows, setRows] = React.useState([])
+const [meta, setMeta] = React.useState({ total: 0, truncated: false, query: '' })
+const [error, setError] = React.useState('')
+const [active, setActive] = React.useState(-1)
+React.useEffect(() => {
+const input = inputRef.current
+if (!input) return undefined
+input.focus()
+if (typeof input.select === 'function') input.select()
+return undefined
+}, [])
+React.useEffect(() => {
+const trimmed = query.trim()
+const seq = ++seqRef.current
+if (!isFiles && trimmed.length < SEARCH_MIN_CHARS) {
+setStatus('idle')
+setRows([])
+setMeta({ total: 0, truncated: false, query: '' })
+setError('')
+setActive(-1)
+return undefined
 }
-
+setStatus('loading')
+setError('')
+const timer = setTimeout(() => {
+const endpoint = isFiles ? '/api/files' : '/api/search'
+const params = isFiles ? { q: trimmed, limit: FILES_LIMIT } : { q: trimmed, limit: SEARCH_LIMIT }
+fetchJson(endpoint, params)
+.then((payload) => {
+if (seqRef.current !== seq) return
+let count = 0
+if (isFiles) {
+const items = Array.isArray(payload.items) ? payload.items : []
+count = items.length
+setRows(items)
+setMeta({ total: Number(payload.total) || items.length, truncated: false, query: trimmed })
+} else {
+const all = Array.isArray(payload.results) ? payload.results : []
+count = Math.min(all.length, SEARCH_MAX_ROWS)
+setRows(all.slice(0, SEARCH_MAX_ROWS))
+setMeta({
+total: all.length,
+truncated: !!payload.truncated,
+query: typeof payload.query === 'string' ? payload.query : trimmed,
+})
+}
+setStatus('ready')
+setActive((current) => (count ? Math.min(current < 0 ? 0 : current, count - 1) : -1))
+})
+.catch((err) => {
+if (seqRef.current !== seq) return
+setRows([])
+setError(String((err && err.message) || err))
+setStatus('error')
+setActive(-1)
+})
+}, isFiles ? FILES_DEBOUNCE_MS : SEARCH_DEBOUNCE_MS)
+return () => {
+clearTimeout(timer)
+seqRef.current += 1
+}
+}, [query, isFiles])
+React.useEffect(() => {
+if (active < 0) return undefined
+const list = listRef.current
+if (!list) return undefined
+const row = list.querySelector('.mdr-search-row.on, .mdr-item-row.on')
+if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
+return undefined
+}, [active, rows])
+const openRow = (row) => {
+if (!row || !row.path) return
+if (isFiles) onOpen(row.path, null)
+else onOpen(row.path, Number(row.line) || 1)
+onClose()
+}
+const onKeyDown = (event) => {
+if (event.key === 'Enter') {
+event.preventDefault()
+const row = rows[active >= 0 ? active : 0]
+if (row) openRow(row)
+return
+}
+if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+if (!rows.length) return
+event.preventDefault()
+const delta = event.key === 'ArrowDown' ? 1 : -1
+setActive((current) => {
+const base = current < 0 ? 0 : current
+return (base + delta + rows.length) % rows.length
+})
+}
+let statusText = ''
+let statusError = false
+if (status === 'error') {
+statusText = `${isFiles ? '加载文件失败' : '搜索失败'}：${error}`
+statusError = true
+} else if (status === 'loading') {
+statusText = isFiles ? '加载文件清单…' : '搜索中…'
+} else if (isFiles) {
+if (status === 'ready') {
+if (!rows.length) statusText = meta.query ? `无匹配文件：「${meta.query}」` : '没有可打开的文件'
+else statusText = `共 ${meta.total} 个文件${meta.total > rows.length ? `，显示前 ${rows.length} 个` : ''}`
+} else {
+statusText = '输入文件名或路径片段'
+}
+} else if (status === 'idle') {
+statusText = `输入关键词，至少 ${SEARCH_MIN_CHARS} 个字符`
+} else if (status === 'ready') {
+if (!rows.length) {
+statusText = `无结果：未找到包含「${meta.query}」的内容` + (meta.truncated ? '（扫描被截断，可能未覆盖全部文件）' : '')
+} else
+statusText =
+`找到 ${meta.total} 条匹配` +
+(meta.total > rows.length ? `，显示前 ${rows.length} 条` : '') +
+(meta.truncated ? ' · 结果过多，已截断' : '')
+}
+const rowNodes = isFiles
+? rows.map((item, index) =>
+h(
+'div',
+{
+key: item.path || `file-${index}`,
+className: 'mdr-item-row' + (index === active ? ' on' : ''),
+title: item.path || '',
+onClick: () => openRow(item),
+},
+h('span', { className: 'mdr-item-main' }, item.name || String(item.path || '').split('/').pop()),
+h('span', { className: 'mdr-item-sub' }, item.dir || ''),
+),
+)
+: rows.map((row, index) =>
+h(
+'div',
+{
+key: `${row.path}:${row.line}:${index}`,
+className: 'mdr-search-row' + (index === active ? ' on' : ''),
+title: `${row.path}:${row.line}`,
+onClick: () => openRow(row),
+},
+h(
+'div',
+{ className: 'mdr-search-row-head' },
+h('span', { className: 'mdr-search-path', 'data-mdr-path': row.path }, row.path),
+h('span', { className: 'mdr-search-line' }, `:${row.line}`),
+),
+h('div', { className: 'mdr-hit-line', dangerouslySetInnerHTML: { __html: highlightMatch(row.text, meta.query || query) } }),
+),
+)
+return h(
+'div',
+{ className: 'mdr-overlay', onClick: onClose },
+h(
+'div',
+{
+className: 'mdr-panel mdr-search-panel',
+onClick: (event) => event.stopPropagation(),
+},
+h('style', { dangerouslySetInnerHTML: { __html: SEARCH_CSS } }),
+h(
+'div',
+{ className: 'mdr-panel-head mdr-search-head' },
+h('span', { className: 'mdr-search-title' }, isFiles ? '快速打开' : '搜索'),
+h('input', {
+ref: inputRef,
+className: 'mdr-panel-input',
+type: 'text',
+value: query,
+spellCheck: false,
+autoComplete: 'off',
+'aria-label': isFiles ? '按文件名或路径搜索' : '搜索关键词',
+placeholder: isFiles ? '文件名 / 路径片段（↑↓ 选择，回车打开）' : '关键词（至少 2 个字符，回车打开首条结果）',
+onChange: (event) => setQuery(event.target.value),
+onKeyDown,
+}),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn mdr-search-close', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
+h(Icons.close, { size: 12 }),
+),
+),
+h(
+'div',
+{ className: 'mdr-panel-body mdr-search-body' },
+h(
+'div',
+{ className: 'mdr-search-status mdr-tip' + (statusError ? ' mdr-search-status-err' : '') },
+h('span', { className: 'mdr-search-status-text' }, statusText),
+h('span', { className: 'mdr-spacer' }),
+h('span', { className: 'mdr-search-keys' }, '↑↓ 选择 · Enter 打开 · Esc 关闭'),
+),
+h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
+),
+),
+)
+}
 // ---- 26-filesearch.js ----
-/**
- * In-file search (Ctrl+F) — the plugin's port of the standalone reader's
- * 「文件内搜索」 widget.
- *
- * The standalone reader had this feature (search-widget + fsRunCode/fsRunMd);
- * the DSH plugin only got the GLOBAL search (Ctrl+Shift+F) and the quick open
- * (Ctrl+P), so Ctrl+F did nothing at all.
- *
- * Design:
- *  - the ACTIVE view registers a search controller (tab id -> controller);
- *    the App only talks to that controller, so the widget does not care
- *    whether the tab shows markdown, code, html or an image;
- *  - markdown is searched by RENDERED TEXT (matches are wrapped in
- *    `<mark class="mdr-fs-mark">`, the current one gets `.mdr-fs-cur`);
- *  - code is searched by LINE (the rows carry the plain text, so a match is a
- *    row index - the row is marked and the view scrolls to it);
- *  - the search runs on ENTER, never per keystroke ("逐字搜索太卡了"): typing
- *    only marks the query dirty, a second Enter navigates to the next match,
- *    Shift+Enter to the previous one.
- */
-
-/* ------------------------------------------------------------- styles */
-
 const FILE_SEARCH_CSS = `
 .mdr-fs{position:absolute;top:34px;right:14px;z-index:60;display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 28px rgba(0,0,0,.35);font-size:12.5px;color:var(--dsw-alias-label-primary)}
 .mdr-fs-input{width:210px;box-sizing:border-box;padding:3px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;outline:none}
@@ -5339,264 +4075,202 @@ const FILE_SEARCH_CSS = `
 .mdr-cl.mdr-fs-line{background:rgba(255,214,102,.2)}
 .mdr-cl.mdr-fs-cur{background:rgba(255,140,0,.32)}
 `
-
-/* ----------------------------------------------------------- registry */
-
-/** tab id -> search controller of the mounted view. */
 const fileSearchControllers = new Map()
-
 function registerFileSearchController(key, controller) {
-  if (!key) return
-  fileSearchControllers.set(String(key), controller)
+if (!key) return
+fileSearchControllers.set(String(key), controller)
 }
-
 function unregisterFileSearchController(key) {
-  if (!key) return
-  fileSearchControllers.delete(String(key))
+if (!key) return
+fileSearchControllers.delete(String(key))
 }
-
 function fileSearchController(key) {
-  if (!key) return null
-  return fileSearchControllers.get(String(key)) || null
+if (!key) return null
+return fileSearchControllers.get(String(key)) || null
 }
-
-/* ------------------------------------------------------------ helpers */
-
 function fileSearchEscapeRe(text) {
-  return String(text == null ? '' : text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+return String(text == null ? '' : text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
-
-/**
- * The search pattern: plain text by default, plus the three switches of the
- * standalone reader (Aa 大小写 / ab 全字 / .* 正则). A broken regex returns
- * null - the caller reports "正则表达式错误" instead of searching nonsense.
- */
 function fileSearchRegex(query, options) {
-  const opts = options || {}
-  let src = String(query == null ? '' : query)
-  if (!src) return null
-  if (opts.re) {
-    try {
-      return new RegExp(src, opts.cs ? 'g' : 'gi')
-    } catch {
-      return null
-    }
-  }
-  src = opts.word ? `\\b${fileSearchEscapeRe(src)}\\b` : fileSearchEscapeRe(src)
-  try {
-    return new RegExp(src, opts.cs ? 'g' : 'gi')
-  } catch {
-    return null
-  }
+const opts = options || {}
+let src = String(query == null ? '' : query)
+if (!src) return null
+if (opts.re) {
+try {
+return new RegExp(src, opts.cs ? 'g' : 'gi')
+} catch {
+return null
 }
-
-/** All [start, end] matches of `re` in `text` (the regex is reused, so reset it). */
+}
+src = opts.word ? `\\b${fileSearchEscapeRe(src)}\\b` : fileSearchEscapeRe(src)
+try {
+return new RegExp(src, opts.cs ? 'g' : 'gi')
+} catch {
+return null
+}
+}
 function fileSearchMatchesIn(text, re) {
-  const out = []
-  re.lastIndex = 0
-  let match
-  while ((match = re.exec(text)) !== null) {
-    out.push([match.index, match.index + match[0].length])
-    if (match[0].length === 0) re.lastIndex += 1
-  }
-  return out
+const out = []
+re.lastIndex = 0
+let match
+while ((match = re.exec(text)) !== null) {
+out.push([match.index, match.index + match[0].length])
+if (match[0].length === 0) re.lastIndex += 1
 }
-
-/* ------------------------------------------------------ markdown search */
-
-/** Scroll a match into the middle of the viewport. */
+return out
+}
 function scrollFileSearchMark(mark) {
-  if (!mark || typeof mark.scrollIntoView !== 'function') return
-  try {
-    mark.scrollIntoView({ block: 'center', behavior: 'smooth' })
-  } catch {
-    try {
-      mark.scrollIntoView()
-    } catch {
-      /* ignore */
-    }
-  }
+if (!mark || typeof mark.scrollIntoView !== 'function') return
+try {
+mark.scrollIntoView({ block: 'center', behavior: 'smooth' })
+} catch {
+try {
+mark.scrollIntoView()
+} catch {
 }
-
-/** Unwrap every match mark and merge the split text nodes again. */
+}
+}
 function mdSearchClear(container) {
-  if (!container || typeof container.querySelectorAll !== 'function') return
-  const marks = container.querySelectorAll('mark.mdr-fs-mark')
-  for (const mark of marks) {
-    if (!mark.parentNode) continue
-    mark.parentNode.replaceChild(document.createTextNode(mark.textContent || ''), mark)
-  }
-  // Adjacent text nodes do not merge on their own: without normalize() the
-  // text is cut into pieces and a later search misses whole words.
-  if (typeof container.normalize === 'function') container.normalize()
+if (!container || typeof container.querySelectorAll !== 'function') return
+const marks = container.querySelectorAll('mark.mdr-fs-mark')
+for (const mark of marks) {
+if (!mark.parentNode) continue
+mark.parentNode.replaceChild(document.createTextNode(mark.textContent || ''), mark)
 }
-
-/**
- * Search the rendered markdown and wrap every match in `<mark>`.
- *
- * @returns {Element[]} the marks, in document order
- */
+if (typeof container.normalize === 'function') container.normalize()
+}
 function mdSearchFind(container, query, options) {
-  mdSearchClear(container)
-  if (!container || !query) return []
-  const re = fileSearchRegex(query, options)
-  if (!re) return []
-  const walker = document.createTreeWalker(container, 4 /* NodeFilter.SHOW_TEXT */)
-  const nodes = []
-  while (walker.nextNode()) nodes.push(walker.currentNode)
-  const marks = []
-  for (const node of nodes) {
-    const parent = node.parentNode
-    if (!parent || parent.nodeType !== 1) continue
-    const tag = parent.tagName
-    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA') continue
-    const text = node.nodeValue || ''
-    const segs = fileSearchMatchesIn(text, re)
-    if (!segs.length) continue
-    const frag = document.createDocumentFragment()
-    let pos = 0
-    for (const [start, end] of segs) {
-      if (start > pos) frag.appendChild(document.createTextNode(text.slice(pos, start)))
-      const mark = document.createElement('mark')
-      mark.className = 'mdr-fs-mark'
-      mark.textContent = text.slice(start, end)
-      frag.appendChild(mark)
-      marks.push(mark)
-      pos = end
-    }
-    if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)))
-    parent.replaceChild(frag, node)
-  }
-  return marks
+mdSearchClear(container)
+if (!container || !query) return []
+const re = fileSearchRegex(query, options)
+if (!re) return []
+const walker = document.createTreeWalker(container, 4 /* NodeFilter.SHOW_TEXT */)
+const nodes = []
+while (walker.nextNode()) nodes.push(walker.currentNode)
+const marks = []
+for (const node of nodes) {
+const parent = node.parentNode
+if (!parent || parent.nodeType !== 1) continue
+const tag = parent.tagName
+if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'TEXTAREA') continue
+const text = node.nodeValue || ''
+const segs = fileSearchMatchesIn(text, re)
+if (!segs.length) continue
+const frag = document.createDocumentFragment()
+let pos = 0
+for (const [start, end] of segs) {
+if (start > pos) frag.appendChild(document.createTextNode(text.slice(pos, start)))
+const mark = document.createElement('mark')
+mark.className = 'mdr-fs-mark'
+mark.textContent = text.slice(start, end)
+frag.appendChild(mark)
+marks.push(mark)
+pos = end
 }
-
-/* ------------------------------------------------------------- widget */
-
-/**
- * The floating search widget.
- *
- * Enter searches (or moves to the next match), Shift+Enter to the previous
- * one, Escape closes. The count is the App's state, the widget is dumb.
- */
+if (pos < text.length) frag.appendChild(document.createTextNode(text.slice(pos)))
+parent.replaceChild(frag, node)
+}
+return marks
+}
 function FileSearchWidget(props) {
-  const {
-    query,
-    onQuery,
-    count,
-    index,
-    status,
-    options,
-    onToggleOption,
-    onSearch,
-    onNext,
-    onPrev,
-    onClose,
-    onGlobal,
-  } = props
-  const inputRef = React.useRef(null)
-
-  React.useEffect(() => {
-    const input = inputRef.current
-    if (!input) return undefined
-    input.focus()
-    if (typeof input.select === 'function') input.select()
-    return undefined
-  }, [])
-
-  const onKeyDown = (event) => {
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      if (event.shiftKey) onPrev()
-      else onNext()
-      return
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
-    }
-  }
-
-  const total = Number(count || 0)
-  const current = Number(index || 0) + 1
-  const label = status ? status : total ? `${current} / ${total}` : '0 处'
-
-  return h(
-    'div',
-    { className: 'mdr-fs', onClick: (event) => event.stopPropagation() },
-    h('input', {
-      ref: inputRef,
-      className: 'mdr-fs-input',
-      type: 'text',
-      value: query,
-      placeholder: '在当前文件中查找',
-      onChange: (event) => onQuery(event.target.value),
-      onKeyDown,
-    }),
-    h('span', { className: 'mdr-fs-count' + (status ? ' err' : '') }, label),
-    h(
-      'button',
-      { type: 'button', className: 'mdr-fs-btn', title: '上一个匹配 (Shift+Enter)', onClick: onPrev },
-      '↑',
-    ),
-    h(
-      'button',
-      { type: 'button', className: 'mdr-fs-btn', title: '下一个匹配 (Enter)', onClick: onNext },
-      '↓',
-    ),
-    h(
-      'button',
-      {
-        type: 'button',
-        className: 'mdr-fs-btn' + (options && options.cs ? ' on' : ''),
-        title: '区分大小写',
-        onClick: () => onToggleOption('cs'),
-      },
-      'Aa',
-    ),
-    h(
-      'button',
-      {
-        type: 'button',
-        className: 'mdr-fs-btn' + (options && options.word ? ' on' : ''),
-        title: '全字匹配',
-        onClick: () => onToggleOption('word'),
-      },
-      'ab',
-    ),
-    h(
-      'button',
-      {
-        type: 'button',
-        className: 'mdr-fs-btn' + (options && options.re ? ' on' : ''),
-        title: '正则表达式',
-        onClick: () => onToggleOption('re'),
-      },
-      '.*',
-    ),
-    typeof onGlobal === 'function'
-      ? h('button', { type: 'button', className: 'mdr-fs-btn', title: '全局搜索 (Ctrl+Shift+F)', onClick: onGlobal }, '全局')
-      : null,
-    h('button', { type: 'button', className: 'mdr-fs-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
-  )
+const {
+query,
+onQuery,
+count,
+index,
+status,
+options,
+onToggleOption,
+onSearch,
+onNext,
+onPrev,
+onClose,
+onGlobal,
+} = props
+const inputRef = React.useRef(null)
+React.useEffect(() => {
+const input = inputRef.current
+if (!input) return undefined
+input.focus()
+if (typeof input.select === 'function') input.select()
+return undefined
+}, [])
+const onKeyDown = (event) => {
+if (event.key === 'Enter') {
+event.preventDefault()
+if (event.shiftKey) onPrev()
+else onNext()
+return
 }
-
+if (event.key === 'Escape') {
+event.preventDefault()
+onClose()
+}
+}
+const total = Number(count || 0)
+const current = Number(index || 0) + 1
+const label = status ? status : total ? `${current} / ${total}` : '0 处'
+return h(
+'div',
+{ className: 'mdr-fs', onClick: (event) => event.stopPropagation() },
+h('input', {
+ref: inputRef,
+className: 'mdr-fs-input',
+type: 'text',
+value: query,
+placeholder: '在当前文件中查找',
+onChange: (event) => onQuery(event.target.value),
+onKeyDown,
+}),
+h('span', { className: 'mdr-fs-count' + (status ? ' err' : '') }, label),
+h(
+'button',
+{ type: 'button', className: 'mdr-fs-btn', title: '上一个匹配 (Shift+Enter)', onClick: onPrev },
+'↑',
+),
+h(
+'button',
+{ type: 'button', className: 'mdr-fs-btn', title: '下一个匹配 (Enter)', onClick: onNext },
+'↓',
+),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-fs-btn' + (options && options.cs ? ' on' : ''),
+title: '区分大小写',
+onClick: () => onToggleOption('cs'),
+},
+'Aa',
+),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-fs-btn' + (options && options.word ? ' on' : ''),
+title: '全字匹配',
+onClick: () => onToggleOption('word'),
+},
+'ab',
+),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-fs-btn' + (options && options.re ? ' on' : ''),
+title: '正则表达式',
+onClick: () => onToggleOption('re'),
+},
+'.*',
+),
+typeof onGlobal === 'function'
+? h('button', { type: 'button', className: 'mdr-fs-btn', title: '全局搜索 (Ctrl+Shift+F)', onClick: onGlobal }, '全局')
+: null,
+h('button', { type: 'button', className: 'mdr-fs-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
+)
+}
 // ---- 27-sync.js ----
-/**
- * 同步 / 检查更新 panel — owned by the panels slice.
- *
- * Contract (wired by 50-app.js): h(SyncPanel, { onClose })
- * Host: GET /markdown-reader/api/sync/status[?fetch=1], POST /markdown-reader/api/sync/pull
- *
- * 场景：插件本身也是一个 git 仓库，用一台机器开发、另一台机器点一下拿到最新代码。
- * 两步走：先「检查更新」（只 fetch，只读，显示新提交数量与清单），再由人点
- * 「拉取更新」（会改工作区文件）——破坏性操作永远由人确认。
- * 后端在未配置远程 / 有本地改动 / 非 git 目录时都会返回可读的 reason/error，
- * 这里只负责展示，不做任何猜测或自动重试。
- */
-
-/** Host 侧最多返回 20 条待拉取提交，这里再兜一层。 */
 const SYNC_COMMIT_LIMIT = 20
-
 const SYNC_CSS = `
 .mdr-sync-panel{width:min(640px,92vw);height:min(80vh,720px);max-height:80vh}
 .mdr-sync-head{flex-wrap:wrap;row-gap:6px}
@@ -5637,326 +4311,282 @@ const SYNC_CSS = `
 .mdr-sync-btn-primary:hover:not(:disabled){background:var(--dsw-alias-brand-primary);color:var(--dsw-alias-bg-overlay)}
 .mdr-sync-btn:disabled,.mdr-sync-panel .mdr-btn:disabled{opacity:.45;cursor:default}
 `
-
-/** Human text for an exception thrown by fetchJson / anything else in an async path. */
 function syncErrorText(error) {
-  if (!error) return ''
-  const message = error && error.message != null ? error.message : error
-  const text = String(message == null ? '' : message).trim()
-  return text || '未知错误'
+if (!error) return ''
+const message = error && error.message != null ? error.message : error
+const text = String(message == null ? '' : message).trim()
+return text || '未知错误'
 }
-
-/** Metadata value with an explicit dash for the unknown case. */
 function syncMetaValue(value) {
-  if (value == null || value === '') return '—'
-  return String(value)
+if (value == null || value === '') return '—'
+return String(value)
 }
-
 function SyncPanel(props) {
-  const { onClose } = props || {}
-  const [data, setData] = React.useState(null)
-  const [phase, setPhase] = React.useState('loading') // loading | checking | pulling | ready
-  const [error, setError] = React.useState('')
-  const [note, setNote] = React.useState('')
-  const [noteKind, setNoteKind] = React.useState('info') // info | ok
-  const seqRef = React.useRef(0)
-
-  const close = () => {
-    if (typeof onClose === 'function') onClose()
-  }
-
-  // 打开面板先读「不联网」的本地状态，再让用户主动点「检查更新」——与独立版一致。
-  const loadStatus = React.useCallback((withFetch) => {
-    const seq = (seqRef.current += 1)
-    setPhase(withFetch ? 'checking' : 'loading')
-    setError('')
-    setNote('')
-    fetchJson('/api/sync/status', withFetch ? { fetch: 1 } : null)
-      .then((payload) => {
-        if (seq !== seqRef.current) return
-        setData(payload && typeof payload === 'object' ? payload : null)
-        setPhase('ready')
-      })
-      .catch((err) => {
-        if (seq !== seqRef.current) return
-        setData(null)
-        setError(`读取同步状态失败：${syncErrorText(err)}`)
-        setPhase('ready')
-      })
-  }, [])
-
-  React.useEffect(() => {
-    loadStatus(false)
-    return () => {
-      seqRef.current += 1
-    }
-  }, [loadStatus])
-
-  const pull = () => {
-    const seq = (seqRef.current += 1)
-    setPhase('pulling')
-    setError('')
-    setNote('')
-    postJson('/api/sync/pull', {})
-      .then((payload) => {
-        if (seq !== seqRef.current) return
-        if (payload && payload.status && typeof payload.status === 'object') setData(payload.status)
-        const changed = !!(payload && payload.changed)
-        const base = (payload && payload.note) || (changed ? '已更新' : '已是最新，无需更新')
-        if (changed) {
-          setNoteKind('ok')
-          setNote(
-            `${base}\n\n提示：Client 代码需要刷新页面才会加载新版本；Host 代码需要在插件管理器里把本 bundle 禁用再启用，重新加载 Host 模块。`,
-          )
-        } else {
-          setNoteKind('info')
-          setNote(base)
-        }
-        setPhase('ready')
-      })
-      .catch((err) => {
-        if (seq !== seqRef.current) return
-        setError(`拉取更新失败：${syncErrorText(err)}`)
-        setPhase('ready')
-      })
-  }
-
-  const busy = phase === 'loading' || phase === 'checking' || phase === 'pulling'
-  const status = data && typeof data === 'object' ? data : null
-  const configured = !!(status && status.configured)
-  const fetched = !!(status && status.fetched)
-  const dirty = !!(status && status.dirty)
-  const behind = status ? Number(status.behind) || 0 : 0
-  const ahead = status ? Number(status.ahead) || 0 : 0
-  const commits = status && Array.isArray(status.commits) ? status.commits.slice(0, SYNC_COMMIT_LIMIT) : []
-  const reason = status && typeof status.reason === 'string' ? status.reason : ''
-  // configured=true 但 fetched=false 且带 reason，只可能是 Host 执行 fetch 失败
-  // （未配置远程时走 !configured 分支），必须显式说“检查失败”，不能显示“已是最新”。
-  const fetchFailed = configured && !fetched && !!reason
-  const canPull = configured && fetched && behind > 0 && !busy
-
-  let lineText = ''
-  let lineKind = 'busy'
-  if (phase === 'loading') {
-    lineText = '正在读取本地同步状态…'
-  } else if (phase === 'checking') {
-    lineText = '正在连接远程仓库检查更新…'
-  } else if (phase === 'pulling') {
-    lineText = '正在拉取更新，请稍候…'
-  } else if (error) {
-    lineText = '操作失败'
-    lineKind = 'err'
-  } else if (!status) {
-    lineText = '尚未读取到同步状态'
-  } else if (!configured) {
-    lineText = '未配置同步远程仓库'
-    lineKind = 'warn'
-  } else if (fetchFailed) {
-    lineText = '检查更新失败'
-    lineKind = 'err'
-  } else if (fetched && behind > 0) {
-    lineText = `有 ${behind} 个新提交可拉取`
-    lineKind = 'upd'
-  } else if (fetched) {
-    lineText = '已是最新'
-    lineKind = 'ok'
-  } else {
-    lineText = '已读取本地状态，点「检查更新」联网查询远端最新提交'
-  }
-
-  const metaRows = [
-    ['仓库', status && status.repo],
-    ['当前分支', status && status.current],
-    ['同步分支', status && status.branch],
-    ['远程', status && status.remote],
-    ['本地改动', status ? (dirty ? '有未提交改动' : '无') : null],
-  ]
-
-  const commitRows = commits.map((commit, index) => {
-    const item = commit && typeof commit === 'object' ? commit : {}
-    const hash = String(item.short || item.hash || '')
-    const subject = String(item.subject || '(无提交说明)')
-    const meta = [item.author, item.date].filter((part) => part != null && part !== '').join(' · ')
-    return h(
-      'div',
-      { className: 'mdr-sync-commit', key: hash || `commit-${index}` },
-      h('span', { className: 'mdr-sync-sha', title: String(item.hash || hash) }, hash || '—'),
-      h('span', { className: 'mdr-sync-msg', title: subject }, subject),
-      meta ? h('span', { className: 'mdr-sync-commit-meta', title: meta }, meta) : null,
-    )
-  })
-
-  const counts = configured
-    ? fetched
-      ? h(
-          'div',
-          { className: 'mdr-sync-counts' },
-          h(
-            'span',
-            { className: 'mdr-sync-pill' + (behind > 0 ? ' upd' : '') },
-            `落后 ${behind} 条`,
-          ),
-          h(
-            'span',
-            { className: 'mdr-sync-pill' + (ahead > 0 ? ' warn' : '') },
-            `领先 ${ahead} 条`,
-          ),
-          dirty ? h('span', { className: 'mdr-sync-tip' }, '本地有未提交改动，拉取会被拒绝') : null,
-          ahead > 0 ? h('span', { className: 'mdr-sync-tip' }, '本地提交不会被覆盖') : null,
-        )
-      : h(
-          'div',
-          { className: 'mdr-sync-counts' },
-          h('span', { className: 'mdr-sync-tip' }, '尚未检查更新：点击「检查更新」获取远程状态后再显示落后/领先条数'),
-        )
-    : null
-
-  const help = status && !configured
-    ? h(
-        'div',
-        { className: 'mdr-sync-help' },
-        `未配置同步远程仓库：${reason || '插件所在 git 仓库没有 origin 远程'}\n` +
-          '可以在插件 config（cordis.patch.yml）里设置 syncRepo（远程 URL）与 syncBranch（分支名），' +
-          '或为插件所在 git 仓库添加 origin 远程，例如：git remote add origin <url>',
-      )
-    : null
-
-  return h(
-    'div',
-    {
-      className: 'mdr-overlay',
-      onClick: close,
-      role: 'dialog',
-      'aria-modal': 'true',
-      'aria-label': '检查更新',
-    },
-    h(
-      'div',
-      { className: 'mdr-panel mdr-sync-panel', onClick: (event) => event.stopPropagation() },
-      h('style', { dangerouslySetInnerHTML: { __html: SYNC_CSS } }),
-      h(
-        'div',
-        { className: 'mdr-panel-head mdr-sync-head' },
-        h('span', { className: 'mdr-sync-title' }, '检查更新'),
-        h('span', { className: 'mdr-sync-sub' }, '从远程仓库拉取插件的最新代码'),
-        h('span', { className: 'mdr-spacer' }),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: close },
-          h(Icons.close, { size: 12 }),
-        ),
-      ),
-      h(
-        'div',
-        { className: 'mdr-panel-body mdr-sync-body' },
-        h(
-          'div',
-          { className: 'mdr-sync-meta' },
-          metaRows.map(([key, value]) =>
-            h(
-              'div',
-              { className: 'mdr-sync-meta-row', key },
-              h('span', { className: 'mdr-sync-meta-k' }, key),
-              h(
-                'span',
-                { className: 'mdr-sync-meta-v' + (value == null || value === '' ? ' dim' : '') },
-                syncMetaValue(value),
-              ),
-            ),
-          ),
-        ),
-        h('div', { className: 'mdr-sync-status ' + lineKind }, lineText),
-        counts,
-        help,
-        error ? h('div', { className: 'mdr-sync-note err' }, error) : null,
-        fetchFailed && !error ? h('div', { className: 'mdr-sync-note err' }, reason) : null,
-        dirty && configured
-          ? h(
-              'div',
-              { className: 'mdr-sync-note' },
-              '本地有未提交改动：为避免覆盖，拉取会被后端拒绝。请先提交或丢弃这些改动再拉取。',
-            )
-          : null,
-        commits.length
-          ? h(
-              'div',
-              { className: 'mdr-sync-list' },
-              h(
-                'div',
-                { className: 'mdr-sync-list-head' },
-                `待拉取提交（最新在上，共 ${commits.length} 条` +
-                  (behind > commits.length ? `，还有 ${behind - commits.length} 条未显示` : '') +
-                  '）',
-              ),
-              commitRows,
-            )
-          : null,
-        note ? h('div', { className: 'mdr-sync-note' + (noteKind === 'ok' ? ' ok' : '') }, note) : null,
-      ),
-      h(
-        'div',
-        { className: 'mdr-sync-foot' },
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'mdr-btn',
-            onClick: () => loadStatus(true),
-            disabled: busy,
-            title: '执行 git fetch 检查远端是否有新提交（只读）',
-          },
-          phase === 'checking' ? '检查中…' : '检查更新',
-        ),
-        h('span', { className: 'mdr-spacer' }),
-        h(
-          'button',
-          {
-            type: 'button',
-            className: 'mdr-btn mdr-sync-btn mdr-sync-btn-primary',
-            onClick: pull,
-            disabled: !canPull,
-            title: fetched && behind > 0 ? `将拉取 ${behind} 个新提交（fast-forward）` : '暂无可拉取的更新',
-          },
-          phase === 'pulling' ? '拉取中…' : behind > 0 ? `拉取更新（${behind}）` : '拉取更新',
-        ),
-      ),
-    ),
-  )
+const { onClose } = props || {}
+const [data, setData] = React.useState(null)
+const [phase, setPhase] = React.useState('loading') // loading | checking | pulling | ready
+const [error, setError] = React.useState('')
+const [note, setNote] = React.useState('')
+const [noteKind, setNoteKind] = React.useState('info') // info | ok
+const seqRef = React.useRef(0)
+const close = () => {
+if (typeof onClose === 'function') onClose()
 }
-
+const loadStatus = React.useCallback((withFetch) => {
+const seq = (seqRef.current += 1)
+setPhase(withFetch ? 'checking' : 'loading')
+setError('')
+setNote('')
+fetchJson('/api/sync/status', withFetch ? { fetch: 1 } : null)
+.then((payload) => {
+if (seq !== seqRef.current) return
+setData(payload && typeof payload === 'object' ? payload : null)
+setPhase('ready')
+})
+.catch((err) => {
+if (seq !== seqRef.current) return
+setData(null)
+setError(`读取同步状态失败：${syncErrorText(err)}`)
+setPhase('ready')
+})
+}, [])
+React.useEffect(() => {
+loadStatus(false)
+return () => {
+seqRef.current += 1
+}
+}, [loadStatus])
+const pull = () => {
+const seq = (seqRef.current += 1)
+setPhase('pulling')
+setError('')
+setNote('')
+postJson('/api/sync/pull', {})
+.then((payload) => {
+if (seq !== seqRef.current) return
+if (payload && payload.status && typeof payload.status === 'object') setData(payload.status)
+const changed = !!(payload && payload.changed)
+const base = (payload && payload.note) || (changed ? '已更新' : '已是最新，无需更新')
+if (changed) {
+setNoteKind('ok')
+setNote(
+`${base}\n\n提示：Client 代码需要刷新页面才会加载新版本；Host 代码需要在插件管理器里把本 bundle 禁用再启用，重新加载 Host 模块。`,
+)
+} else {
+setNoteKind('info')
+setNote(base)
+}
+setPhase('ready')
+})
+.catch((err) => {
+if (seq !== seqRef.current) return
+setError(`拉取更新失败：${syncErrorText(err)}`)
+setPhase('ready')
+})
+}
+const busy = phase === 'loading' || phase === 'checking' || phase === 'pulling'
+const status = data && typeof data === 'object' ? data : null
+const configured = !!(status && status.configured)
+const fetched = !!(status && status.fetched)
+const dirty = !!(status && status.dirty)
+const behind = status ? Number(status.behind) || 0 : 0
+const ahead = status ? Number(status.ahead) || 0 : 0
+const commits = status && Array.isArray(status.commits) ? status.commits.slice(0, SYNC_COMMIT_LIMIT) : []
+const reason = status && typeof status.reason === 'string' ? status.reason : ''
+const fetchFailed = configured && !fetched && !!reason
+const canPull = configured && fetched && behind > 0 && !busy
+let lineText = ''
+let lineKind = 'busy'
+if (phase === 'loading') {
+lineText = '正在读取本地同步状态…'
+} else if (phase === 'checking') {
+lineText = '正在连接远程仓库检查更新…'
+} else if (phase === 'pulling') {
+lineText = '正在拉取更新，请稍候…'
+} else if (error) {
+lineText = '操作失败'
+lineKind = 'err'
+} else if (!status) {
+lineText = '尚未读取到同步状态'
+} else if (!configured) {
+lineText = '未配置同步远程仓库'
+lineKind = 'warn'
+} else if (fetchFailed) {
+lineText = '检查更新失败'
+lineKind = 'err'
+} else if (fetched && behind > 0) {
+lineText = `有 ${behind} 个新提交可拉取`
+lineKind = 'upd'
+} else if (fetched) {
+lineText = '已是最新'
+lineKind = 'ok'
+} else {
+lineText = '已读取本地状态，点「检查更新」联网查询远端最新提交'
+}
+const metaRows = [
+['仓库', status && status.repo],
+['当前分支', status && status.current],
+['同步分支', status && status.branch],
+['远程', status && status.remote],
+['本地改动', status ? (dirty ? '有未提交改动' : '无') : null],
+]
+const commitRows = commits.map((commit, index) => {
+const item = commit && typeof commit === 'object' ? commit : {}
+const hash = String(item.short || item.hash || '')
+const subject = String(item.subject || '(无提交说明)')
+const meta = [item.author, item.date].filter((part) => part != null && part !== '').join(' · ')
+return h(
+'div',
+{ className: 'mdr-sync-commit', key: hash || `commit-${index}` },
+h('span', { className: 'mdr-sync-sha', title: String(item.hash || hash) }, hash || '—'),
+h('span', { className: 'mdr-sync-msg', title: subject }, subject),
+meta ? h('span', { className: 'mdr-sync-commit-meta', title: meta }, meta) : null,
+)
+})
+const counts = configured
+? fetched
+? h(
+'div',
+{ className: 'mdr-sync-counts' },
+h(
+'span',
+{ className: 'mdr-sync-pill' + (behind > 0 ? ' upd' : '') },
+`落后 ${behind} 条`,
+),
+h(
+'span',
+{ className: 'mdr-sync-pill' + (ahead > 0 ? ' warn' : '') },
+`领先 ${ahead} 条`,
+),
+dirty ? h('span', { className: 'mdr-sync-tip' }, '本地有未提交改动，拉取会被拒绝') : null,
+ahead > 0 ? h('span', { className: 'mdr-sync-tip' }, '本地提交不会被覆盖') : null,
+)
+: h(
+'div',
+{ className: 'mdr-sync-counts' },
+h('span', { className: 'mdr-sync-tip' }, '尚未检查更新：点击「检查更新」获取远程状态后再显示落后/领先条数'),
+)
+: null
+const help = status && !configured
+? h(
+'div',
+{ className: 'mdr-sync-help' },
+`未配置同步远程仓库：${reason || '插件所在 git 仓库没有 origin 远程'}\n` +
+'可以在插件 config（cordis.patch.yml）里设置 syncRepo（远程 URL）与 syncBranch（分支名），' +
+'或为插件所在 git 仓库添加 origin 远程，例如：git remote add origin <url>',
+)
+: null
+return h(
+'div',
+{
+className: 'mdr-overlay',
+onClick: close,
+role: 'dialog',
+'aria-modal': 'true',
+'aria-label': '检查更新',
+},
+h(
+'div',
+{ className: 'mdr-panel mdr-sync-panel', onClick: (event) => event.stopPropagation() },
+h('style', { dangerouslySetInnerHTML: { __html: SYNC_CSS } }),
+h(
+'div',
+{ className: 'mdr-panel-head mdr-sync-head' },
+h('span', { className: 'mdr-sync-title' }, '检查更新'),
+h('span', { className: 'mdr-sync-sub' }, '从远程仓库拉取插件的最新代码'),
+h('span', { className: 'mdr-spacer' }),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: close },
+h(Icons.close, { size: 12 }),
+),
+),
+h(
+'div',
+{ className: 'mdr-panel-body mdr-sync-body' },
+h(
+'div',
+{ className: 'mdr-sync-meta' },
+metaRows.map(([key, value]) =>
+h(
+'div',
+{ className: 'mdr-sync-meta-row', key },
+h('span', { className: 'mdr-sync-meta-k' }, key),
+h(
+'span',
+{ className: 'mdr-sync-meta-v' + (value == null || value === '' ? ' dim' : '') },
+syncMetaValue(value),
+),
+),
+),
+),
+h('div', { className: 'mdr-sync-status ' + lineKind }, lineText),
+counts,
+help,
+error ? h('div', { className: 'mdr-sync-note err' }, error) : null,
+fetchFailed && !error ? h('div', { className: 'mdr-sync-note err' }, reason) : null,
+dirty && configured
+? h(
+'div',
+{ className: 'mdr-sync-note' },
+'本地有未提交改动：为避免覆盖，拉取会被后端拒绝。请先提交或丢弃这些改动再拉取。',
+)
+: null,
+commits.length
+? h(
+'div',
+{ className: 'mdr-sync-list' },
+h(
+'div',
+{ className: 'mdr-sync-list-head' },
+`待拉取提交（最新在上，共 ${commits.length} 条` +
+(behind > commits.length ? `，还有 ${behind - commits.length} 条未显示` : '') +
+'）',
+),
+commitRows,
+)
+: null,
+note ? h('div', { className: 'mdr-sync-note' + (noteKind === 'ok' ? ' ok' : '') }, note) : null,
+),
+h(
+'div',
+{ className: 'mdr-sync-foot' },
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-btn',
+onClick: () => loadStatus(true),
+disabled: busy,
+title: '执行 git fetch 检查远端是否有新提交（只读）',
+},
+phase === 'checking' ? '检查中…' : '检查更新',
+),
+h('span', { className: 'mdr-spacer' }),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-btn mdr-sync-btn mdr-sync-btn-primary',
+onClick: pull,
+disabled: !canPull,
+title: fetched && behind > 0 ? `将拉取 ${behind} 个新提交（fast-forward）` : '暂无可拉取的更新',
+},
+phase === 'pulling' ? '拉取中…' : behind > 0 ? `拉取更新（${behind}）` : '拉取更新',
+),
+),
+),
+)
+}
 // ---- 28-gitgraph.js ----
-/**
- * Git 版本树 modal — owned by the panels slice.
- *
- * Contract (wired by 50-app.js): h(GitGraphModal, { path, onClose, onOpen })
- *   path: active tab path (or '') used to resolve the repository containing it
- *   onOpen: reserved for future file jumps; currently unused-safe
- * Host: GET /markdown-reader/api/git/repos, GET /markdown-reader/api/git/graph?path=&limit=
- *
- * 为什么手绘：独立版当初把 gitgraph.js 换掉了 —— 它渲染到 canvas，文字不可选中、
- * 暗色配色脏、devicePixelRatio≠1 时点击坐标偏移。这里沿用它最终的做法：
- * Host 只返回拓扑（每个提交的 parents / refs），Client 用 SVG 自己画轨道：
- *   · 行 = 时间（新的在上），列 = 轨道（lane），与 gitk / VS Code 的读法一致
- *   · 每条「子 → 父」边一条 path：同轨道直线，跨轨道用三次贝塞尔平滑换列
- *   · 分支头 / 当前分支画成彩色胶囊
- * 轨道分配是纯函数 gitGraphLayout(commits)，可以脱离 DOM 单独测试。
- */
-
-/** 每行提交的高度（必须与 GitGraph CSS 里的 .mdr-gitgraph-row 一致）。 */
 const GITGRAPH_ROW_H = 30
-/** 一次最多取多少条提交（Host 契约上限 400，UI 取 200 已足够阅读）。 */
 const GITGRAPH_LIMIT = 200
-/** 轨道配色：按「轨道号」而不是分支名分配，临时分支再多也只有几条线。 */
 const GITGRAPH_LANE_COLORS = ['#7d8590', '#4a9eff', '#3fb950', '#d29922', '#a371f7', '#f85149', '#39c5cf', '#db61a2']
-
 function gitGraphLaneColor(lane) {
-  const index = Number(lane) || 0
-  return GITGRAPH_LANE_COLORS[((index % GITGRAPH_LANE_COLORS.length) + GITGRAPH_LANE_COLORS.length) % GITGRAPH_LANE_COLORS.length]
+const index = Number(lane) || 0
+return GITGRAPH_LANE_COLORS[((index % GITGRAPH_LANE_COLORS.length) + GITGRAPH_LANE_COLORS.length) % GITGRAPH_LANE_COLORS.length]
 }
-
-/** 与 15-git.js 的 hash 同色，避免两处 git 视图对同一个概念用两种颜色。 */
 const GITGRAPH_HASH_COLOR = '#d7ba7d'
-
 const GITGRAPH_CSS = `
 .mdr-gitgraph-panel{width:min(1200px,94vw);height:min(84vh,820px);max-height:84vh}
 .mdr-gitgraph-head{flex-wrap:wrap;row-gap:6px}
@@ -6022,1083 +4652,936 @@ const GITGRAPH_CSS = `
 .mdr-gitgraph-foot-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
 .mdr-gitgraph-foot-dia{width:8px;height:8px;flex:0 0 auto;background:var(--dsw-alias-label-secondary);transform:rotate(45deg)}
 `
-
-/** Small helper for error messages coming out of async code. */
 function gitGraphErrorText(error) {
-  if (!error) return ''
-  const message = error && error.message != null ? error.message : error
-  const text = String(message == null ? '' : message).trim()
-  return text || '未知错误'
+if (!error) return ''
+const message = error && error.message != null ? error.message : error
+const text = String(message == null ? '' : message).trim()
+return text || '未知错误'
 }
-
-/** "2026-11-04 14:21" -> "11-04 14:21" (fallbacks to the raw value). */
 function gitGraphShortDate(value) {
-  const text = String(value == null ? '' : value)
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text)) return text.slice(5)
-  return text || '—'
+const text = String(value == null ? '' : value)
+if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(text)) return text.slice(5)
+return text || '—'
 }
-
-/**
- * Assign a lane (column) to every commit, in list order (newest first).
- *
- * A "lane" is a slot that remembers which commit it is currently heading to.
- * Walking the list top-down:
- *   1. the commit takes the lane already waiting for it (else the first free lane);
- *   2. all other lanes waiting for the same commit converge into its dot;
- *   3. the first parent inherits the lane, extra parents (merge) get their own lane.
- * Lanes waiting for a parent outside the loaded window are released immediately:
- * no line can be drawn to a commit that was never returned by the Host.
- *
- * Pure function, no DOM/React access — unit-tested with fixtures.
- */
 function gitGraphLayout(commits) {
-  const list = Array.isArray(commits) ? commits.filter((commit) => commit && typeof commit.hash === 'string') : []
-  const byHash = new Map()
-  for (const commit of list) if (!byHash.has(commit.hash)) byHash.set(commit.hash, commit)
-  const lanes = []
-  const rows = []
-  const edges = []
-  const rowOf = new Map()
-  const laneOf = new Map()
-  let laneCount = 0
-
-  const takeLane = () => {
-    const free = lanes.indexOf(null)
-    if (free >= 0) return free
-    lanes.push(null)
-    return lanes.length - 1
-  }
-
-  for (let row = 0; row < list.length; row += 1) {
-    const commit = list[row]
-    let lane = lanes.indexOf(commit.hash)
-    if (lane < 0) lane = takeLane()
-    // Every lane that was waiting for this commit ends here (converging lines).
-    for (let index = 0; index < lanes.length; index += 1) {
-      if (lanes[index] === commit.hash) lanes[index] = null
-    }
-    rowOf.set(commit.hash, row)
-    laneOf.set(commit.hash, lane)
-    rows.push({ hash: commit.hash, lane, row })
-    if (lane >= laneCount) laneCount = lane + 1
-
-    const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
-    if (!parents.length) continue
-    // First parent keeps this lane; missing parent releases it (nothing to draw).
-    lanes[lane] = byHash.has(parents[0]) ? parents[0] : null
-    for (let index = 1; index < parents.length; index += 1) {
-      const parent = parents[index]
-      if (!byHash.has(parent)) continue
-      if (lanes.indexOf(parent) >= 0) continue // already tracked: the lines converge later
-      const slot = takeLane()
-      lanes[slot] = parent
-    }
-  }
-
-  // Edges need all lanes resolved first: record one per existing child→parent pair.
-  for (const rowInfo of rows) {
-    const commit = byHash.get(rowInfo.hash)
-    const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
-    for (let index = 0; index < parents.length; index += 1) {
-      const parent = parents[index]
-      const parentRow = rowOf.get(parent)
-      if (parentRow == null || parentRow <= rowInfo.row) continue // parent outside the loaded window
-      edges.push({
-        hash: commit.hash,
-        parent,
-        lane: rowInfo.lane,
-        parentLane: laneOf.get(parent),
-        row: rowInfo.row,
-        parentRow,
-        merge: index > 0,
-      })
-    }
-  }
-
-  return { rows, byHash, rowOf, laneOf, laneCount: Math.max(1, laneCount), edges }
+const list = Array.isArray(commits) ? commits.filter((commit) => commit && typeof commit.hash === 'string') : []
+const byHash = new Map()
+for (const commit of list) if (!byHash.has(commit.hash)) byHash.set(commit.hash, commit)
+const lanes = []
+const rows = []
+const edges = []
+const rowOf = new Map()
+const laneOf = new Map()
+let laneCount = 0
+const takeLane = () => {
+const free = lanes.indexOf(null)
+if (free >= 0) return free
+lanes.push(null)
+return lanes.length - 1
 }
-
-/** Every commit reachable from `headHash` (its ancestors), bounded to the loaded list. */
+for (let row = 0; row < list.length; row += 1) {
+const commit = list[row]
+let lane = lanes.indexOf(commit.hash)
+if (lane < 0) lane = takeLane()
+for (let index = 0; index < lanes.length; index += 1) {
+if (lanes[index] === commit.hash) lanes[index] = null
+}
+rowOf.set(commit.hash, row)
+laneOf.set(commit.hash, lane)
+rows.push({ hash: commit.hash, lane, row })
+if (lane >= laneCount) laneCount = lane + 1
+const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
+if (!parents.length) continue
+lanes[lane] = byHash.has(parents[0]) ? parents[0] : null
+for (let index = 1; index < parents.length; index += 1) {
+const parent = parents[index]
+if (!byHash.has(parent)) continue
+if (lanes.indexOf(parent) >= 0) continue // already tracked: the lines converge later
+const slot = takeLane()
+lanes[slot] = parent
+}
+}
+for (const rowInfo of rows) {
+const commit = byHash.get(rowInfo.hash)
+const parents = Array.isArray(commit.parents) ? commit.parents.filter((parent) => typeof parent === 'string' && parent) : []
+for (let index = 0; index < parents.length; index += 1) {
+const parent = parents[index]
+const parentRow = rowOf.get(parent)
+if (parentRow == null || parentRow <= rowInfo.row) continue // parent outside the loaded window
+edges.push({
+hash: commit.hash,
+parent,
+lane: rowInfo.lane,
+parentLane: laneOf.get(parent),
+row: rowInfo.row,
+parentRow,
+merge: index > 0,
+})
+}
+}
+return { rows, byHash, rowOf, laneOf, laneCount: Math.max(1, laneCount), edges }
+}
 function gitGraphReachable(commits, headHash) {
-  const list = Array.isArray(commits) ? commits : []
-  const byHash = new Map()
-  for (const commit of list) if (commit && typeof commit.hash === 'string' && !byHash.has(commit.hash)) byHash.set(commit.hash, commit)
-  const seen = new Set()
-  if (!headHash || !byHash.has(headHash)) return seen
-  const stack = [headHash]
-  while (stack.length) {
-    const hash = stack.pop()
-    if (seen.has(hash)) continue
-    const commit = byHash.get(hash)
-    if (!commit) continue
-    seen.add(hash)
-    const parents = Array.isArray(commit.parents) ? commit.parents : []
-    for (const parent of parents) if (typeof parent === 'string' && byHash.has(parent)) stack.push(parent)
-  }
-  return seen
+const list = Array.isArray(commits) ? commits : []
+const byHash = new Map()
+for (const commit of list) if (commit && typeof commit.hash === 'string' && !byHash.has(commit.hash)) byHash.set(commit.hash, commit)
+const seen = new Set()
+if (!headHash || !byHash.has(headHash)) return seen
+const stack = [headHash]
+while (stack.length) {
+const hash = stack.pop()
+if (seen.has(hash)) continue
+const commit = byHash.get(hash)
+if (!commit) continue
+seen.add(hash)
+const parents = Array.isArray(commit.parents) ? commit.parents : []
+for (const parent of parents) if (typeof parent === 'string' && byHash.has(parent)) stack.push(parent)
 }
-
-/**
- * Branch refs come from `for-each-ref --format=%(objectname:short)` (7-char
- * abbrev), while commits carry full hashes. Map the abbrev back to a loaded
- * full hash so branch chips / HEAD detection line up with the commit rows.
- */
+return seen
+}
 function gitGraphResolveHead(commits, hash) {
-  const value = String(hash == null ? '' : hash)
-  if (!value) return ''
-  const list = Array.isArray(commits) ? commits : []
-  for (const commit of list) if (commit && commit.hash === value) return value
-  for (const commit of list) {
-    if (!commit || typeof commit.hash !== 'string') continue
-    if (commit.short === value || commit.hash.startsWith(value)) return commit.hash
-  }
-  return ''
+const value = String(hash == null ? '' : hash)
+if (!value) return ''
+const list = Array.isArray(commits) ? commits : []
+for (const commit of list) if (commit && commit.hash === value) return value
+for (const commit of list) {
+if (!commit || typeof commit.hash !== 'string') continue
+if (commit.short === value || commit.hash.startsWith(value)) return commit.hash
 }
-
-/**
- * Resolve the initial graph query from the repo inventory + the active tab path.
- * Returns { query, repoPath }: query is what to pass to /api/git/graph, repoPath
- * is the repo-picker value ('' = let the Host resolve it from the file path).
- */
+return ''
+}
 function gitGraphResolveRepo(repos, activePath) {
-  const list = Array.isArray(repos) ? repos.filter((repo) => repo && (repo.path || repo.repo)) : []
-  const candidate = String(activePath || '').trim()
-  if (candidate) {
-    // Longest matching repo root wins: inventories can list nested repos and a
-    // file must resolve to the innermost one.
-    let best = ''
-    for (const repo of list) {
-      const root = repo.path || repo.repo
-      if ((candidate === root || candidate.startsWith(`${root}/`)) && root.length > best.length) best = root
-    }
-    if (best) return { query: best, repoPath: best }
-    // Path outside the inventory (or repos failed to load): the Host can still
-    // walk up to the containing git root, so query it directly.
-    return { query: candidate, repoPath: '' }
-  }
-  if (list.length) {
-    const first = list[0].path || list[0].repo
-    return { query: first, repoPath: first }
-  }
-  return { query: '', repoPath: '' }
+const list = Array.isArray(repos) ? repos.filter((repo) => repo && (repo.path || repo.repo)) : []
+const candidate = String(activePath || '').trim()
+if (candidate) {
+let best = ''
+for (const repo of list) {
+const root = repo.path || repo.repo
+if ((candidate === root || candidate.startsWith(`${root}/`)) && root.length > best.length) best = root
 }
-
-/** Copy helper with the execCommand fallback (navigator.clipboard needs a secure context). */
+if (best) return { query: best, repoPath: best }
+return { query: candidate, repoPath: '' }
+}
+if (list.length) {
+const first = list[0].path || list[0].repo
+return { query: first, repoPath: first }
+}
+return { query: '', repoPath: '' }
+}
 function gitGraphFallbackCopy(text) {
-  try {
-    if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function' || !document.body) return false
-    const area = document.createElement('textarea')
-    area.value = String(text == null ? '' : text)
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.left = '-9999px'
-    area.style.opacity = '0'
-    document.body.appendChild(area)
-    area.select()
-    if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, area.value.length)
-    const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
-    document.body.removeChild(area)
-    return !!copied
-  } catch {
-    return false
-  }
+try {
+if (typeof document === 'undefined' || !document || typeof document.createElement !== 'function' || !document.body) return false
+const area = document.createElement('textarea')
+area.value = String(text == null ? '' : text)
+area.setAttribute('readonly', '')
+area.style.position = 'fixed'
+area.style.left = '-9999px'
+area.style.opacity = '0'
+document.body.appendChild(area)
+area.select()
+if (typeof area.setSelectionRange === 'function') area.setSelectionRange(0, area.value.length)
+const copied = typeof document.execCommand === 'function' ? document.execCommand('copy') : false
+document.body.removeChild(area)
+return !!copied
+} catch {
+return false
 }
-
+}
 function gitGraphCopyText(text) {
-  const value = String(text == null ? '' : text)
-  try {
-    if (typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      return Promise.resolve(navigator.clipboard.writeText(value))
-        .then(() => true)
-        .catch(() => gitGraphFallbackCopy(value))
-    }
-  } catch {
-    // fall through to the DOM fallback
-  }
-  return Promise.resolve(gitGraphFallbackCopy(value))
+const value = String(text == null ? '' : text)
+try {
+if (typeof navigator !== 'undefined' && navigator && navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+return Promise.resolve(navigator.clipboard.writeText(value))
+.then(() => true)
+.catch(() => gitGraphFallbackCopy(value))
 }
-
+} catch {
+}
+return Promise.resolve(gitGraphFallbackCopy(value))
+}
 function GitGraphModal(props) {
-  const { path } = props || {}
-  const [repos, setRepos] = React.useState(null)
-  const [reposStatus, setReposStatus] = React.useState('loading') // loading | ready | error
-  const [reposError, setReposError] = React.useState('')
-  const [repoPath, setRepoPath] = React.useState('')
-  const [graph, setGraph] = React.useState(null)
-  const [graphStatus, setGraphStatus] = React.useState('idle') // idle | loading | ready | error | empty
-  const [error, setError] = React.useState('')
-  const [selectedHash, setSelectedHash] = React.useState('')
-  const [filterBranch, setFilterBranch] = React.useState('')
-  const [copyState, setCopyState] = React.useState('') // '' | done | fail
-  const [bootNonce, setBootNonce] = React.useState(0)
-  const loadSeq = React.useRef(0)
-  const copyTimerRef = React.useRef(null)
-  const scrollRef = React.useRef(null)
-
-  const close = () => {
-    if (typeof props.onClose === 'function') props.onClose()
-  }
-
-  const loadGraph = React.useCallback((queryPath) => {
-    const seq = (loadSeq.current += 1)
-    setGraphStatus('loading')
-    setError('')
-    setSelectedHash('')
-    fetchJson('/api/git/graph', { path: queryPath, limit: GITGRAPH_LIMIT })
-      .then((payload) => {
-        if (seq !== loadSeq.current) return
-        const branches = Array.isArray(payload.branches) ? payload.branches : []
-        const commits = Array.isArray(payload.commits) ? payload.commits : []
-        setGraph({
-          repo: String(payload.repo || ''),
-          name: String(payload.name || ''),
-          current: String(payload.current || ''),
-          branches,
-          commits,
-        })
-        setGraphStatus('ready')
-        setFilterBranch('')
-        const repoRel = String(payload.repo || '')
-        if (repoRel) {
-          setRepoPath(repoRel)
-          setRepos((previous) => {
-            const list = Array.isArray(previous) ? previous : []
-            if (list.some((repo) => (repo.path || repo.repo) === repoRel)) return list
-            return [...list, { repo: repoRel, name: String(payload.name || repoRel.split('/').pop() || repoRel), path: repoRel }]
-          })
-        }
-      })
-      .catch((err) => {
-        if (seq !== loadSeq.current) return
-        setGraphStatus('error')
-        setError(`版本树加载失败：${gitGraphErrorText(err)}`)
-      })
-  }, [])
-
-  // Boot: inventory first (for the repo picker), then the graph for the active
-  // tab's repo (or the first repo when no tab path is available).
-  React.useEffect(() => {
-    let alive = true
-    loadSeq.current += 1
-    setReposStatus('loading')
-    setReposError('')
-    setGraphStatus('idle')
-    setGraph(null)
-    setSelectedHash('')
-    setFilterBranch('')
-    fetchJson('/api/git/repos')
-      .then((payload) => {
-        if (!alive) return
-        const list = Array.isArray(payload.repos) ? payload.repos.filter((repo) => repo && (repo.path || repo.repo)) : []
-        setRepos(list)
-        setReposStatus('ready')
-        const initial = gitGraphResolveRepo(list, path)
-        if (!initial.query) {
-          setGraphStatus('empty')
-          return
-        }
-        setRepoPath(initial.repoPath)
-        loadGraph(initial.query)
-      })
-      .catch((err) => {
-        if (!alive) return
-        const message = gitGraphErrorText(err)
-        setReposStatus('error')
-        setReposError(`仓库列表加载失败：${message}`)
-        const initial = gitGraphResolveRepo([], path)
-        if (initial.query) {
-          setRepoPath('')
-          loadGraph(initial.query)
-        } else {
-          setGraphStatus('error')
-          setError(`仓库列表加载失败：${message}`)
-        }
-      })
-    return () => {
-      alive = false
-      loadSeq.current += 1
-    }
-  }, [path, loadGraph, bootNonce])
-
-  React.useEffect(
-    () => () => {
-      if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    },
-    [],
-  )
-
-  // Keep the selected commit visible (parent jumps / first click in a long list).
-  React.useEffect(() => {
-    if (!selectedHash) return undefined
-    const scroller = scrollRef.current
-    if (!scroller || typeof scroller.querySelector !== 'function') return undefined
-    const node = scroller.querySelector(`.mdr-gitgraph-row[data-hash="${selectedHash}"]`)
-    if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' })
-    return undefined
-  }, [selectedHash])
-
-  const commits = graph && Array.isArray(graph.commits) ? graph.commits : []
-  const branches = graph && Array.isArray(graph.branches) ? graph.branches : []
-  const layout = React.useMemo(() => gitGraphLayout(commits), [commits])
-  const highlight = React.useMemo(() => {
-    if (!filterBranch || !graph) return null
-    const branch = branches.find((item) => item && item.name === filterBranch)
-    const head = branch ? gitGraphResolveHead(commits, branch.hash) : ''
-    if (!head || !layout.rowOf.has(head)) return null
-    return gitGraphReachable(commits, head)
-  }, [filterBranch, graph, branches, commits, layout])
-  const filterActive = !!(highlight && highlight.size)
-
-  const selectCommit = (hash) => {
-    setSelectedHash(String(hash || ''))
-    setCopyState('')
-  }
-
-  const copyHash = (hash) => {
-    gitGraphCopyText(hash)
-      .then((ok) => {
-        setCopyState(ok ? 'done' : 'fail')
-        if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-        copyTimerRef.current = setTimeout(() => {
-          copyTimerRef.current = null
-          setCopyState('')
-        }, 1800)
-      })
-      .catch(() => {
-        setCopyState('fail')
-      })
-  }
-
-  // ---- geometry: lane columns in a left gutter, one HTML row per commit ----
-  const laneCount = layout.laneCount
-  const laneWidth = laneCount <= 6 ? 20 : laneCount <= 12 ? 16 : 12
-  const gutter = 28 + (laneCount - 1) * laneWidth
-  const graphHeight = Math.max(GITGRAPH_ROW_H, layout.rows.length * GITGRAPH_ROW_H)
-  const xOf = (lane) => 14 + (Number(lane) || 0) * laneWidth
-  const yOf = (row) => (Number(row) || 0) * GITGRAPH_ROW_H + GITGRAPH_ROW_H / 2
-
-  const svgChildren = []
-  for (const edge of layout.edges) {
-    const color = gitGraphLaneColor(edge.lane)
-    const x1 = xOf(edge.lane)
-    const y1 = yOf(edge.row)
-    const x2 = xOf(edge.parentLane)
-    const y2 = yOf(edge.parentRow)
-    const dimmed = filterActive && !highlight.has(edge.hash)
-    const className = 'mdr-gitgraph-edge' + (edge.merge ? ' merge' : '') + (dimmed ? ' dim' : '')
-    const key = `edge-${edge.hash}-${edge.parent}`
-    if (x1 === x2) {
-      svgChildren.push(h('path', { key, className, d: `M${x1} ${y1}L${x2} ${y2}`, stroke: color }))
-    } else {
-      const middle = (y1 + y2) / 2
-      svgChildren.push(
-        h('path', { key, className, d: `M${x1} ${y1}C${x1} ${middle} ${x2} ${middle} ${x2} ${y2}`, stroke: color }),
-      )
-    }
-  }
-  for (const rowInfo of layout.rows) {
-    const commit = layout.byHash.get(rowInfo.hash)
-    if (!commit) continue
-    const color = gitGraphLaneColor(rowInfo.lane)
-    const parents = Array.isArray(commit.parents) ? commit.parents : []
-    const refs = Array.isArray(commit.refs) ? commit.refs : []
-    const isMerge = parents.length > 1
-    const isHead = !!graph && graph.current !== '' && refs.includes(graph.current)
-    const isSelected = rowInfo.hash === selectedHash
-    const dimmed = filterActive && !highlight.has(rowInfo.hash)
-    const className =
-      'mdr-gitgraph-dot' + (isHead ? ' head' : '') + (isSelected ? ' selected' : '') + (dimmed ? ' dim' : '')
-    const cx = xOf(rowInfo.lane)
-    const cy = yOf(rowInfo.row)
-    const key = `dot-${rowInfo.hash}`
-    if (isMerge) {
-      svgChildren.push(
-        h('rect', {
-          key,
-          className,
-          x: cx - 4.5,
-          y: cy - 4.5,
-          width: 9,
-          height: 9,
-          transform: `rotate(45 ${cx} ${cy})`,
-          fill: color,
-        }),
-      )
-    } else {
-      svgChildren.push(h('circle', { key, className, cx, cy, r: isHead ? 5.5 : 4, fill: color }))
-    }
-  }
-
-  const rowNodes = layout.rows.map((rowInfo) => {
-    const commit = layout.byHash.get(rowInfo.hash)
-    if (!commit) return null
-    const refs = Array.isArray(commit.refs) ? commit.refs : []
-    const laneColor = gitGraphLaneColor(rowInfo.lane)
-    const highlighted = filterActive && highlight.has(rowInfo.hash)
-    const dimmed = filterActive && !highlight.has(rowInfo.hash)
-    const rowClass =
-      'mdr-gitgraph-row' + (rowInfo.hash === selectedHash ? ' selected' : '') + (highlighted ? ' on' : '') + (dimmed ? ' dim' : '')
-    const refNodes = refs.slice(0, 3).map((ref, index) => {
-      const isCurrent = !!graph && ref === graph.current
-      const color = isCurrent ? '#3fb950' : laneColor
-      return h(
-        'span',
-        {
-          key: `ref-${ref}-${index}`,
-          className: 'mdr-gitgraph-ref' + (isCurrent ? ' head' : ''),
-          style: { color, borderColor: `${color}66`, background: `${color}1a` },
-          title: isCurrent ? `${ref}（当前分支 / HEAD）` : `分支 ${ref}`,
-        },
-        ref,
-      )
-    })
-    if (refs.length > 3) {
-      refNodes.push(
-        h(
-          'span',
-          {
-            key: 'ref-more',
-            className: 'mdr-gitgraph-ref',
-            style: { color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l1)', background: 'transparent' },
-            title: refs.join('、'),
-          },
-          `+${refs.length - 3}`,
-        ),
-      )
-    }
-    return h(
-      'div',
-      {
-        key: `${rowInfo.hash}-${rowInfo.row}`,
-        className: rowClass,
-        'data-hash': rowInfo.hash,
-        title: `${commit.short || rowInfo.hash}  ${String(commit.subject || '')}\n${commit.author || ''} · ${commit.date || ''}`,
-        onClick: (event) => {
-          if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
-          selectCommit(rowInfo.hash)
-        },
-      },
-      h('span', { className: 'mdr-gitgraph-gutter', style: { width: gutter } }),
-      h(
-        'div',
-        { className: 'mdr-gitgraph-text' },
-        refNodes,
-        h('span', { className: 'mdr-gitgraph-hash', title: String(commit.hash || '') }, commit.short || String(commit.hash || '').slice(0, 7)),
-        h('span', { className: 'mdr-gitgraph-subject', title: String(commit.subject || '') }, commit.subject || '(无提交说明)'),
-        h('span', { className: 'mdr-gitgraph-author', title: `作者 ${commit.author || '—'}` }, commit.author || '—'),
-        h('span', { className: 'mdr-gitgraph-date', title: String(commit.date || '') }, gitGraphShortDate(commit.date)),
-      ),
-    )
-  })
-
-  const onCanvasClick = (event) => {
-    const element = event && event.currentTarget
-    if (!element || typeof element.getBoundingClientRect !== 'function') return
-    const rect = element.getBoundingClientRect()
-    const row = Math.floor((Number(event.clientY) - rect.top) / GITGRAPH_ROW_H)
-    const rowInfo = layout.rows[row]
-    if (rowInfo) selectCommit(rowInfo.hash)
-  }
-
-  const selectRepo = (value) => {
-    const next = String(value || '')
-    if (!next || next === repoPath) return
-    setRepoPath(next)
-    setFilterBranch('')
-    setSelectedHash('')
-    loadGraph(next)
-  }
-
-  const refresh = () => {
-    if (repoPath) loadGraph(repoPath)
-    else if (path) loadGraph(path)
-    else setBootNonce((value) => value + 1)
-  }
-
-  const selectedCommit = selectedHash && layout.byHash.has(selectedHash) ? layout.byHash.get(selectedHash) : null
-
-  // ---- repo picker ----
-  const repoSources = Array.isArray(repos) ? repos : []
-  const repoOptionNodes = []
-  if (!repoSources.length) {
-    repoOptionNodes.push(
-      h('option', { key: '__none', value: '' }, reposStatus === 'loading' ? '加载中…' : '（无仓库）'),
-    )
-  } else {
-    for (const repo of repoSources) {
-      const value = String(repo.path || repo.repo || '')
-      if (!value) continue
-      repoOptionNodes.push(h('option', { key: value, value }, String(repo.name || value.split('/').pop() || value)))
-    }
-    if (repoPath && !repoSources.some((repo) => (repo.path || repo.repo) === repoPath)) {
-      repoOptionNodes.push(h('option', { key: '__current', value: repoPath }, repoPath.split('/').pop() || repoPath))
-    }
-  }
-
-  // ---- branch chips ----
-  const chipNodes = [
-    h(
-      'button',
-      {
-        type: 'button',
-        key: '__all',
-        className: 'mdr-gitgraph-chip' + (filterBranch === '' ? ' on' : ''),
-        onClick: () => setFilterBranch(''),
-        title: '显示全部提交',
-      },
-      '全部提交',
-    ),
-  ]
-  branches.forEach((branch, index) => {
-    if (!branch || !branch.name) return
-    const headHash = gitGraphResolveHead(commits, branch.hash)
-    const headRow = headHash && layout.rowOf.has(headHash) ? layout.rowOf.get(headHash) : -1
-    const color = gitGraphLaneColor(headRow >= 0 ? layout.rows[headRow].lane : index)
-    const active = filterBranch === branch.name
-    chipNodes.push(
-      h(
-        'button',
-        {
-          type: 'button',
-          key: branch.name,
-          className: 'mdr-gitgraph-chip' + (active ? ' on' : ''),
-          style: active ? { borderColor: color } : undefined,
-          onClick: () => setFilterBranch(active ? '' : branch.name),
-          title: `${branch.name} · ${branch.hash || ''}（点击高亮该分支可达的提交，再点取消）`,
-        },
-        h('span', { className: 'mdr-gitgraph-chip-dot', style: { background: color } }),
-        branch.name,
-      ),
-    )
-  })
-
-  // ---- body state ----
-  let bodyNode = null
-  if (graphStatus === 'loading' || (reposStatus === 'loading' && graphStatus === 'idle' && !error)) {
-    bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在读取版本图…')
-  } else if (graphStatus === 'error') {
-    bodyNode = h(
-      'div',
-      { className: 'mdr-gitgraph-state mdr-gitgraph-state-err' },
-      h('div', null, error || '版本树加载失败'),
-      h('button', { type: 'button', className: 'mdr-btn', onClick: refresh }, '重试'),
-    )
-  } else if (graphStatus === 'empty') {
-    bodyNode = h(
-      'div',
-      { className: 'mdr-gitgraph-state' },
-      h('div', null, '没有找到 git 仓库'),
-      h(
-        'div',
-        { className: 'mdr-gitgraph-state-hint' },
-        reposError || '当前工作区根下没有 git 仓库；可先用顶栏「工作区」菜单打开包含仓库的目录。',
-      ),
-    )
-  } else if (graphStatus === 'ready' && !layout.rows.length) {
-    bodyNode = h(
-      'div',
-      { className: 'mdr-gitgraph-state' },
-      h('div', null, '该仓库没有提交记录'),
-      graph && graph.repo ? h('div', { className: 'mdr-gitgraph-state-hint' }, graph.repo) : null,
-    )
-  } else if (graphStatus === 'ready') {
-    bodyNode = h(
-      'div',
-      { className: 'mdr-gitgraph-canvas', style: { height: graphHeight }, onClick: onCanvasClick },
-      h(
-        'svg',
-        {
-          className: 'mdr-gitgraph-svg',
-          width: gutter,
-          height: graphHeight,
-          viewBox: `0 0 ${gutter} ${graphHeight}`,
-          'aria-hidden': true,
-        },
-        svgChildren,
-      ),
-      h('div', { className: 'mdr-gitgraph-rows' }, rowNodes),
-    )
-  } else {
-    bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在准备版本图…')
-  }
-
-  const detailNode = selectedCommit
-    ? h(
-        'div',
-        { className: 'mdr-gitgraph-detail' },
-        h(
-          'div',
-          { className: 'mdr-gitgraph-detail-main' },
-          h(
-            'div',
-            { className: 'mdr-gitgraph-detail-row' },
-            h('span', { className: 'mdr-gitgraph-detail-k' }, '提交'),
-            h('span', { className: 'mdr-gitgraph-detail-v mdr-gitgraph-detail-hash' }, String(selectedCommit.hash || '')),
-          ),
-          h(
-            'div',
-            { className: 'mdr-gitgraph-detail-row' },
-            h('span', { className: 'mdr-gitgraph-detail-k' }, '作者'),
-            h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.author || '—'),
-          ),
-          h(
-            'div',
-            { className: 'mdr-gitgraph-detail-row' },
-            h('span', { className: 'mdr-gitgraph-detail-k' }, '日期'),
-            h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.date || '—'),
-          ),
-          h(
-            'div',
-            { className: 'mdr-gitgraph-detail-row' },
-            h('span', { className: 'mdr-gitgraph-detail-k' }, '父提交'),
-            h(
-              'span',
-              { className: 'mdr-gitgraph-detail-v' },
-              Array.isArray(selectedCommit.parents) && selectedCommit.parents.length
-                ? selectedCommit.parents.map((parent) => {
-                    const loaded = layout.rowOf.has(parent)
-                    return h(
-                      'button',
-                      {
-                        key: parent,
-                        type: 'button',
-                        className: 'mdr-gitgraph-parent',
-                        disabled: !loaded,
-                        title: loaded ? `跳转到父提交 ${parent}` : `父提交 ${parent} 不在当前加载的 ${GITGRAPH_LIMIT} 条提交内`,
-                        onClick: (event) => {
-                          if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
-                          if (loaded) selectCommit(parent)
-                        },
-                      },
-                      String(parent).slice(0, 7),
-                    )
-                  })
-                : '（根提交）',
-            ),
-          ),
-          h(
-            'div',
-            { className: 'mdr-gitgraph-detail-row' },
-            h('span', { className: 'mdr-gitgraph-detail-k' }, '分支'),
-            h(
-              'span',
-              { className: 'mdr-gitgraph-detail-v' },
-              Array.isArray(selectedCommit.refs) && selectedCommit.refs.length ? selectedCommit.refs.join('、') : '—',
-            ),
-          ),
-          h('div', { className: 'mdr-gitgraph-detail-subject' }, selectedCommit.subject || '(无提交说明)'),
-        ),
-        h(
-          'div',
-          { className: 'mdr-gitgraph-detail-actions' },
-          copyState
-            ? h(
-                'span',
-                { className: 'mdr-gitgraph-copied' + (copyState === 'fail' ? ' err' : '') },
-                copyState === 'done' ? '已复制 hash' : '复制失败，请手动选择',
-              )
-            : null,
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'mdr-btn',
-              onClick: () => copyHash(selectedCommit.hash),
-              title: '复制完整提交 hash 到剪贴板',
-            },
-            '复制 hash',
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'mdr-btn',
-              onClick: () => {
-                selectCommit('')
-              },
-              title: '关闭提交详情',
-              'aria-label': '关闭提交详情',
-            },
-            h(Icons.close, { size: 12 }),
-          ),
-        ),
-      )
-    : null
-
-  const statsText = graph ? `${layout.rows.length} 提交 · ${branches.length} 分支` : ''
-  const filterHint = filterActive
-    ? `已高亮 ${highlight.size} 个提交`
-    : filterBranch
-      ? '该分支头不在当前加载的提交范围内'
-      : '点击提交查看详情 · 可复制 hash'
-
-  return h(
-    'div',
-    {
-      className: 'mdr-overlay',
-      onClick: close,
-      role: 'dialog',
-      'aria-modal': 'true',
-      'aria-label': 'Git 版本树',
-    },
-    h(
-      'div',
-      { className: 'mdr-panel mdr-gitgraph-panel', onClick: (event) => event.stopPropagation() },
-      h('style', { dangerouslySetInnerHTML: { __html: GITGRAPH_CSS } }),
-      h(
-        'div',
-        { className: 'mdr-panel-head mdr-gitgraph-head' },
-        h('span', { className: 'mdr-gitgraph-title' }, 'Git 版本树'),
-        h(
-          'select',
-          {
-            className: 'mdr-gitgraph-repo',
-            value: repoPath,
-            disabled: reposStatus === 'loading' || repoSources.length <= 1,
-            onChange: (event) => selectRepo(event.target.value),
-            title: '切换仓库（只列出工作区根下的 git 仓库）',
-            'aria-label': '选择仓库',
-          },
-          repoOptionNodes,
-        ),
-        h('span', { className: 'mdr-spacer' }),
-        h('span', { className: 'mdr-gitgraph-stats' }, statsText),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn', onClick: refresh, title: '重新读取版本图', disabled: graphStatus === 'loading' },
-          h(Icons.refresh, { size: 13 }),
-        ),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn', onClick: close, title: '关闭（Esc）', 'aria-label': '关闭' },
-          h(Icons.close, { size: 12 }),
-        ),
-      ),
-      h(
-        'div',
-        { className: 'mdr-gitgraph-body' },
-        graph
-          ? h(
-              'div',
-              { className: 'mdr-gitgraph-toolbar' },
-              h(
-                'div',
-                { className: 'mdr-gitgraph-repo-line' },
-                h('span', { className: 'mdr-gitgraph-repo-name' }, graph.name || graph.repo || '仓库'),
-                h('span', { className: 'mdr-gitgraph-repo-path', title: graph.repo || '' }, graph.repo || ''),
-                h('span', { className: 'mdr-spacer' }),
-                h(
-                  'span',
-                  { className: 'mdr-gitgraph-stats' },
-                  graph.current ? `当前分支 ${graph.current}` : '未在分支上（detached HEAD）',
-                ),
-              ),
-              h('div', { className: 'mdr-gitgraph-chips' }, chipNodes),
-            )
-          : null,
-        h('div', { className: 'mdr-gitgraph-scroll', ref: scrollRef }, bodyNode),
-        detailNode,
-        graph
-          ? h(
-              'div',
-              { className: 'mdr-gitgraph-foot' },
-              h(
-                'span',
-                { className: 'mdr-gitgraph-legend' },
-                h('span', { className: 'mdr-gitgraph-foot-dot', style: { background: gitGraphLaneColor(0) } }),
-                '普通提交',
-              ),
-              h('span', { className: 'mdr-gitgraph-legend' }, h('span', { className: 'mdr-gitgraph-foot-dia' }), '合并提交'),
-              h('span', { className: 'mdr-gitgraph-legend' }, '直线 / 曲线 = 分支汇入'),
-              h('span', { className: 'mdr-spacer' }),
-              h('span', { title: filterActive ? '再次点击该分支 chip 取消高亮' : '' }, filterHint),
-            )
-          : null,
-      ),
-    ),
-  )
+const { path } = props || {}
+const [repos, setRepos] = React.useState(null)
+const [reposStatus, setReposStatus] = React.useState('loading') // loading | ready | error
+const [reposError, setReposError] = React.useState('')
+const [repoPath, setRepoPath] = React.useState('')
+const [graph, setGraph] = React.useState(null)
+const [graphStatus, setGraphStatus] = React.useState('idle') // idle | loading | ready | error | empty
+const [error, setError] = React.useState('')
+const [selectedHash, setSelectedHash] = React.useState('')
+const [filterBranch, setFilterBranch] = React.useState('')
+const [copyState, setCopyState] = React.useState('') // '' | done | fail
+const [bootNonce, setBootNonce] = React.useState(0)
+const loadSeq = React.useRef(0)
+const copyTimerRef = React.useRef(null)
+const scrollRef = React.useRef(null)
+const close = () => {
+if (typeof props.onClose === 'function') props.onClose()
 }
-
+const loadGraph = React.useCallback((queryPath) => {
+const seq = (loadSeq.current += 1)
+setGraphStatus('loading')
+setError('')
+setSelectedHash('')
+fetchJson('/api/git/graph', { path: queryPath, limit: GITGRAPH_LIMIT })
+.then((payload) => {
+if (seq !== loadSeq.current) return
+const branches = Array.isArray(payload.branches) ? payload.branches : []
+const commits = Array.isArray(payload.commits) ? payload.commits : []
+setGraph({
+repo: String(payload.repo || ''),
+name: String(payload.name || ''),
+current: String(payload.current || ''),
+branches,
+commits,
+})
+setGraphStatus('ready')
+setFilterBranch('')
+const repoRel = String(payload.repo || '')
+if (repoRel) {
+setRepoPath(repoRel)
+setRepos((previous) => {
+const list = Array.isArray(previous) ? previous : []
+if (list.some((repo) => (repo.path || repo.repo) === repoRel)) return list
+return [...list, { repo: repoRel, name: String(payload.name || repoRel.split('/').pop() || repoRel), path: repoRel }]
+})
+}
+})
+.catch((err) => {
+if (seq !== loadSeq.current) return
+setGraphStatus('error')
+setError(`版本树加载失败：${gitGraphErrorText(err)}`)
+})
+}, [])
+React.useEffect(() => {
+let alive = true
+loadSeq.current += 1
+setReposStatus('loading')
+setReposError('')
+setGraphStatus('idle')
+setGraph(null)
+setSelectedHash('')
+setFilterBranch('')
+fetchJson('/api/git/repos')
+.then((payload) => {
+if (!alive) return
+const list = Array.isArray(payload.repos) ? payload.repos.filter((repo) => repo && (repo.path || repo.repo)) : []
+setRepos(list)
+setReposStatus('ready')
+const initial = gitGraphResolveRepo(list, path)
+if (!initial.query) {
+setGraphStatus('empty')
+return
+}
+setRepoPath(initial.repoPath)
+loadGraph(initial.query)
+})
+.catch((err) => {
+if (!alive) return
+const message = gitGraphErrorText(err)
+setReposStatus('error')
+setReposError(`仓库列表加载失败：${message}`)
+const initial = gitGraphResolveRepo([], path)
+if (initial.query) {
+setRepoPath('')
+loadGraph(initial.query)
+} else {
+setGraphStatus('error')
+setError(`仓库列表加载失败：${message}`)
+}
+})
+return () => {
+alive = false
+loadSeq.current += 1
+}
+}, [path, loadGraph, bootNonce])
+React.useEffect(
+() => () => {
+if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+},
+[],
+)
+React.useEffect(() => {
+if (!selectedHash) return undefined
+const scroller = scrollRef.current
+if (!scroller || typeof scroller.querySelector !== 'function') return undefined
+const node = scroller.querySelector(`.mdr-gitgraph-row[data-hash="${selectedHash}"]`)
+if (node && typeof node.scrollIntoView === 'function') node.scrollIntoView({ block: 'nearest' })
+return undefined
+}, [selectedHash])
+const commits = graph && Array.isArray(graph.commits) ? graph.commits : []
+const branches = graph && Array.isArray(graph.branches) ? graph.branches : []
+const layout = React.useMemo(() => gitGraphLayout(commits), [commits])
+const highlight = React.useMemo(() => {
+if (!filterBranch || !graph) return null
+const branch = branches.find((item) => item && item.name === filterBranch)
+const head = branch ? gitGraphResolveHead(commits, branch.hash) : ''
+if (!head || !layout.rowOf.has(head)) return null
+return gitGraphReachable(commits, head)
+}, [filterBranch, graph, branches, commits, layout])
+const filterActive = !!(highlight && highlight.size)
+const selectCommit = (hash) => {
+setSelectedHash(String(hash || ''))
+setCopyState('')
+}
+const copyHash = (hash) => {
+gitGraphCopyText(hash)
+.then((ok) => {
+setCopyState(ok ? 'done' : 'fail')
+if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+copyTimerRef.current = setTimeout(() => {
+copyTimerRef.current = null
+setCopyState('')
+}, 1800)
+})
+.catch(() => {
+setCopyState('fail')
+})
+}
+const laneCount = layout.laneCount
+const laneWidth = laneCount <= 6 ? 20 : laneCount <= 12 ? 16 : 12
+const gutter = 28 + (laneCount - 1) * laneWidth
+const graphHeight = Math.max(GITGRAPH_ROW_H, layout.rows.length * GITGRAPH_ROW_H)
+const xOf = (lane) => 14 + (Number(lane) || 0) * laneWidth
+const yOf = (row) => (Number(row) || 0) * GITGRAPH_ROW_H + GITGRAPH_ROW_H / 2
+const svgChildren = []
+for (const edge of layout.edges) {
+const color = gitGraphLaneColor(edge.lane)
+const x1 = xOf(edge.lane)
+const y1 = yOf(edge.row)
+const x2 = xOf(edge.parentLane)
+const y2 = yOf(edge.parentRow)
+const dimmed = filterActive && !highlight.has(edge.hash)
+const className = 'mdr-gitgraph-edge' + (edge.merge ? ' merge' : '') + (dimmed ? ' dim' : '')
+const key = `edge-${edge.hash}-${edge.parent}`
+if (x1 === x2) {
+svgChildren.push(h('path', { key, className, d: `M${x1} ${y1}L${x2} ${y2}`, stroke: color }))
+} else {
+const middle = (y1 + y2) / 2
+svgChildren.push(
+h('path', { key, className, d: `M${x1} ${y1}C${x1} ${middle} ${x2} ${middle} ${x2} ${y2}`, stroke: color }),
+)
+}
+}
+for (const rowInfo of layout.rows) {
+const commit = layout.byHash.get(rowInfo.hash)
+if (!commit) continue
+const color = gitGraphLaneColor(rowInfo.lane)
+const parents = Array.isArray(commit.parents) ? commit.parents : []
+const refs = Array.isArray(commit.refs) ? commit.refs : []
+const isMerge = parents.length > 1
+const isHead = !!graph && graph.current !== '' && refs.includes(graph.current)
+const isSelected = rowInfo.hash === selectedHash
+const dimmed = filterActive && !highlight.has(rowInfo.hash)
+const className =
+'mdr-gitgraph-dot' + (isHead ? ' head' : '') + (isSelected ? ' selected' : '') + (dimmed ? ' dim' : '')
+const cx = xOf(rowInfo.lane)
+const cy = yOf(rowInfo.row)
+const key = `dot-${rowInfo.hash}`
+if (isMerge) {
+svgChildren.push(
+h('rect', {
+key,
+className,
+x: cx - 4.5,
+y: cy - 4.5,
+width: 9,
+height: 9,
+transform: `rotate(45 ${cx} ${cy})`,
+fill: color,
+}),
+)
+} else {
+svgChildren.push(h('circle', { key, className, cx, cy, r: isHead ? 5.5 : 4, fill: color }))
+}
+}
+const rowNodes = layout.rows.map((rowInfo) => {
+const commit = layout.byHash.get(rowInfo.hash)
+if (!commit) return null
+const refs = Array.isArray(commit.refs) ? commit.refs : []
+const laneColor = gitGraphLaneColor(rowInfo.lane)
+const highlighted = filterActive && highlight.has(rowInfo.hash)
+const dimmed = filterActive && !highlight.has(rowInfo.hash)
+const rowClass =
+'mdr-gitgraph-row' + (rowInfo.hash === selectedHash ? ' selected' : '') + (highlighted ? ' on' : '') + (dimmed ? ' dim' : '')
+const refNodes = refs.slice(0, 3).map((ref, index) => {
+const isCurrent = !!graph && ref === graph.current
+const color = isCurrent ? '#3fb950' : laneColor
+return h(
+'span',
+{
+key: `ref-${ref}-${index}`,
+className: 'mdr-gitgraph-ref' + (isCurrent ? ' head' : ''),
+style: { color, borderColor: `${color}66`, background: `${color}1a` },
+title: isCurrent ? `${ref}（当前分支 / HEAD）` : `分支 ${ref}`,
+},
+ref,
+)
+})
+if (refs.length > 3) {
+refNodes.push(
+h(
+'span',
+{
+key: 'ref-more',
+className: 'mdr-gitgraph-ref',
+style: { color: 'var(--dsw-alias-label-secondary)', borderColor: 'var(--dsw-alias-border-l1)', background: 'transparent' },
+title: refs.join('、'),
+},
+`+${refs.length - 3}`,
+),
+)
+}
+return h(
+'div',
+{
+key: `${rowInfo.hash}-${rowInfo.row}`,
+className: rowClass,
+'data-hash': rowInfo.hash,
+title: `${commit.short || rowInfo.hash}  ${String(commit.subject || '')}\n${commit.author || ''} · ${commit.date || ''}`,
+onClick: (event) => {
+if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+selectCommit(rowInfo.hash)
+},
+},
+h('span', { className: 'mdr-gitgraph-gutter', style: { width: gutter } }),
+h(
+'div',
+{ className: 'mdr-gitgraph-text' },
+refNodes,
+h('span', { className: 'mdr-gitgraph-hash', title: String(commit.hash || '') }, commit.short || String(commit.hash || '').slice(0, 7)),
+h('span', { className: 'mdr-gitgraph-subject', title: String(commit.subject || '') }, commit.subject || '(无提交说明)'),
+h('span', { className: 'mdr-gitgraph-author', title: `作者 ${commit.author || '—'}` }, commit.author || '—'),
+h('span', { className: 'mdr-gitgraph-date', title: String(commit.date || '') }, gitGraphShortDate(commit.date)),
+),
+)
+})
+const onCanvasClick = (event) => {
+const element = event && event.currentTarget
+if (!element || typeof element.getBoundingClientRect !== 'function') return
+const rect = element.getBoundingClientRect()
+const row = Math.floor((Number(event.clientY) - rect.top) / GITGRAPH_ROW_H)
+const rowInfo = layout.rows[row]
+if (rowInfo) selectCommit(rowInfo.hash)
+}
+const selectRepo = (value) => {
+const next = String(value || '')
+if (!next || next === repoPath) return
+setRepoPath(next)
+setFilterBranch('')
+setSelectedHash('')
+loadGraph(next)
+}
+const refresh = () => {
+if (repoPath) loadGraph(repoPath)
+else if (path) loadGraph(path)
+else setBootNonce((value) => value + 1)
+}
+const selectedCommit = selectedHash && layout.byHash.has(selectedHash) ? layout.byHash.get(selectedHash) : null
+const repoSources = Array.isArray(repos) ? repos : []
+const repoOptionNodes = []
+if (!repoSources.length) {
+repoOptionNodes.push(
+h('option', { key: '__none', value: '' }, reposStatus === 'loading' ? '加载中…' : '（无仓库）'),
+)
+} else {
+for (const repo of repoSources) {
+const value = String(repo.path || repo.repo || '')
+if (!value) continue
+repoOptionNodes.push(h('option', { key: value, value }, String(repo.name || value.split('/').pop() || value)))
+}
+if (repoPath && !repoSources.some((repo) => (repo.path || repo.repo) === repoPath)) {
+repoOptionNodes.push(h('option', { key: '__current', value: repoPath }, repoPath.split('/').pop() || repoPath))
+}
+}
+const chipNodes = [
+h(
+'button',
+{
+type: 'button',
+key: '__all',
+className: 'mdr-gitgraph-chip' + (filterBranch === '' ? ' on' : ''),
+onClick: () => setFilterBranch(''),
+title: '显示全部提交',
+},
+'全部提交',
+),
+]
+branches.forEach((branch, index) => {
+if (!branch || !branch.name) return
+const headHash = gitGraphResolveHead(commits, branch.hash)
+const headRow = headHash && layout.rowOf.has(headHash) ? layout.rowOf.get(headHash) : -1
+const color = gitGraphLaneColor(headRow >= 0 ? layout.rows[headRow].lane : index)
+const active = filterBranch === branch.name
+chipNodes.push(
+h(
+'button',
+{
+type: 'button',
+key: branch.name,
+className: 'mdr-gitgraph-chip' + (active ? ' on' : ''),
+style: active ? { borderColor: color } : undefined,
+onClick: () => setFilterBranch(active ? '' : branch.name),
+title: `${branch.name} · ${branch.hash || ''}（点击高亮该分支可达的提交，再点取消）`,
+},
+h('span', { className: 'mdr-gitgraph-chip-dot', style: { background: color } }),
+branch.name,
+),
+)
+})
+let bodyNode = null
+if (graphStatus === 'loading' || (reposStatus === 'loading' && graphStatus === 'idle' && !error)) {
+bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在读取版本图…')
+} else if (graphStatus === 'error') {
+bodyNode = h(
+'div',
+{ className: 'mdr-gitgraph-state mdr-gitgraph-state-err' },
+h('div', null, error || '版本树加载失败'),
+h('button', { type: 'button', className: 'mdr-btn', onClick: refresh }, '重试'),
+)
+} else if (graphStatus === 'empty') {
+bodyNode = h(
+'div',
+{ className: 'mdr-gitgraph-state' },
+h('div', null, '没有找到 git 仓库'),
+h(
+'div',
+{ className: 'mdr-gitgraph-state-hint' },
+reposError || '当前工作区根下没有 git 仓库；可先用顶栏「工作区」菜单打开包含仓库的目录。',
+),
+)
+} else if (graphStatus === 'ready' && !layout.rows.length) {
+bodyNode = h(
+'div',
+{ className: 'mdr-gitgraph-state' },
+h('div', null, '该仓库没有提交记录'),
+graph && graph.repo ? h('div', { className: 'mdr-gitgraph-state-hint' }, graph.repo) : null,
+)
+} else if (graphStatus === 'ready') {
+bodyNode = h(
+'div',
+{ className: 'mdr-gitgraph-canvas', style: { height: graphHeight }, onClick: onCanvasClick },
+h(
+'svg',
+{
+className: 'mdr-gitgraph-svg',
+width: gutter,
+height: graphHeight,
+viewBox: `0 0 ${gutter} ${graphHeight}`,
+'aria-hidden': true,
+},
+svgChildren,
+),
+h('div', { className: 'mdr-gitgraph-rows' }, rowNodes),
+)
+} else {
+bodyNode = h('div', { className: 'mdr-gitgraph-state' }, '正在准备版本图…')
+}
+const detailNode = selectedCommit
+? h(
+'div',
+{ className: 'mdr-gitgraph-detail' },
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-main' },
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-row' },
+h('span', { className: 'mdr-gitgraph-detail-k' }, '提交'),
+h('span', { className: 'mdr-gitgraph-detail-v mdr-gitgraph-detail-hash' }, String(selectedCommit.hash || '')),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-row' },
+h('span', { className: 'mdr-gitgraph-detail-k' }, '作者'),
+h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.author || '—'),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-row' },
+h('span', { className: 'mdr-gitgraph-detail-k' }, '日期'),
+h('span', { className: 'mdr-gitgraph-detail-v' }, selectedCommit.date || '—'),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-row' },
+h('span', { className: 'mdr-gitgraph-detail-k' }, '父提交'),
+h(
+'span',
+{ className: 'mdr-gitgraph-detail-v' },
+Array.isArray(selectedCommit.parents) && selectedCommit.parents.length
+? selectedCommit.parents.map((parent) => {
+const loaded = layout.rowOf.has(parent)
+return h(
+'button',
+{
+key: parent,
+type: 'button',
+className: 'mdr-gitgraph-parent',
+disabled: !loaded,
+title: loaded ? `跳转到父提交 ${parent}` : `父提交 ${parent} 不在当前加载的 ${GITGRAPH_LIMIT} 条提交内`,
+onClick: (event) => {
+if (event && typeof event.stopPropagation === 'function') event.stopPropagation()
+if (loaded) selectCommit(parent)
+},
+},
+String(parent).slice(0, 7),
+)
+})
+: '（根提交）',
+),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-row' },
+h('span', { className: 'mdr-gitgraph-detail-k' }, '分支'),
+h(
+'span',
+{ className: 'mdr-gitgraph-detail-v' },
+Array.isArray(selectedCommit.refs) && selectedCommit.refs.length ? selectedCommit.refs.join('、') : '—',
+),
+),
+h('div', { className: 'mdr-gitgraph-detail-subject' }, selectedCommit.subject || '(无提交说明)'),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-detail-actions' },
+copyState
+? h(
+'span',
+{ className: 'mdr-gitgraph-copied' + (copyState === 'fail' ? ' err' : '') },
+copyState === 'done' ? '已复制 hash' : '复制失败，请手动选择',
+)
+: null,
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-btn',
+onClick: () => copyHash(selectedCommit.hash),
+title: '复制完整提交 hash 到剪贴板',
+},
+'复制 hash',
+),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-btn',
+onClick: () => {
+selectCommit('')
+},
+title: '关闭提交详情',
+'aria-label': '关闭提交详情',
+},
+h(Icons.close, { size: 12 }),
+),
+),
+)
+: null
+const statsText = graph ? `${layout.rows.length} 提交 · ${branches.length} 分支` : ''
+const filterHint = filterActive
+? `已高亮 ${highlight.size} 个提交`
+: filterBranch
+? '该分支头不在当前加载的提交范围内'
+: '点击提交查看详情 · 可复制 hash'
+return h(
+'div',
+{
+className: 'mdr-overlay',
+onClick: close,
+role: 'dialog',
+'aria-modal': 'true',
+'aria-label': 'Git 版本树',
+},
+h(
+'div',
+{ className: 'mdr-panel mdr-gitgraph-panel', onClick: (event) => event.stopPropagation() },
+h('style', { dangerouslySetInnerHTML: { __html: GITGRAPH_CSS } }),
+h(
+'div',
+{ className: 'mdr-panel-head mdr-gitgraph-head' },
+h('span', { className: 'mdr-gitgraph-title' }, 'Git 版本树'),
+h(
+'select',
+{
+className: 'mdr-gitgraph-repo',
+value: repoPath,
+disabled: reposStatus === 'loading' || repoSources.length <= 1,
+onChange: (event) => selectRepo(event.target.value),
+title: '切换仓库（只列出工作区根下的 git 仓库）',
+'aria-label': '选择仓库',
+},
+repoOptionNodes,
+),
+h('span', { className: 'mdr-spacer' }),
+h('span', { className: 'mdr-gitgraph-stats' }, statsText),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', onClick: refresh, title: '重新读取版本图', disabled: graphStatus === 'loading' },
+h(Icons.refresh, { size: 13 }),
+),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', onClick: close, title: '关闭（Esc）', 'aria-label': '关闭' },
+h(Icons.close, { size: 12 }),
+),
+),
+h(
+'div',
+{ className: 'mdr-gitgraph-body' },
+graph
+? h(
+'div',
+{ className: 'mdr-gitgraph-toolbar' },
+h(
+'div',
+{ className: 'mdr-gitgraph-repo-line' },
+h('span', { className: 'mdr-gitgraph-repo-name' }, graph.name || graph.repo || '仓库'),
+h('span', { className: 'mdr-gitgraph-repo-path', title: graph.repo || '' }, graph.repo || ''),
+h('span', { className: 'mdr-spacer' }),
+h(
+'span',
+{ className: 'mdr-gitgraph-stats' },
+graph.current ? `当前分支 ${graph.current}` : '未在分支上（detached HEAD）',
+),
+),
+h('div', { className: 'mdr-gitgraph-chips' }, chipNodes),
+)
+: null,
+h('div', { className: 'mdr-gitgraph-scroll', ref: scrollRef }, bodyNode),
+detailNode,
+graph
+? h(
+'div',
+{ className: 'mdr-gitgraph-foot' },
+h(
+'span',
+{ className: 'mdr-gitgraph-legend' },
+h('span', { className: 'mdr-gitgraph-foot-dot', style: { background: gitGraphLaneColor(0) } }),
+'普通提交',
+),
+h('span', { className: 'mdr-gitgraph-legend' }, h('span', { className: 'mdr-gitgraph-foot-dia' }), '合并提交'),
+h('span', { className: 'mdr-gitgraph-legend' }, '直线 / 曲线 = 分支汇入'),
+h('span', { className: 'mdr-spacer' }),
+h('span', { title: filterActive ? '再次点击该分支 chip 取消高亮' : '' }, filterHint),
+)
+: null,
+),
+),
+)
+}
 // ---- 30-tree.js ----
-/** Directory tree with on-demand loading and persisted (per-project) expansion. */
-
 function TreeNode(props) {
-  const { node, depth, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
-  const open = node.dir && expanded.has(node.path)
-  const children = node.dir && open ? dirs[node.path] : null
-  // `dirs[path]` 有值 = 已加载（可能是空数组）；failed[path] = 加载失败。
-  // 一直「加载中…」只会出现在请求真的在飞的时候：App 恢复展开态时会主动 loadDir。
-  const failedHere = !!(open && failed && failed[node.path])
-  const meta = node.dir ? { kind: 'folder', color: 'var(--dsw-alias-label-secondary)' } : fileIcon(node.ext)
-  const Icon = Icons[meta.kind]
-  const childIndent = { paddingLeft: 18 + depth * 14 }
-  const located = !!locatedPath && locatedPath === node.path
-  const rowRef = React.useRef(null)
-
-  // 「定位」：目标文件所在行滚到视野中间。展开由 App 的 locateInTree 负责。
-  React.useEffect(() => {
-    if (!located) return
-    const row = rowRef.current
-    if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
-  }, [located])
-
-  let placeholder = null
-  if (open && failedHere) {
-    placeholder = h('div', { className: 'mdr-tip', style: { ...childIndent, color: 'var(--dsw-alias-state-error-primary)' } }, '加载失败，点目录树右上角刷新重试')
-  } else if (open && !children) {
-    placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '加载中…')
-  } else if (open && children && !children.length) {
-    placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '（空目录）')
-  }
-  return h(
-    'div',
-    null,
-    h(
-      'div',
-      {
-        className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
-        ref: rowRef,
-        'data-mdr-path': node.path,
-        style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
-        title: node.path,
-        onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),
-      },
-      h('span', { className: 'mdr-caret' + (open ? ' open' : '') }, node.dir ? '▶' : ''),
-      h('span', { className: 'mdr-ticon', style: { color: meta.color } }, h(Icon, { size: 14 })),
-      h('span', { className: 'mdr-tname' }, node.name),
-    ),
-    children
-      ? children.map((child) =>
-          h(TreeNode, {
-            key: child.path,
-            node: child,
-            depth: depth + 1,
-            expanded,
-            dirs,
-            failed,
-            activePath,
-            locatedPath,
-            onToggle,
-            onOpen,
-          }),
-        )
-      : null,
-    placeholder,
-  )
+const { node, depth, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
+const open = node.dir && expanded.has(node.path)
+const children = node.dir && open ? dirs[node.path] : null
+const failedHere = !!(open && failed && failed[node.path])
+const meta = node.dir ? { kind: 'folder', color: 'var(--dsw-alias-label-secondary)' } : fileIcon(node.ext)
+const Icon = Icons[meta.kind]
+const childIndent = { paddingLeft: 18 + depth * 14 }
+const located = !!locatedPath && locatedPath === node.path
+const rowRef = React.useRef(null)
+React.useEffect(() => {
+if (!located) return
+const row = rowRef.current
+if (row && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+}, [located])
+let placeholder = null
+if (open && failedHere) {
+placeholder = h('div', { className: 'mdr-tip', style: { ...childIndent, color: 'var(--dsw-alias-state-error-primary)' } }, '加载失败，点目录树右上角刷新重试')
+} else if (open && !children) {
+placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '加载中…')
+} else if (open && children && !children.length) {
+placeholder = h('div', { className: 'mdr-tip', style: childIndent }, '（空目录）')
 }
-
+return h(
+'div',
+null,
+h(
+'div',
+{
+className: 'mdr-tr' + (activePath === node.path ? ' on' : '') + (located ? ' mdr-located' : ''),
+ref: rowRef,
+'data-mdr-path': node.path,
+style: located ? { paddingLeft: 6 + depth * 14, background: 'rgba(78,155,214,.16)' } : { paddingLeft: 6 + depth * 14 },
+title: node.path,
+onClick: () => (node.dir ? onToggle(node.path) : onOpen(node.path)),
+},
+h('span', { className: 'mdr-caret' + (open ? ' open' : '') }, node.dir ? '▶' : ''),
+h('span', { className: 'mdr-ticon', style: { color: meta.color } }, h(Icon, { size: 14 })),
+h('span', { className: 'mdr-tname' }, node.name),
+),
+children
+? children.map((child) =>
+h(TreeNode, {
+key: child.path,
+node: child,
+depth: depth + 1,
+expanded,
+dirs,
+failed,
+activePath,
+locatedPath,
+onToggle,
+onOpen,
+}),
+)
+: null,
+placeholder,
+)
+}
 function Tree(props) {
-  const { rootEntries, rootPath, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
-  if (!rootEntries) {
-    const rootFailed = !!(failed && failed[rootPath || ''])
-    return h(
-      'div',
-      {
-        className: 'mdr-tip',
-        style: {
-          padding: '6px 12px',
-          color: rootFailed ? 'var(--dsw-alias-state-error-primary)' : undefined,
-        },
-      },
-      rootFailed ? '目录加载失败，点右上角刷新重试' : '加载中…',
-    )
-  }
-  return h(
-    'div',
-    null,
-    rootEntries.map((node) =>
-      h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen }),
-    ),
-  )
+const { rootEntries, rootPath, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen } = props
+if (!rootEntries) {
+const rootFailed = !!(failed && failed[rootPath || ''])
+return h(
+'div',
+{
+className: 'mdr-tip',
+style: {
+padding: '6px 12px',
+color: rootFailed ? 'var(--dsw-alias-state-error-primary)' : undefined,
+},
+},
+rootFailed ? '目录加载失败，点右上角刷新重试' : '加载中…',
+)
 }
-
+return h(
+'div',
+null,
+rootEntries.map((node) =>
+h(TreeNode, { key: node.path, node, depth: 0, expanded, dirs, failed, activePath, locatedPath, onToggle, onOpen }),
+),
+)
+}
 // ---- 32-workbench.js ----
-/**
- * Workbench layer (项目 → 任务) — owned by the workbench slice.
- *
- * One 项目 (workspace root, `currentProject` = null means 全部) owns an ordered
- * list of 任务 (workbench chips). A task is an ordered tab set + one active tab.
- * Everything is persisted per project (see taskStoreKey in 00-core.js):
- *
- *   { activeTaskId, tasks: [{ id, name, activeId, tabs: [stored tab] }] }
- *
- * Stored tabs drop the loaded content (它只在激活时懒加载) but keep path, kind,
- * jump line, git version (branch/commit) and the HTML render/source mode.
- *
- * The App (50-app.js) owns the live task state; this module owns the pure
- * state machine helpers and the chip-row component so the App shell stays
- * readable. Task ids look like `task<N>` and the tab id is always
- * `<kind>:<path>` — the same document opened in two tasks is two tab instances
- * with the same id, which keeps loading/de-dup logic simple.
- */
-
-/** Task id sequence (seeded from restored state so ids never collide). */
 let taskSeq = 0
-
-/** tab id -> last known scrollTop (fed by 50-app.js; kept out of React state). */
 const tabScrollMemory = new Map()
-
 function rememberTabScroll(tabId, top) {
-  if (!tabId) return
-  const value = Math.max(0, Math.round(Number(top) || 0))
-  tabScrollMemory.set(tabId, value)
+if (!tabId) return
+const value = Math.max(0, Math.round(Number(top) || 0))
+tabScrollMemory.set(tabId, value)
 }
-
 function recallTabScroll(tabId) {
-  return tabScrollMemory.get(tabId) || 0
+return tabScrollMemory.get(tabId) || 0
 }
-
 function nextTaskId() {
-  taskSeq += 1
-  return `task${taskSeq}`
+taskSeq += 1
+return `task${taskSeq}`
 }
-
-/** Seed the id counter from restored ids so new tasks never duplicate one. */
 function seedTaskSeq(tasks) {
-  for (const task of tasks || []) {
-    const match = /^task(\d+)$/.exec(String((task && task.id) || ''))
-    if (match) taskSeq = Math.max(taskSeq, Number(match[1]))
-  }
+for (const task of tasks || []) {
+const match = /^task(\d+)$/.exec(String((task && task.id) || ''))
+if (match) taskSeq = Math.max(taskSeq, Number(match[1]))
 }
-
-/**
- * Tab kind by extension (the standalone reader's `tabKindForPath`): a `.html`
- * file opens as a rendered tab (not source), images preview, markdown renders,
- * everything else is a text/code tab.
- */
+}
 function kindForPath(rel) {
-  const ext = extOf(rel)
-  if (ext === '.md' || ext === '.markdown') return 'md'
-  if (ext === '.html' || ext === '.htm') return 'html'
-  if (isImageFile(rel)) return 'image'
-  return 'code'
+const ext = extOf(rel)
+if (ext === '.md' || ext === '.markdown') return 'md'
+if (ext === '.html' || ext === '.htm') return 'html'
+if (isImageFile(rel)) return 'image'
+return 'code'
 }
-
-/** One empty workbench task. */
 function newTaskRecord(name) {
-  return { id: nextTaskId(), name: String(name || '任务'), tabs: [], activeId: null }
+return { id: nextTaskId(), name: String(name || '任务'), tabs: [], activeId: null }
 }
-
-/** Live tab record from a stored/live tab; content is always lazy-loaded. */
 function normalizeTab(raw) {
-  if (!raw || typeof raw.path !== 'string' || !raw.path) return null
-  const path = raw.path.replace(/\\/g, '/').replace(/^\/+/, '')
-  const kind = kindForPath(path)
-  // The standalone tool persisted `jumpLine` / `scrollTop`; the plugin's own
-  // older flat store used `line` / `scroll`. Accept both.
-  const line = Math.max(0, Number(raw.line != null ? raw.line : raw.jumpLine) || 0)
-  return {
-    id: `${kind}:${path}`,
-    kind,
-    path,
-    content: null,
-    lang: kind === 'code' ? langForPath(path) : kind === 'html' ? 'xml' : '',
-    line,
-    branch: typeof raw.branch === 'string' ? raw.branch : '',
-    commit: typeof raw.commit === 'string' ? raw.commit : '',
-    htmlMode: raw.htmlMode === 'source' ? 'source' : 'render',
-    navFrom: !!raw.navFrom,
-    error: '',
-    scroll: Math.max(0, Number(raw.scroll != null ? raw.scroll : raw.scrollTop) || 0),
-  }
+if (!raw || typeof raw.path !== 'string' || !raw.path) return null
+const path = raw.path.replace(/\\/g, '/').replace(/^\/+/, '')
+const kind = kindForPath(path)
+const line = Math.max(0, Number(raw.line != null ? raw.line : raw.jumpLine) || 0)
+return {
+id: `${kind}:${path}`,
+kind,
+path,
+content: null,
+lang: kind === 'code' ? langForPath(path) : kind === 'html' ? 'xml' : '',
+line,
+branch: typeof raw.branch === 'string' ? raw.branch : '',
+commit: typeof raw.commit === 'string' ? raw.commit : '',
+htmlMode: raw.htmlMode === 'source' ? 'source' : 'render',
+navFrom: !!raw.navFrom,
+error: '',
+scroll: Math.max(0, Number(raw.scroll != null ? raw.scroll : raw.scrollTop) || 0),
 }
-
-/**
- * Clamp a persisted workbench blob into the live shape. Returns null when there
- * is nothing usable (caller then creates the default 任务).
- */
+}
 function normalizeWorkbench(data) {
-  if (!data || !Array.isArray(data.tasks) || !data.tasks.length) return null
-  const tasks = []
-  for (const rawTask of data.tasks) {
-    if (!rawTask || typeof rawTask !== 'object') continue
-    const tabs = []
-    for (const rawTab of Array.isArray(rawTask.tabs) ? rawTask.tabs : []) {
-      const tab = normalizeTab(rawTab)
-      if (!tab) continue
-      // The same path may only appear once per task (id is kind:path).
-      if (tabs.some((item) => item.id === tab.id)) continue
-      // The reading position belongs to the TASK: the tab id is shared between
-      // tasks, so a task-scoped key keeps the two positions apart.
-      if (tab.scroll > 0) rememberTabScroll(tabScrollKey(rawTask.id, tab.id), tab.scroll)
-      tabs.push(tab)
-    }
-    const wantedActive = rawTask.activeId != null ? rawTask.activeId : rawTask.activeTabId
-    const activeId = tabs.some((tab) => tab.id === wantedActive)
-      ? wantedActive
-      : tabs.length
-        ? tabs[tabs.length - 1].id
-        : null
-    tasks.push({
-      id: typeof rawTask.id === 'string' && rawTask.id ? rawTask.id : nextTaskId(),
-      name: String(rawTask.name || '任务'),
-      tabs,
-      activeId,
-    })
-  }
-  if (!tasks.length) return null
-  seedTaskSeq(tasks)
-  const activeTaskId = tasks.some((task) => task.id === data.activeTaskId) ? data.activeTaskId : tasks[0].id
-  return { tasks, activeTaskId }
+if (!data || !Array.isArray(data.tasks) || !data.tasks.length) return null
+const tasks = []
+for (const rawTask of data.tasks) {
+if (!rawTask || typeof rawTask !== 'object') continue
+const tabs = []
+for (const rawTab of Array.isArray(rawTask.tabs) ? rawTask.tabs : []) {
+const tab = normalizeTab(rawTab)
+if (!tab) continue
+if (tabs.some((item) => item.id === tab.id)) continue
+if (tab.scroll > 0) rememberTabScroll(tabScrollKey(rawTask.id, tab.id), tab.scroll)
+tabs.push(tab)
 }
-
-/**
- * Restore the workbench for a project. Migration order:
- *   1. the project's own new key;
- *   2. (全部 only) the earlier flat plugin tab set mdreader.plugin.tabs.v1.
- * The standalone tool's mdreader.tasks.v1 has the same shape as our stored state,
- * so normalizeWorkbench accepts it directly as the legacy key for 全部.
- */
+const wantedActive = rawTask.activeId != null ? rawTask.activeId : rawTask.activeTabId
+const activeId = tabs.some((tab) => tab.id === wantedActive)
+? wantedActive
+: tabs.length
+? tabs[tabs.length - 1].id
+: null
+tasks.push({
+id: typeof rawTask.id === 'string' && rawTask.id ? rawTask.id : nextTaskId(),
+name: String(rawTask.name || '任务'),
+tabs,
+activeId,
+})
+}
+if (!tasks.length) return null
+seedTaskSeq(tasks)
+const activeTaskId = tasks.some((task) => task.id === data.activeTaskId) ? data.activeTaskId : tasks[0].id
+return { tasks, activeTaskId }
+}
 function restoreWorkbench(project) {
-  const stored = normalizeWorkbench(readStoredJson(taskStoreKey(project), null))
-  if (stored) return stored
-  if (project) return null
-  const legacy = readStoredJson('mdreader.plugin.tasks.v1', null)
-  const migrated = normalizeWorkbench(legacy)
-  if (migrated) return migrated
-  const flat = readStoredJson(TABS_KEY, null)
-  if (flat && Array.isArray(flat.tabs) && flat.tabs.length) {
-    const task = newTaskRecord('默认')
-    const tabs = []
-    for (const rawTab of flat.tabs) {
-      const tab = normalizeTab(rawTab)
-      if (tab && !tabs.some((item) => item.id === tab.id)) tabs.push(tab)
-    }
-    if (!tabs.length) return null
-    task.tabs = tabs
-    task.activeId = tabs.some((tab) => tab.id === flat.activeId)
-      ? flat.activeId
-      : tabs[tabs.length - 1].id
-    return { tasks: [task], activeTaskId: task.id }
-  }
-  return null
+const stored = normalizeWorkbench(readStoredJson(taskStoreKey(project), null))
+if (stored) return stored
+if (project) return null
+const legacy = readStoredJson('mdreader.plugin.tasks.v1', null)
+const migrated = normalizeWorkbench(legacy)
+if (migrated) return migrated
+const flat = readStoredJson(TABS_KEY, null)
+if (flat && Array.isArray(flat.tabs) && flat.tabs.length) {
+const task = newTaskRecord('默认')
+const tabs = []
+for (const rawTab of flat.tabs) {
+const tab = normalizeTab(rawTab)
+if (tab && !tabs.some((item) => item.id === tab.id)) tabs.push(tab)
 }
-
-/** Persist one project's workbench (ordered tasks, per-task tabs + active tab). */
+if (!tabs.length) return null
+task.tabs = tabs
+task.activeId = tabs.some((tab) => tab.id === flat.activeId)
+? flat.activeId
+: tabs[tabs.length - 1].id
+return { tasks: [task], activeTaskId: task.id }
+}
+return null
+}
 function saveWorkbench(project, workbench) {
-  if (!workbench || !Array.isArray(workbench.tasks)) return
-  const data = {
-    activeTaskId: workbench.activeTaskId,
-    tasks: workbench.tasks.map((task) => ({
-      id: task.id,
-      name: task.name,
-      activeId: task.activeId,
-      tabs: task.tabs.map((tab) => ({
-        path: tab.path,
-        line: tab.line || 0,
-        branch: tab.branch || '',
-        commit: tab.commit || '',
-        htmlMode: tab.htmlMode === 'source' ? 'source' : 'render',
-        navFrom: !!tab.navFrom,
-        scroll: recallTabScroll(tabScrollKey(task.id, tab.id)) || tab.scroll || 0,
-      })),
-    })),
-  }
-  writeStoredJson(taskStoreKey(project), data)
+if (!workbench || !Array.isArray(workbench.tasks)) return
+const data = {
+activeTaskId: workbench.activeTaskId,
+tasks: workbench.tasks.map((task) => ({
+id: task.id,
+name: task.name,
+activeId: task.activeId,
+tabs: task.tabs.map((tab) => ({
+path: tab.path,
+line: tab.line || 0,
+branch: tab.branch || '',
+commit: tab.commit || '',
+htmlMode: tab.htmlMode === 'source' ? 'source' : 'render',
+navFrom: !!tab.navFrom,
+scroll: recallTabScroll(tabScrollKey(task.id, tab.id)) || tab.scroll || 0,
+})),
+})),
 }
-
-/* -------------------------------------------------------------- chip row UI */
-
+writeStoredJson(taskStoreKey(project), data)
+}
 const WORKBENCH_CSS = `
 .mdr-taskbar{display:flex;align-items:center;gap:4px;flex:0 0 auto;min-height:33px;padding:3px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);overflow-x:auto;overflow-y:hidden}
 .mdr-task-chip{display:inline-flex;align-items:center;gap:5px;height:24px;max-width:230px;padding:0 6px 0 8px;border:1px solid transparent;border-left:2px solid transparent;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;cursor:pointer;white-space:nowrap;user-select:none;flex:0 0 auto}
@@ -7114,174 +5597,125 @@ const WORKBENCH_CSS = `
 .mdr-task-rename{height:22px;width:132px;padding:0 6px;border:1px solid var(--dsw-alias-brand-primary);border-radius:4px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;outline:none}
 .mdr-task-tip{flex:0 0 auto;font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap;opacity:.75}
 `
-
-/**
- * The 工作台 chip row above the tree: ordered task chips, ＋ 新建, 双击重命名,
- * × 删除, HTML5 drag & drop reorder (drag must not start from the × button).
- */
 function WorkbenchBar(props) {
-  const { tasks, activeTaskId, onSwitch, onNew, onRename, onDelete, onReorder } = props
-  const [editingId, setEditingId] = React.useState('')
-  const [draft, setDraft] = React.useState('')
-  const [draggingId, setDraggingId] = React.useState('')
-  const dragRef = React.useRef('')
-  const inputRef = React.useRef(null)
-
-  React.useEffect(() => {
-    if (editingId && inputRef.current) {
-      inputRef.current.focus()
-      if (typeof inputRef.current.select === 'function') inputRef.current.select()
-    }
-  }, [editingId])
-
-  const beginRename = (task) => {
-    setEditingId(task.id)
-    setDraft(task.name)
-  }
-  const commitRename = () => {
-    if (editingId) onRename(editingId, draft)
-    setEditingId('')
-  }
-  const cancelRename = () => setEditingId('')
-
-  const chips = tasks.map((task) => {
-    const editing = editingId === task.id
-    return h(
-      'div',
-      {
-        key: task.id,
-        className:
-          'mdr-task-chip' + (task.id === activeTaskId ? ' on' : '') + (draggingId === task.id ? ' dragging' : ''),
-        title: editing ? '' : `${task.name}（${task.tabs.length} 个标签页）· 双击重命名 · 拖拽调整顺序`,
-        draggable: !editing,
-        onClick: () => {
-          if (!editing && task.id !== activeTaskId) onSwitch(task.id)
-        },
-        onDoubleClick: (event) => {
-          if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) return
-          beginRename(task)
-        },
-        onDragStart: (event) => {
-          if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) {
-            event.preventDefault()
-            return
-          }
-          dragRef.current = task.id
-          setDraggingId(task.id)
-          try {
-            event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData('text/plain', task.id)
-          } catch {
-            // some webviews expose a read-only dataTransfer; drag still reorders
-          }
-        },
-        onDragOver: (event) => {
-          if (!dragRef.current || dragRef.current === task.id) return
-          event.preventDefault()
-          try {
-            event.dataTransfer.dropEffect = 'move'
-          } catch {
-            // ignore
-          }
-          const rect = event.currentTarget.getBoundingClientRect()
-          const before = event.clientX < rect.left + rect.width / 2
-          onReorder(dragRef.current, task.id, before)
-        },
-        onDrop: (event) => event.preventDefault(),
-        onDragEnd: () => {
-          dragRef.current = ''
-          setDraggingId('')
-        },
-      },
-      editing
-        ? h('input', {
-            ref: inputRef,
-            className: 'mdr-task-rename',
-            value: draft,
-            onClick: (event) => event.stopPropagation(),
-            onChange: (event) => setDraft(event.target.value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter') {
-                event.preventDefault()
-                commitRename()
-              } else if (event.key === 'Escape') {
-                event.preventDefault()
-                cancelRename()
-              }
-            },
-            onBlur: commitRename,
-          })
-        : h('span', { className: 'mdr-task-name' }, task.name),
-      h('span', { className: 'mdr-task-count' }, String(task.tabs.length)),
-      !editing
-        ? h(
-            'span',
-            {
-              className: 'mdr-task-del',
-              title: '删除任务（其中的标签页一并关闭，不影响磁盘文件）',
-              onClick: (event) => {
-                event.stopPropagation()
-                onDelete(task.id)
-              },
-            },
-            '×',
-          )
-        : null,
-    )
-  })
-
-  return h(
-    'div',
-    { className: 'mdr-taskbar' },
-    h('style', { dangerouslySetInnerHTML: { __html: WORKBENCH_CSS } }),
-    chips,
-    h('span', { className: 'mdr-task-new', title: '新建任务', onClick: onNew }, '＋'),
-    h('span', { className: 'mdr-task-tip' }, '任务 = 一组标签页 · 双击改名'),
-  )
+const { tasks, activeTaskId, onSwitch, onNew, onRename, onDelete, onReorder } = props
+const [editingId, setEditingId] = React.useState('')
+const [draft, setDraft] = React.useState('')
+const [draggingId, setDraggingId] = React.useState('')
+const dragRef = React.useRef('')
+const inputRef = React.useRef(null)
+React.useEffect(() => {
+if (editingId && inputRef.current) {
+inputRef.current.focus()
+if (typeof inputRef.current.select === 'function') inputRef.current.select()
 }
-
+}, [editingId])
+const beginRename = (task) => {
+setEditingId(task.id)
+setDraft(task.name)
+}
+const commitRename = () => {
+if (editingId) onRename(editingId, draft)
+setEditingId('')
+}
+const cancelRename = () => setEditingId('')
+const chips = tasks.map((task) => {
+const editing = editingId === task.id
+return h(
+'div',
+{
+key: task.id,
+className:
+'mdr-task-chip' + (task.id === activeTaskId ? ' on' : '') + (draggingId === task.id ? ' dragging' : ''),
+title: editing ? '' : `${task.name}（${task.tabs.length} 个标签页）· 双击重命名 · 拖拽调整顺序`,
+draggable: !editing,
+onClick: () => {
+if (!editing && task.id !== activeTaskId) onSwitch(task.id)
+},
+onDoubleClick: (event) => {
+if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) return
+beginRename(task)
+},
+onDragStart: (event) => {
+if (event.target && event.target.closest && event.target.closest('.mdr-task-del')) {
+event.preventDefault()
+return
+}
+dragRef.current = task.id
+setDraggingId(task.id)
+try {
+event.dataTransfer.effectAllowed = 'move'
+event.dataTransfer.setData('text/plain', task.id)
+} catch {
+}
+},
+onDragOver: (event) => {
+if (!dragRef.current || dragRef.current === task.id) return
+event.preventDefault()
+try {
+event.dataTransfer.dropEffect = 'move'
+} catch {
+}
+const rect = event.currentTarget.getBoundingClientRect()
+const before = event.clientX < rect.left + rect.width / 2
+onReorder(dragRef.current, task.id, before)
+},
+onDrop: (event) => event.preventDefault(),
+onDragEnd: () => {
+dragRef.current = ''
+setDraggingId('')
+},
+},
+editing
+? h('input', {
+ref: inputRef,
+className: 'mdr-task-rename',
+value: draft,
+onClick: (event) => event.stopPropagation(),
+onChange: (event) => setDraft(event.target.value),
+onKeyDown: (event) => {
+if (event.key === 'Enter') {
+event.preventDefault()
+commitRename()
+} else if (event.key === 'Escape') {
+event.preventDefault()
+cancelRename()
+}
+},
+onBlur: commitRename,
+})
+: h('span', { className: 'mdr-task-name' }, task.name),
+h('span', { className: 'mdr-task-count' }, String(task.tabs.length)),
+!editing
+? h(
+'span',
+{
+className: 'mdr-task-del',
+title: '删除任务（其中的标签页一并关闭，不影响磁盘文件）',
+onClick: (event) => {
+event.stopPropagation()
+onDelete(task.id)
+},
+},
+'×',
+)
+: null,
+)
+})
+return h(
+'div',
+{ className: 'mdr-taskbar' },
+h('style', { dangerouslySetInnerHTML: { __html: WORKBENCH_CSS } }),
+chips,
+h('span', { className: 'mdr-task-new', title: '新建任务', onClick: onNew }, '＋'),
+h('span', { className: 'mdr-task-tip' }, '任务 = 一组标签页 · 双击改名'),
+)
+}
 // ---- 34-html.js ----
-/**
- * HTML / image tab views — owned by the html slice.
- *
- * Contracts (wired by 50-app.js / the workbench slice):
- *   h(HtmlTabView, { tab, onToggleMode, onLocate })
- *     tab = { id, kind:'html', path, content?: string|null, htmlMode:'render'|'source', line:number, error?:string }
- *     · render mode is the DEFAULT: a full-height sandboxed iframe pointing at
- *       /api/html?path=… (the Host rewrites relative resources to /api/raw).
- *       The iframe stays mounted while the user toggles to source mode, so
- *       coming back does not reload the document (scripts / scroll survive).
- *     · source mode lazily fetches /api/code (only when tab.content is null),
- *       renders line numbers + hljs highlight via highlightLineHtml/langForPath
- *       from 20-code.js, and keeps the jumped-to line highlighted persistently.
- *   h(ImageView, { tab, onLocate? })
- *     tab = { id, kind:'image', path }
- *     · one <img> (src derived only from tab.path — never replaced on click)
- *       centered on a checkered stage, letterboxed to fit by default.
- *     · gestures: click toggles 适应 ↔ 100%, wheel / Ctrl+wheel zooms in steps
- *       (25%–800% of fit, anchored at the cursor), double-click resets to fit,
- *       drag pans when the zoomed image overflows; a % badge shows the scale.
- *     · SVG files without intrinsic pixels (viewBox only / width="100%"): the
- *       SVG text is fetched from /api/raw and its viewBox (or numeric
- *       width/height) becomes the intrinsic pixel base, so diagrams open filling
- *       the panel and 100% means the diagram's real pixels; if parsing fails the
- *       base falls back to the measured box (header shows "—" when unmeasurable).
- *     · zoom + scroll are remembered on tab (imgScale/scrollLeft/scrollTop, plus
- *       a module cache) so switching tabs and back keeps the view; error state
- *       with retry; header shows filename (path tooltip) + natural size.
- *
- * All styles are component-local with mdr-html-* / mdr-image-* prefixes; only
- * shared utility classes (.mdr-btn/.mdr-spacer) are reused, none are changed.
- */
-
-/** Same line height as the code view so the source mode looks identical. */
 const HTML_SRC_LINE_H = 20
-/** Above this many lines the source view only paints the viewport (+ buffer). */
 const HTML_SRC_VIRTUAL_THRESHOLD = 800
 const HTML_SRC_BUFFER = 40
-/** Bound the per-line highlight cache for very large documents. */
 const HTML_SRC_HL_CACHE_LIMIT = 8000
-
 const HTML_TAB_CSS = `
 .mdr-html{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
 .mdr-html-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap;row-gap:4px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
@@ -7303,33 +5737,15 @@ const HTML_TAB_CSS = `
 .mdr-html-state{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:44px 16px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
 .mdr-html-state-err{color:var(--dsw-alias-state-error-primary)}
 `
-
-/** Padding around the image inside the stage; the fit math below assumes it. */
 const IMAGE_PAD = 20
-/** Zoom factor is relative to the fit size (1 = fit); gestures clamp to this. */
 const IMAGE_MIN_ZOOM = 0.25
-/**
- * Generous upper cap so a visually tiny image (an SVG with only a viewBox, a
- * 24×24 icon export, …) can still be enlarged to fill / overflow the window.
- * Relative to FIT, not to the tiny natural size.
- */
 const IMAGE_MAX_ZOOM = 8
-/** One wheel notch multiplies the current zoom by this factor. */
 const IMAGE_WHEEL_STEP = 1.2
-/**
- * If the natural size would render smaller than this, the base is derived from
- * the container instead of the (often meaningless) intrinsic pixel size.
- */
 const IMAGE_TINY_FIT = 40
-/** First-paint fallback when the stage cannot be measured yet. */
 const IMAGE_FALLBACK_VIEWPORT = { width: 960, height: 640 }
-/** zoom/scroll memory keyed by tab id, so tab switches keep the view. */
 const imageViewStateCache = new Map()
-/** Parsed intrinsic size (viewBox) per SVG path; avoids refetching on remounts. */
 const svgIntrinsicCache = new Map()
-/** Do not pull gigantic SVG documents just to read their root tag. */
 const SVG_INTRINSIC_MAX_CHARS = 512 * 1024
-
 const IMAGE_TAB_CSS = `
 .mdr-image{display:flex;flex-direction:column;height:100%;min-height:0;min-width:0}
 .mdr-image-head{display:flex;align-items:center;gap:8px;flex:0 0 auto;flex-wrap:wrap;row-gap:4px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);font-size:12px}
@@ -7348,1139 +5764,954 @@ const IMAGE_TAB_CSS = `
 .mdr-image-error{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;background:var(--dsw-alias-bg-overlay);color:var(--dsw-alias-state-error-primary);font-size:12.5px;text-align:center}
 .mdr-image-error-path{color:var(--dsw-alias-label-secondary);font-size:11.5px;word-break:break-all}
 `
-
-/* --------------------------------------------------- image view math ---- */
-
-/** Clamp a zoom factor (relative to fit) into the supported gesture range. */
 function imageClampZoom(value) {
-  const number = Number(value)
-  if (!Number.isFinite(number) || number <= 0) return 1
-  return Math.min(IMAGE_MAX_ZOOM, Math.max(IMAGE_MIN_ZOOM, number))
+const number = Number(value)
+if (!Number.isFinite(number) || number <= 0) return 1
+return Math.min(IMAGE_MAX_ZOOM, Math.max(IMAGE_MIN_ZOOM, number))
 }
-
-/** One wheel notch in (`direction` > 0) or out, clamped to the range. */
 function imageStepZoom(zoom, direction) {
-  const base = imageClampZoom(zoom)
-  return imageClampZoom(direction > 0 ? base * IMAGE_WHEEL_STEP : base / IMAGE_WHEEL_STEP)
+const base = imageClampZoom(zoom)
+return imageClampZoom(direction > 0 ? base * IMAGE_WHEEL_STEP : base / IMAGE_WHEEL_STEP)
 }
-
-/**
- * Scale that makes the natural size fit the stage content box. By default it
- * never upscales (the original `max-width/max-height` behaviour); `allowUpscale`
- * is used for tiny / dimensionless images so they fill the panel.
- */
 function imageFitScale(naturalWidth, naturalHeight, viewWidth, viewHeight, padding, allowUpscale) {
-  const width = Number(naturalWidth) || 0
-  const height = Number(naturalHeight) || 0
-  const pad = Math.max(0, Number(padding) || 0)
-  const availableWidth = (Number(viewWidth) || 0) - pad * 2
-  const availableHeight = (Number(viewHeight) || 0) - pad * 2
-  if (!(width > 0) || !(height > 0) || !(availableWidth > 0) || !(availableHeight > 0)) return 1
-  const fit = Math.min(availableWidth / width, availableHeight / height)
-  return allowUpscale ? fit : Math.min(1, fit)
+const width = Number(naturalWidth) || 0
+const height = Number(naturalHeight) || 0
+const pad = Math.max(0, Number(padding) || 0)
+const availableWidth = (Number(viewWidth) || 0) - pad * 2
+const availableHeight = (Number(viewHeight) || 0) - pad * 2
+if (!(width > 0) || !(height > 0) || !(availableWidth > 0) || !(availableHeight > 0)) return 1
+const fit = Math.min(availableWidth / width, availableHeight / height)
+return allowUpscale ? fit : Math.min(1, fit)
 }
-
-/**
- * Fit decision for a measured image: normal images keep 1:1 as "fit"; images
- * whose fit box would be tiny (SVG viewBox-only exports, icon-sized assets) are
- * scaled up to the container so the default view actually fills the panel.
- */
 function imageFitPlan(naturalWidth, naturalHeight, viewWidth, viewHeight, padding, threshold) {
-  const width = Number(naturalWidth) || 0
-  const height = Number(naturalHeight) || 0
-  if (!(width > 0) || !(height > 0)) return { scale: 1, tiny: true }
-  const tight = imageFitScale(width, height, viewWidth, viewHeight, padding, false)
-  const limit = Number(threshold) > 0 ? Number(threshold) : IMAGE_TINY_FIT
-  const tiny = Math.max(width * tight, height * tight) < limit
-  return { scale: imageFitScale(width, height, viewWidth, viewHeight, padding, tiny), tiny }
+const width = Number(naturalWidth) || 0
+const height = Number(naturalHeight) || 0
+if (!(width > 0) || !(height > 0)) return { scale: 1, tiny: true }
+const tight = imageFitScale(width, height, viewWidth, viewHeight, padding, false)
+const limit = Number(threshold) > 0 ? Number(threshold) : IMAGE_TINY_FIT
+const tiny = Math.max(width * tight, height * tight) < limit
+return { scale: imageFitScale(width, height, viewWidth, viewHeight, padding, tiny), tiny }
 }
-
-/**
- * Virtual "natural" box for images without a usable intrinsic size: fill the
- * stage preserving the rendered aspect ratio (or a sane 1:1 square).
- */
 function imageVirtualBase(viewWidth, viewHeight, padding, ratio) {
-  const pad = Math.max(0, Number(padding) || 0)
-  const availableWidth = Math.max(1, (Number(viewWidth) || 0) - pad * 2)
-  const availableHeight = Math.max(1, (Number(viewHeight) || 0) - pad * 2)
-  const aspect = Number(ratio) > 0 ? Number(ratio) : 1
-  let width = availableWidth
-  let height = availableWidth / aspect
-  if (height > availableHeight) {
-    height = availableHeight
-    width = availableHeight * aspect
-  }
-  return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) }
+const pad = Math.max(0, Number(padding) || 0)
+const availableWidth = Math.max(1, (Number(viewWidth) || 0) - pad * 2)
+const availableHeight = Math.max(1, (Number(viewHeight) || 0) - pad * 2)
+const aspect = Number(ratio) > 0 ? Number(ratio) : 1
+let width = availableWidth
+let height = availableWidth / aspect
+if (height > availableHeight) {
+height = availableHeight
+width = availableHeight * aspect
 }
-
-/** Explicit rendered size for the current zoom; null until a base size is known. */
+return { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) }
+}
 function imageDisplaySize(naturalWidth, naturalHeight, fitScale, zoom) {
-  const width = Number(naturalWidth) || 0
-  const height = Number(naturalHeight) || 0
-  if (!(width > 0) || !(height > 0)) return null
-  const scale = (Number(fitScale) || 1) * imageClampZoom(zoom)
-  return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) }
+const width = Number(naturalWidth) || 0
+const height = Number(naturalHeight) || 0
+if (!(width > 0) || !(height > 0)) return null
+const scale = (Number(fitScale) || 1) * imageClampZoom(zoom)
+return { width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) }
 }
-
-/** Header percentage: displayed size relative to the natural (or virtual) base. */
 function imageZoomPercent(zoom, fitScale) {
-  return Math.max(1, Math.round(imageClampZoom(zoom) * (Number(fitScale) || 1) * 100))
+return Math.max(1, Math.round(imageClampZoom(zoom) * (Number(fitScale) || 1) * 100))
 }
-
-/** Pan scroll offsets from drag deltas (dragging right shows content to the left). */
 function imagePanScroll(startLeft, startTop, deltaX, deltaY) {
-  return {
-    left: Math.max(0, (Number(startLeft) || 0) - (Number(deltaX) || 0)),
-    top: Math.max(0, (Number(startTop) || 0) - (Number(deltaY) || 0)),
-  }
+return {
+left: Math.max(0, (Number(startLeft) || 0) - (Number(deltaX) || 0)),
+top: Math.max(0, (Number(startTop) || 0) - (Number(deltaY) || 0)),
 }
-
-/** Scroll offsets that keep the point under the cursor stable while zooming. */
+}
 function imageAnchoredScroll(scrollLeft, scrollTop, pointerX, pointerY, ratio) {
-  const factor = Number(ratio) > 0 ? Number(ratio) : 1
-  const px = Number(pointerX) || 0
-  const py = Number(pointerY) || 0
-  return {
-    left: Math.max(0, ((Number(scrollLeft) || 0) + px) * factor - px),
-    top: Math.max(0, ((Number(scrollTop) || 0) + py) * factor - py),
-  }
+const factor = Number(ratio) > 0 ? Number(ratio) : 1
+const px = Number(pointerX) || 0
+const py = Number(pointerY) || 0
+return {
+left: Math.max(0, ((Number(scrollLeft) || 0) + px) * factor - px),
+top: Math.max(0, ((Number(scrollTop) || 0) + py) * factor - py),
 }
-
-/** Numeric SVG length ("1265.67", "1265.67px"); percentages / keywords -> 0. */
+}
 function svgLengthValue(raw) {
-  const text = String(raw == null ? '' : raw).trim()
-  const match = /^(-?\d*\.?\d+(?:e[-+]?\d+)?)\s*(?:px)?$/i.exec(text)
-  if (!match) return 0
-  const value = Number(match[1])
-  return Number.isFinite(value) && value > 0 ? value : 0
+const text = String(raw == null ? '' : raw).trim()
+const match = /^(-?\d*\.?\d+(?:e[-+]?\d+)?)\s*(?:px)?$/i.exec(text)
+if (!match) return 0
+const value = Number(match[1])
+return Number.isFinite(value) && value > 0 ? value : 0
 }
-
-/**
- * Intrinsic size of an SVG document from its root element.
- *
- * `naturalWidth` is useless for common exports (`width="100%"`, viewBox only),
- * so the raw SVG text is parsed instead: viewBox wins (that is the diagram's
- * real pixel size), numeric width/height attributes are the fallback. Both are
- * ignored when percentage-based. Pure function — unit-tested with fixtures.
- */
 function parseSvgIntrinsic(source) {
-  try {
-    const text = String(source == null ? '' : source)
-    if (!text) return null
-    const tagMatch = /<svg\b[^>]*>/i.exec(text)
-    if (!tagMatch) return null
-    const tag = tagMatch[0]
-    const viewBoxMatch = /\bviewBox\s*=\s*(["'])([\s\S]*?)\1/i.exec(tag)
-    if (viewBoxMatch) {
-      const parts = String(viewBoxMatch[2]).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)
-      if (parts && parts.length >= 4) {
-        const width = Number(parts[2])
-        const height = Number(parts[3])
-        if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
-          return { width, height, source: 'viewBox' }
-        }
-      }
-    }
-    const widthMatch = /\bwidth\s*=\s*(["'])([^"']*)\1/i.exec(tag)
-    const heightMatch = /\bheight\s*=\s*(["'])([^"']*)\1/i.exec(tag)
-    const width = widthMatch ? svgLengthValue(widthMatch[2]) : 0
-    const height = heightMatch ? svgLengthValue(heightMatch[2]) : 0
-    if (width > 0 && height > 0) return { width, height, source: 'size' }
-  } catch {
-    // malformed document: caller falls back to the measured box
-  }
-  return null
+try {
+const text = String(source == null ? '' : source)
+if (!text) return null
+const tagMatch = /<svg\b[^>]*>/i.exec(text)
+if (!tagMatch) return null
+const tag = tagMatch[0]
+const viewBoxMatch = /\bviewBox\s*=\s*(["'])([\s\S]*?)\1/i.exec(tag)
+if (viewBoxMatch) {
+const parts = String(viewBoxMatch[2]).match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi)
+if (parts && parts.length >= 4) {
+const width = Number(parts[2])
+const height = Number(parts[3])
+if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) {
+return { width, height, source: 'viewBox' }
 }
-
-/** Fetch + parse an SVG's intrinsic size; resolves to null when unmeasurable. */
+}
+}
+const widthMatch = /\bwidth\s*=\s*(["'])([^"']*)\1/i.exec(tag)
+const heightMatch = /\bheight\s*=\s*(["'])([^"']*)\1/i.exec(tag)
+const width = widthMatch ? svgLengthValue(widthMatch[2]) : 0
+const height = heightMatch ? svgLengthValue(heightMatch[2]) : 0
+if (width > 0 && height > 0) return { width, height, source: 'size' }
+} catch {
+}
+return null
+}
 function loadSvgIntrinsic(path) {
-  const key = String(path || '')
-  if (!key) return Promise.resolve(null)
-  const cached = svgIntrinsicCache.get(key)
-  if (cached) return Promise.resolve(cached)
-  if (typeof fetch !== 'function') return Promise.resolve(null)
-  return fetch(`${ROUTE}/api/raw?path=${encodeURIComponent(key)}`)
-    .then((response) => (response && response.ok ? response.text() : ''))
-    .then((text) => {
-      if (typeof text !== 'string' || !text || text.length > SVG_INTRINSIC_MAX_CHARS) return null
-      const parsed = parseSvgIntrinsic(text)
-      if (parsed) svgIntrinsicCache.set(key, parsed)
-      return parsed
-    })
-    .catch(() => null)
+const key = String(path || '')
+if (!key) return Promise.resolve(null)
+const cached = svgIntrinsicCache.get(key)
+if (cached) return Promise.resolve(cached)
+if (typeof fetch !== 'function') return Promise.resolve(null)
+return fetch(`${ROUTE}/api/raw?path=${encodeURIComponent(key)}`)
+.then((response) => (response && response.ok ? response.text() : ''))
+.then((text) => {
+if (typeof text !== 'string' || !text || text.length > SVG_INTRINSIC_MAX_CHARS) return null
+const parsed = parseSvgIntrinsic(text)
+if (parsed) svgIntrinsicCache.set(key, parsed)
+return parsed
+})
+.catch(() => null)
 }
-
-/** Whether a path should be probed for SVG viewBox dimensions. */
 function isSvgPath(path) {
-  return /\.svg$/i.test(String(path || ''))
+return /\.svg$/i.test(String(path || ''))
 }
-
-/** Restored zoom factor for a (re)mounted image tab. */
 function imageInitialZoom(tab, stateKey) {
-  const cached = stateKey ? imageViewStateCache.get(stateKey) : null
-  if (cached && Number.isFinite(cached.zoom)) return imageClampZoom(cached.zoom)
-  const stored = tab ? Number(tab.imgScale) : NaN
-  if (Number.isFinite(stored) && stored > 0) return imageClampZoom(stored)
-  return 1
+const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+if (cached && Number.isFinite(cached.zoom)) return imageClampZoom(cached.zoom)
+const stored = tab ? Number(tab.imgScale) : NaN
+if (Number.isFinite(stored) && stored > 0) return imageClampZoom(stored)
+return 1
 }
-
-/** Legacy `tab.imgZoom` (boolean "100%") resolved once the fit scale is known. */
 function imageInitialNaturalZoom(tab, stateKey) {
-  const cached = stateKey ? imageViewStateCache.get(stateKey) : null
-  if (cached && Number.isFinite(cached.zoom)) return false
-  const stored = tab ? Number(tab.imgScale) : NaN
-  if (Number.isFinite(stored) && stored > 0) return false
-  return !!(tab && tab.imgZoom)
+const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+if (cached && Number.isFinite(cached.zoom)) return false
+const stored = tab ? Number(tab.imgScale) : NaN
+if (Number.isFinite(stored) && stored > 0) return false
+return !!(tab && tab.imgZoom)
 }
-
-
-/** Exception text for the inline source-mode error row. */
 function htmlTabErrorText(error) {
-  if (!error) return ''
-  const message = error && error.message != null ? error.message : error
-  const text = String(message == null ? '' : message).trim()
-  return text || '未知错误'
+if (!error) return ''
+const message = error && error.message != null ? error.message : error
+const text = String(message == null ? '' : message).trim()
+return text || '未知错误'
 }
-
-/** langForPath lives in 20-code.js; tolerate it being renamed while slices land. */
 function htmlTabLangOf(path) {
-  try {
-    if (typeof langForPath === 'function') return String(langForPath(path) || '')
-  } catch {
-    // fall through
-  }
-  return ''
+try {
+if (typeof langForPath === 'function') return String(langForPath(path) || '')
+} catch {
 }
-
-/** highlightLineHtml lives in 20-code.js; fall back to escaped text if absent. */
+return ''
+}
 function htmlTabHighlightLine(text, lang) {
-  const value = String(text == null ? '' : text)
-  try {
-    if (typeof highlightLineHtml === 'function') {
-      const html = highlightLineHtml(value, lang)
-      if (typeof html === 'string' && html) return html
-    }
-  } catch {
-    // fall through to the safe fallback
-  }
-  return escapeHtml(value) || ' '
+const value = String(text == null ? '' : text)
+try {
+if (typeof highlightLineHtml === 'function') {
+const html = highlightLineHtml(value, lang)
+if (typeof html === 'string' && html) return html
 }
-
-/**
- * Line-numbered, highlighted HTML source. Virtualized above
- * HTML_SRC_VIRTUAL_THRESHOLD rows; the jumped line keeps its .hit class for as
- * long as tab.line points at it (no timer here — that is the whole point).
- */
+} catch {
+}
+return escapeHtml(value) || ' '
+}
 function HtmlSourceView(props) {
-  const { content, lang, hitLine } = props || {}
-  const text = String(content == null ? '' : content)
-  const lines = React.useMemo(() => text.split('\n'), [text])
-  const total = lines.length
-  const virtual = total > HTML_SRC_VIRTUAL_THRESHOLD
-  const scrollerRef = React.useRef(null)
-  const [windowState, setWindowState] = React.useState({ first: 0, last: 0 })
-  const cacheRef = React.useRef({ lines, lang, map: new Map() })
-  if (cacheRef.current.lines !== lines || cacheRef.current.lang !== lang) {
-    cacheRef.current = { lines, lang, map: new Map() }
-  }
-
-  const htmlAt = (index) => {
-    const cache = cacheRef.current
-    if (!cache.map.has(index)) {
-      if (cache.map.size > HTML_SRC_HL_CACHE_LIMIT) cache.map.clear()
-      cache.map.set(index, htmlTabHighlightLine(lines[index] == null ? '' : String(lines[index]), lang))
-    }
-    return cache.map.get(index)
-  }
-
-  const paintWindow = () => {
-    const el = scrollerRef.current
-    if (!el || !virtual) return
-    const first = Math.max(0, Math.floor(el.scrollTop / HTML_SRC_LINE_H) - HTML_SRC_BUFFER)
-    const last = Math.min(total, Math.ceil((el.scrollTop + el.clientHeight) / HTML_SRC_LINE_H) + HTML_SRC_BUFFER)
-    setWindowState((previous) => (previous.first === first && previous.last === last ? previous : { first, last }))
-  }
-
-  // The jump target wins over everything and must stay highlighted; it is
-  // re-applied whenever a late /api/code response changes the row count.
-  React.useEffect(() => {
-    const el = scrollerRef.current
-    if (!el) return
-    const line = Number(hitLine) > 0 ? Math.min(Number(hitLine), total) : 0
-    if (line > 0) el.scrollTop = Math.max(0, (line - 1) * HTML_SRC_LINE_H - Math.floor(el.clientHeight * 0.3))
-    else el.scrollTop = 0
-    paintWindow()
-    // total/text changes when the lazily fetched source arrives.
-  }, [hitLine, total, virtual, text])
-
-  const virtualFrom = virtual ? windowState.first : 0
-  // First paint happens before the scroll container can be measured; fall back
-  // to a viewport-sized window instead of painting zero rows.
-  const virtualTo = virtual
-    ? windowState.last > windowState.first
-      ? windowState.last
-      : Math.min(total, HTML_SRC_BUFFER * 4 + 80)
-    : total
-  const rowNodes = []
-  for (let index = virtualFrom; index < virtualTo; index += 1) {
-    const lineNo = index + 1
-    rowNodes.push(
-      h(
-        'div',
-        {
-          key: index,
-          className: 'mdr-html-row' + (lineNo === Number(hitLine) ? ' hit' : ''),
-          'data-line': lineNo,
-          style: virtual ? { top: index * HTML_SRC_LINE_H } : undefined,
-        },
-        h('span', { className: 'mdr-html-no' }, lineNo),
-        h('span', { className: 'mdr-html-code', dangerouslySetInnerHTML: { __html: htmlAt(index) } }),
-      ),
-    )
-  }
-
-  return h(
-    'div',
-    {
-      className: 'mdr-html-source' + (virtual ? ' mdr-html-src-virtual' : ''),
-      ref: scrollerRef,
-      onScroll: paintWindow,
-    },
-    h(
-      'div',
-      { className: 'mdr-html-rows', style: virtual ? { height: total * HTML_SRC_LINE_H + 'px' } : undefined },
-      rowNodes,
-    ),
-  )
+const { content, lang, hitLine } = props || {}
+const text = String(content == null ? '' : content)
+const lines = React.useMemo(() => text.split('\n'), [text])
+const total = lines.length
+const virtual = total > HTML_SRC_VIRTUAL_THRESHOLD
+const scrollerRef = React.useRef(null)
+const [windowState, setWindowState] = React.useState({ first: 0, last: 0 })
+const cacheRef = React.useRef({ lines, lang, map: new Map() })
+if (cacheRef.current.lines !== lines || cacheRef.current.lang !== lang) {
+cacheRef.current = { lines, lang, map: new Map() }
 }
-
+const htmlAt = (index) => {
+const cache = cacheRef.current
+if (!cache.map.has(index)) {
+if (cache.map.size > HTML_SRC_HL_CACHE_LIMIT) cache.map.clear()
+cache.map.set(index, htmlTabHighlightLine(lines[index] == null ? '' : String(lines[index]), lang))
+}
+return cache.map.get(index)
+}
+const paintWindow = () => {
+const el = scrollerRef.current
+if (!el || !virtual) return
+const first = Math.max(0, Math.floor(el.scrollTop / HTML_SRC_LINE_H) - HTML_SRC_BUFFER)
+const last = Math.min(total, Math.ceil((el.scrollTop + el.clientHeight) / HTML_SRC_LINE_H) + HTML_SRC_BUFFER)
+setWindowState((previous) => (previous.first === first && previous.last === last ? previous : { first, last }))
+}
+React.useEffect(() => {
+const el = scrollerRef.current
+if (!el) return
+const line = Number(hitLine) > 0 ? Math.min(Number(hitLine), total) : 0
+if (line > 0) el.scrollTop = Math.max(0, (line - 1) * HTML_SRC_LINE_H - Math.floor(el.clientHeight * 0.3))
+else el.scrollTop = 0
+paintWindow()
+}, [hitLine, total, virtual, text])
+const virtualFrom = virtual ? windowState.first : 0
+const virtualTo = virtual
+? windowState.last > windowState.first
+? windowState.last
+: Math.min(total, HTML_SRC_BUFFER * 4 + 80)
+: total
+const rowNodes = []
+for (let index = virtualFrom; index < virtualTo; index += 1) {
+const lineNo = index + 1
+rowNodes.push(
+h(
+'div',
+{
+key: index,
+className: 'mdr-html-row' + (lineNo === Number(hitLine) ? ' hit' : ''),
+'data-line': lineNo,
+style: virtual ? { top: index * HTML_SRC_LINE_H } : undefined,
+},
+h('span', { className: 'mdr-html-no' }, lineNo),
+h('span', { className: 'mdr-html-code', dangerouslySetInnerHTML: { __html: htmlAt(index) } }),
+),
+)
+}
+return h(
+'div',
+{
+className: 'mdr-html-source' + (virtual ? ' mdr-html-src-virtual' : ''),
+ref: scrollerRef,
+onScroll: paintWindow,
+},
+h(
+'div',
+{ className: 'mdr-html-rows', style: virtual ? { height: total * HTML_SRC_LINE_H + 'px' } : undefined },
+rowNodes,
+),
+)
+}
 function HtmlTabView(props) {
-  const { tab, onToggleMode, onLocate } = props || {}
-  const path = String((tab && tab.path) || '')
-  const line = Number(tab && tab.line) || 0
-  const tabContent = tab ? tab.content : null
-  const tabError = tab && tab.error ? String(tab.error) : ''
-  const [fallbackMode, setFallbackMode] = React.useState('')
-  const [remote, setRemote] = React.useState({ status: 'idle', content: '', error: '' })
-  const [retryNonce, setRetryNonce] = React.useState(0)
-  const [frameLoaded, setFrameLoaded] = React.useState(false)
-
-  // htmlMode is owned/persisted by the App (50-app.js); keep a local fallback so
-  // the component still works if onToggleMode is not wired yet.
-  const mode = fallbackMode || (tab && tab.htmlMode === 'source' ? 'source' : 'render')
-  const frameSrc = path ? `${ROUTE}/api/html?path=${encodeURIComponent(path)}` : ''
-  const toggle = () => {
-    const next = mode === 'render' ? 'source' : 'render'
-    if (typeof onToggleMode === 'function') onToggleMode(next)
-    else setFallbackMode(next)
-  }
-  const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
-
-  React.useEffect(() => {
-    setFrameLoaded(false)
-  }, [path])
-
-  // Lazily pull the source text only when the user actually opens source mode
-  // and the App has not loaded it already. Never fetch in render mode.
-  React.useEffect(() => {
-    if (mode !== 'source') return undefined
-    if (tabContent != null) return undefined
-    if (!path) return undefined
-    let alive = true
-    setRemote({ status: 'loading', content: '', error: '' })
-    fetchJson('/api/code', { path })
-      .then((payload) => {
-        if (!alive) return
-        setRemote({
-          status: 'ready',
-          content: String(payload && payload.content != null ? payload.content : ''),
-          error: '',
-        })
-      })
-      .catch((error) => {
-        if (!alive) return
-        setRemote({ status: 'error', content: '', error: htmlTabErrorText(error) })
-      })
-    return () => {
-      alive = false
-    }
-  }, [mode, path, tabContent, retryNonce])
-
-  const sourceContent = tabContent != null ? String(tabContent) : remote.content
-  const sourceReady = tabContent != null || remote.status === 'ready'
-  const sourceError = tabContent != null ? '' : remote.status === 'error' ? remote.error : ''
-  const badge = mode === 'render' ? '渲染预览' : '源码视图'
-  const lang = (tab && typeof tab.lang === 'string' && tab.lang) || htmlTabLangOf(path)
-
-  const head = h(
-    'div',
-    { className: 'mdr-html-head' },
-    h('span', { className: 'mdr-html-icon' }, h(Icons.code, { size: 14 })),
-    h('span', { className: 'mdr-html-path', title: path }, path || '（未选择文件）'),
-    h('span', { className: 'mdr-html-badge' }, line > 0 ? `${badge} · 第 ${line} 行` : badge),
-    h('span', { className: 'mdr-spacer' }),
-    locate
-      ? h(
-          'button',
-          { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' },
-          '定位',
-        )
-      : null,
-    h(
-      'button',
-      { type: 'button', className: 'mdr-btn', onClick: toggle, title: '切换 渲染视图 / 源码视图' },
-      mode === 'render' ? '源码视图' : '渲染视图',
-    ),
-  )
-
-  // Keep the iframe mounted in source mode (hidden): toggling back must not
-  // reload the document and lose its scripts / scroll position.
-  const frameNode = h(
-    'div',
-    { className: 'mdr-html-render', style: mode === 'render' ? undefined : { display: 'none' } },
-    frameSrc
-      ? h('iframe', {
-          className: 'mdr-html-frame',
-          src: frameSrc,
-          sandbox: 'allow-scripts allow-modals allow-popups allow-top-navigation-by-user-activation',
-          title: 'HTML 渲染预览',
-          onLoad: () => setFrameLoaded(true),
-        })
-      : h('div', { className: 'mdr-html-state' }, '无法预览：缺少文件路径'),
-    mode === 'render' && !frameLoaded ? h('div', { className: 'mdr-html-frame-note' }, '正在渲染预览…') : null,
-  )
-
-  let sourceNode = null
-  if (mode === 'source') {
-    if (sourceError) {
-      sourceNode = h(
-        'div',
-        { className: 'mdr-html-state mdr-html-state-err' },
-        h('div', null, `读取 HTML 源码失败：${sourceError}`),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn', onClick: () => setRetryNonce((value) => value + 1) },
-          '重试',
-        ),
-      )
-    } else if (sourceReady) {
-      sourceNode = h(HtmlSourceView, { content: sourceContent, lang, hitLine: line })
-    } else {
-      sourceNode = h(
-        'div',
-        { className: 'mdr-html-state' },
-        remote.status === 'loading' ? '正在读取 HTML 源码…' : '正在准备源码视图…',
-      )
-    }
-  }
-
-  return h(
-    'div',
-    { className: 'mdr-html' },
-    h('style', { dangerouslySetInnerHTML: { __html: HTML_TAB_CSS } }),
-    head,
-    tabError ? h('div', { className: 'mdr-html-note' }, tabError) : null,
-    h('div', { className: 'mdr-html-body' }, frameNode, sourceNode),
-  )
+const { tab, onToggleMode, onLocate } = props || {}
+const path = String((tab && tab.path) || '')
+const line = Number(tab && tab.line) || 0
+const tabContent = tab ? tab.content : null
+const tabError = tab && tab.error ? String(tab.error) : ''
+const [fallbackMode, setFallbackMode] = React.useState('')
+const [remote, setRemote] = React.useState({ status: 'idle', content: '', error: '' })
+const [retryNonce, setRetryNonce] = React.useState(0)
+const [frameLoaded, setFrameLoaded] = React.useState(false)
+const mode = fallbackMode || (tab && tab.htmlMode === 'source' ? 'source' : 'render')
+const frameSrc = path ? `${ROUTE}/api/html?path=${encodeURIComponent(path)}` : ''
+const toggle = () => {
+const next = mode === 'render' ? 'source' : 'render'
+if (typeof onToggleMode === 'function') onToggleMode(next)
+else setFallbackMode(next)
 }
-
+const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
+React.useEffect(() => {
+setFrameLoaded(false)
+}, [path])
+React.useEffect(() => {
+if (mode !== 'source') return undefined
+if (tabContent != null) return undefined
+if (!path) return undefined
+let alive = true
+setRemote({ status: 'loading', content: '', error: '' })
+fetchJson('/api/code', { path })
+.then((payload) => {
+if (!alive) return
+setRemote({
+status: 'ready',
+content: String(payload && payload.content != null ? payload.content : ''),
+error: '',
+})
+})
+.catch((error) => {
+if (!alive) return
+setRemote({ status: 'error', content: '', error: htmlTabErrorText(error) })
+})
+return () => {
+alive = false
+}
+}, [mode, path, tabContent, retryNonce])
+const sourceContent = tabContent != null ? String(tabContent) : remote.content
+const sourceReady = tabContent != null || remote.status === 'ready'
+const sourceError = tabContent != null ? '' : remote.status === 'error' ? remote.error : ''
+const badge = mode === 'render' ? '渲染预览' : '源码视图'
+const lang = (tab && typeof tab.lang === 'string' && tab.lang) || htmlTabLangOf(path)
+const head = h(
+'div',
+{ className: 'mdr-html-head' },
+h('span', { className: 'mdr-html-icon' }, h(Icons.code, { size: 14 })),
+h('span', { className: 'mdr-html-path', title: path }, path || '（未选择文件）'),
+h('span', { className: 'mdr-html-badge' }, line > 0 ? `${badge} · 第 ${line} 行` : badge),
+h('span', { className: 'mdr-spacer' }),
+locate
+? h(
+'button',
+{ type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' },
+'定位',
+)
+: null,
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', onClick: toggle, title: '切换 渲染视图 / 源码视图' },
+mode === 'render' ? '源码视图' : '渲染视图',
+),
+)
+const frameNode = h(
+'div',
+{ className: 'mdr-html-render', style: mode === 'render' ? undefined : { display: 'none' } },
+frameSrc
+? h('iframe', {
+className: 'mdr-html-frame',
+src: frameSrc,
+sandbox: 'allow-scripts allow-modals allow-popups allow-top-navigation-by-user-activation',
+title: 'HTML 渲染预览',
+onLoad: () => setFrameLoaded(true),
+})
+: h('div', { className: 'mdr-html-state' }, '无法预览：缺少文件路径'),
+mode === 'render' && !frameLoaded ? h('div', { className: 'mdr-html-frame-note' }, '正在渲染预览…') : null,
+)
+let sourceNode = null
+if (mode === 'source') {
+if (sourceError) {
+sourceNode = h(
+'div',
+{ className: 'mdr-html-state mdr-html-state-err' },
+h('div', null, `读取 HTML 源码失败：${sourceError}`),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', onClick: () => setRetryNonce((value) => value + 1) },
+'重试',
+),
+)
+} else if (sourceReady) {
+sourceNode = h(HtmlSourceView, { content: sourceContent, lang, hitLine: line })
+} else {
+sourceNode = h(
+'div',
+{ className: 'mdr-html-state' },
+remote.status === 'loading' ? '正在读取 HTML 源码…' : '正在准备源码视图…',
+)
+}
+}
+return h(
+'div',
+{ className: 'mdr-html' },
+h('style', { dangerouslySetInnerHTML: { __html: HTML_TAB_CSS } }),
+head,
+tabError ? h('div', { className: 'mdr-html-note' }, tabError) : null,
+h('div', { className: 'mdr-html-body' }, frameNode, sourceNode),
+)
+}
 function ImageView(props) {
-  const { tab, onLocate } = props || {}
-  const path = String((tab && tab.path) || '')
-  const name = path.split('/').pop() || path || '图片'
-  const stateKey = tab && tab.id ? String(tab.id) : path
-  const src = path ? `${ROUTE}/api/raw?path=${encodeURIComponent(path)}` : ''
-  const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
-
-  const [natural, setNatural] = React.useState(null)
-  // Intrinsic dimensions parsed out of the SVG source (viewBox / numeric
-  // width+height): naturalWidth is 0 for common `width="100%"` exports.
-  const [svgIntrinsic, setSvgIntrinsic] = React.useState(null)
-  // Aspect ratio measured from the rendered box when the file has no intrinsic
-  // pixel size (SVG with only viewBox / width="100%"); 0 = unknown.
-  const [renderedRatio, setRenderedRatio] = React.useState(0)
-  const [viewport, setViewport] = React.useState(null)
-  const [zoom, setZoom] = React.useState(() => imageInitialZoom(tab, stateKey))
-  const [loaded, setLoaded] = React.useState(false)
-  const [error, setError] = React.useState('')
-  const [retry, setRetry] = React.useState(0)
-  const [dragging, setDragging] = React.useState(false)
-  const stageRef = React.useRef(null)
-  const panRef = React.useRef(null)
-  const panCleanupRef = React.useRef(null)
-  const suppressClickRef = React.useRef(false)
-  const clickTimerRef = React.useRef(0)
-  const pendingScrollRef = React.useRef(null)
-  const restoredRef = React.useRef(false)
-  const intrinsicRef = React.useRef(null)
-  const zoomRef = React.useRef(zoom)
-  zoomRef.current = zoom
-  const viewportRef = React.useRef(viewport)
-  viewportRef.current = viewport
-  const sizedRef = React.useRef(false)
-  const legacyNaturalRef = React.useRef(imageInitialNaturalZoom(tab, stateKey))
-  const applyZoomRef = React.useRef(null)
-
-  // Wheel / pan / resize listeners must not capture stale state; the memory
-  // lives on the tab (mutable, like the original) plus a module-level cache so
-  // an App re-render or a tab switch cannot reset the view.
-  const persistState = (nextZoom, scroll) => {
-    if (!stateKey) return
-    const entry = imageViewStateCache.get(stateKey) || {}
-    if (Number.isFinite(nextZoom)) entry.zoom = nextZoom
-    if (scroll) {
-      entry.scrollLeft = scroll.left
-      entry.scrollTop = scroll.top
-    }
-    imageViewStateCache.set(stateKey, entry)
-    if (tab && typeof tab === 'object') {
-      if (Number.isFinite(nextZoom)) {
-        tab.imgScale = nextZoom
-        tab.imgZoom = Math.abs(nextZoom - 1) > 0.001
-      }
-      if (scroll) {
-        tab.scrollLeft = scroll.left
-        tab.scrollTop = scroll.top
-      }
-    }
-  }
-
-  // The stage size drives the fit scale; observe it (ResizeObserver + window
-  // resize) so panel resizes never leave the image at a stale size.
-  React.useEffect(() => {
-    const stage = stageRef.current
-    if (!stage) return undefined
-    const measure = () => {
-      const width = Number(stage.clientWidth) || 0
-      const height = Number(stage.clientHeight) || 0
-      setViewport((previous) => (previous && previous.width === width && previous.height === height ? previous : { width, height }))
-    }
-    measure()
-    let observer = null
-    if (typeof ResizeObserver === 'function') {
-      observer = new ResizeObserver(measure)
-      observer.observe(stage)
-    }
-    if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
-    return () => {
-      if (observer) observer.disconnect()
-      if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
-    }
-  }, [path])
-
-  React.useEffect(() => {
-    setNatural(null)
-    setRenderedRatio(0)
-    setLoaded(false)
-    setError('')
-    restoredRef.current = false
-  }, [path])
-
-  // SVG sizing: the raster naturalWidth is often 0 for diagrams exported with
-  // width="100%" / only a viewBox, so read the document text (same origin) and
-  // use the viewBox — or numeric width/height — as the intrinsic pixel size.
-  // Fetching never touches the <img> src, so the preview cannot blank out.
-  React.useEffect(() => {
-    let alive = true
-    if (!isSvgPath(path)) {
-      setSvgIntrinsic(null)
-      return () => {
-        alive = false
-      }
-    }
-    const cached = svgIntrinsicCache.get(path)
-    if (cached) {
-      setSvgIntrinsic(cached)
-      return () => {
-        alive = false
-      }
-    }
-    setSvgIntrinsic(null)
-    loadSvgIntrinsic(path).then((parsed) => {
-      if (alive && parsed) setSvgIntrinsic(parsed)
-    })
-    return () => {
-      alive = false
-    }
-  }, [path])
-
-  React.useEffect(
-    () => () => {
-      if (clickTimerRef.current) clearTimeout(clickTimerRef.current)
-      if (panCleanupRef.current) panCleanupRef.current()
-    },
-    [],
-  )
-
-  const viewWidth = viewport && viewport.width > 0 ? viewport.width : IMAGE_FALLBACK_VIEWPORT.width
-  const viewHeight = viewport && viewport.height > 0 ? viewport.height : IMAGE_FALLBACK_VIEWPORT.height
-  // Parsed SVG viewBox beats raster naturalWidth (which is 0/small for
-  // `width="100%"` exports); non-SVG images keep the naturalWidth behaviour.
-  const intrinsic =
-    svgIntrinsic && svgIntrinsic.width > 0 && svgIntrinsic.height > 0
-      ? svgIntrinsic
-      : natural && natural.width > 0 && natural.height > 0
-        ? natural
-        : null
-  intrinsicRef.current = intrinsic
-  const plan = intrinsic
-    ? imageFitPlan(intrinsic.width, intrinsic.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
-    : null
-  const fitScale = plan ? plan.scale : 1
-  // No intrinsic size (or a tiny SVG export whose fit box would be a speck):
-  // derive the base from the container so the default view fills the panel.
-  const base = intrinsic || imageVirtualBase(viewWidth, viewHeight, IMAGE_PAD, renderedRatio)
-  const display = intrinsic || loaded ? imageDisplaySize(base.width, base.height, fitScale, zoom) : null
-  const percent = intrinsic ? imageZoomPercent(zoom, fitScale) : Math.round(imageClampZoom(zoom) * 100)
-  const atFit = Math.abs(zoom - 1) < 0.001
-  sizedRef.current = !!display
-  const canPan = !!display && (display.width > viewWidth - IMAGE_PAD * 2 || display.height > viewHeight - IMAGE_PAD * 2)
-
-  // Restore the previous zoom (100% legacy) and scroll once the size is known.
-  React.useEffect(() => {
-    if (!legacyNaturalRef.current || !natural) return
-    legacyNaturalRef.current = false
-    const targetPlan = imageFitPlan(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
-    const scale = targetPlan.scale
-    if (scale > 0 && Math.abs(scale - 1) > 0.01 && applyZoomRef.current) applyZoomRef.current(1 / scale)
-  }, [natural, viewWidth, viewHeight])
-
-  React.useEffect(() => {
-    if (restoredRef.current || !display) return
-    restoredRef.current = true
-    const stage = stageRef.current
-    if (!stage) return
-    const cached = stateKey ? imageViewStateCache.get(stateKey) : null
-    const left = cached && Number.isFinite(cached.scrollLeft) ? cached.scrollLeft : Number(tab && tab.scrollLeft) || 0
-    const top = cached && Number.isFinite(cached.scrollTop) ? cached.scrollTop : Number(tab && tab.scrollTop) || 0
-    if (left > 0) stage.scrollLeft = left
-    if (top > 0) stage.scrollTop = top
-  }, [display && display.width, display && display.height, stateKey, tab])
-
-  React.useEffect(() => {
-    const stage = stageRef.current
-    const pending = pendingScrollRef.current
-    if (!stage || !pending) return
-    pendingScrollRef.current = null
-    stage.scrollLeft = pending.left
-    stage.scrollTop = pending.top
-  }, [zoom])
-
-  React.useEffect(() => {
-    const stage = stageRef.current
-    if (!stage || typeof stage.addEventListener !== 'function') return undefined
-    const onWheel = (event) => {
-      if (!sizedRef.current) return
-      const delta = Number(event.deltaY) || 0
-      if (!delta) return
-      if (typeof event.preventDefault === 'function') event.preventDefault()
-      const factor = delta < 0 ? IMAGE_WHEEL_STEP : 1 / IMAGE_WHEEL_STEP
-      if (applyZoomRef.current) {
-        applyZoomRef.current(imageClampZoom(zoomRef.current * factor), {
-          clientX: Number(event.clientX) || 0,
-          clientY: Number(event.clientY) || 0,
-        })
-      }
-    }
-    stage.addEventListener('wheel', onWheel, { passive: false })
-    return () => {
-      if (typeof stage.removeEventListener === 'function') stage.removeEventListener('wheel', onWheel)
-    }
-  }, [path])
-
-  /** Fit scale measured from the live stage box (falls back to the state viewport). */
-  const currentFitScale = () => {
-    const stage = stageRef.current
-    const width = stage && stage.clientWidth ? stage.clientWidth : viewportRef.current && viewportRef.current.width ? viewportRef.current.width : IMAGE_FALLBACK_VIEWPORT.width
-    const height = stage && stage.clientHeight ? stage.clientHeight : viewportRef.current && viewportRef.current.height ? viewportRef.current.height : IMAGE_FALLBACK_VIEWPORT.height
-    const size = intrinsicRef.current
-    if (!size || !(size.width > 0) || !(size.height > 0)) return 1
-    const plan = imageFitPlan(size.width, size.height, width, height, IMAGE_PAD, IMAGE_TINY_FIT)
-    return plan.scale
-  }
-
-  /** Zoom change; keeps the point under `anchor` stable, then re-applies scroll. */
-  const applyZoom = (nextValue, anchor) => {
-    const next = imageClampZoom(nextValue)
-    const current = imageClampZoom(zoomRef.current)
-    if (Math.abs(next - current) < 0.001) return
-    const stage = stageRef.current
-    if (anchor && stage) {
-      const rect = typeof stage.getBoundingClientRect === 'function' ? stage.getBoundingClientRect() : null
-      if (rect) {
-        pendingScrollRef.current = imageAnchoredScroll(
-          stage.scrollLeft,
-          stage.scrollTop,
-          Number(anchor.clientX) - rect.left,
-          Number(anchor.clientY) - rect.top,
-          next / current,
-        )
-      }
-    }
-    zoomRef.current = next
-    setZoom(next)
-    persistState(next)
-  }
-  applyZoomRef.current = applyZoom
-
-  const toggleZoom = () => {
-    const base = imageClampZoom(zoomRef.current)
-    if (Math.abs(base - 1) < 0.001) {
-      // "100%": natural pixels when the size is known (clamped to the generous
-      // range); for a dimensionless SVG every zoom step is relative to fit.
-      const scale = currentFitScale()
-      applyZoom(scale > 0 && scale < 1 ? 1 / scale : 2)
-    } else {
-      applyZoom(1)
-    }
-  }
-
-  const onImageClick = () => {
-    // A drag that actually moved must not also toggle the zoom.
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false
-      return
-    }
-    if (clickTimerRef.current) return
-    clickTimerRef.current = setTimeout(() => {
-      clickTimerRef.current = 0
-      toggleZoom()
-    }, 180)
-  }
-
-  const onImageDoubleClick = () => {
-    if (clickTimerRef.current) {
-      clearTimeout(clickTimerRef.current)
-      clickTimerRef.current = 0
-    }
-    suppressClickRef.current = false
-    applyZoom(1)
-  }
-
-  const onImageLoad = (event) => {
-    setError('')
-    setLoaded(true)
-    const image = event && event.target
-    if (!image) return
-    const width = Number(image.naturalWidth) || 0
-    const height = Number(image.naturalHeight) || 0
-    if (width > 0 && height > 0) {
-      setNatural({ width, height })
-      setRenderedRatio(0)
-      // SVG exported with width="100%" can lay out 0×0 before we force a size.
-      if (typeof image.style === 'object' && (!image.clientWidth || !image.clientHeight)) {
-        image.style.width = `${width}px`
-        image.style.height = `${height}px`
-      }
-      return
-    }
-    // No intrinsic pixel size (viewBox-only SVG): keep the natural size unknown
-    // (header shows "—") and remember the rendered aspect ratio for the
-    // container-derived base, so the image is neither 0×0 nor a tiny speck.
-    setNatural(null)
-    const boxWidth = Number(image.clientWidth) || 0
-    const boxHeight = Number(image.clientHeight) || 0
-    setRenderedRatio(boxWidth > 0 && boxHeight > 0 ? boxWidth / boxHeight : 0)
-  }
-
-  const onImageError = () => {
-    setLoaded(false)
-    setError('图片加载失败：无法读取该文件（可能不是受支持的图片格式）')
-  }
-
-  const onStageScroll = () => {
-    const stage = stageRef.current
-    if (!stage) return
-    persistState(undefined, { left: stage.scrollLeft || 0, top: stage.scrollTop || 0 })
-  }
-
-  const startPan = (event) => {
-    const stage = stageRef.current
-    if (!stage || !display) return
-    if (event && event.button != null && event.button !== 0) return
-    const target = event && event.target
-    const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
-    if (tag === 'BUTTON' || tag === 'INPUT') return
-    const overflowing = stage.scrollWidth > stage.clientWidth + 1 || stage.scrollHeight > stage.clientHeight + 1
-    if (!overflowing) return
-    if (typeof window === 'undefined' || !window.addEventListener) return
-    const pan = {
-      startX: Number(event.clientX) || 0,
-      startY: Number(event.clientY) || 0,
-      left: stage.scrollLeft || 0,
-      top: stage.scrollTop || 0,
-      moved: false,
-    }
-    panRef.current = pan
-    setDragging(true)
-    const onMove = (moveEvent) => {
-      const active = panRef.current
-      if (!active) return
-      const deltaX = (Number(moveEvent.clientX) || 0) - active.startX
-      const deltaY = (Number(moveEvent.clientY) || 0) - active.startY
-      if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) active.moved = true
-      if (!active.moved) return
-      if (typeof moveEvent.preventDefault === 'function') moveEvent.preventDefault()
-      const next = imagePanScroll(active.left, active.top, deltaX, deltaY)
-      stage.scrollLeft = next.left
-      stage.scrollTop = next.top
-      persistState(undefined, next)
-    }
-    const stop = () => {
-      const active = panRef.current
-      panRef.current = null
-      setDragging(false)
-      if (active && active.moved) suppressClickRef.current = true
-      if (panCleanupRef.current === stop) panCleanupRef.current = null
-      if (typeof window !== 'undefined' && window.removeEventListener) {
-        window.removeEventListener('mousemove', onMove)
-        window.removeEventListener('mouseup', stop)
-      }
-    }
-    if (panCleanupRef.current) panCleanupRef.current()
-    panCleanupRef.current = stop
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', stop)
-  }
-
-  const head = h(
-    'div',
-    { className: 'mdr-image-head' },
-    h('span', { className: 'mdr-image-icon' }, h(Icons.image, { size: 14 })),
-    h('span', { className: 'mdr-image-name', title: path || '（未选择图片）' }, name || '图片'),
-    h(
-      'span',
-      {
-        className: 'mdr-image-dims',
-        title: intrinsic ? '图片原始尺寸' : '无法获取原始尺寸（SVG 可能只有 viewBox / width="100%"）',
-      },
-      intrinsic ? `${Math.round(intrinsic.width)}×${Math.round(intrinsic.height)} px` : '—',
-    ),
-    h(
-      'span',
-      {
-        className: 'mdr-image-zoom',
-        title: atFit ? '当前为适应窗口' : `已放大到适应尺寸的 ${Math.round(imageClampZoom(zoom) * 100)}%`,
-      },
-      atFit ? '适应' : `${percent}%`,
-    ),
-    h('span', { className: 'mdr-spacer' }),
-    h('span', { className: 'mdr-image-hint' }, '滚轮缩放 · 拖动平移 · 双击还原'),
-    locate
-      ? h('button', { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' }, '定位')
-      : null,
-  )
-
-  const stageClass =
-    'mdr-image-stage' + (canPan ? ' mdr-image-pannable' : '') + (dragging ? ' mdr-image-dragging' : '')
-
-  return h(
-    'div',
-    { className: 'mdr-image' },
-    h('style', { dangerouslySetInnerHTML: { __html: IMAGE_TAB_CSS } }),
-    head,
-    h(
-      'div',
-      { className: stageClass, ref: stageRef, onMouseDown: startPan, onScroll: onStageScroll },
-      h(
-        'div',
-        { className: 'mdr-image-wrap' },
-        src
-          ? h('img', {
-              key: retry,
-              // The src is derived from tab.path only: zoom/pan/click NEVER
-              // replaces or clears it, so the image can never blank out.
-              className: 'mdr-image-img' + (display ? ' mdr-image-img-sized' : ''),
-              src,
-              alt: name,
-              title: '点击切换 适应 / 100% · 双击还原 · 滚轮缩放 · 拖动平移',
-              draggable: false,
-              style: display ? { width: `${display.width}px`, height: `${display.height}px` } : undefined,
-              onLoad: onImageLoad,
-              onError: onImageError,
-              onClick: onImageClick,
-              onDoubleClick: onImageDoubleClick,
-            })
-          : null,
-      ),
-      !loaded && !error && src ? h('div', { className: 'mdr-image-loading' }, '正在加载图片…') : null,
-      error
-        ? h(
-            'div',
-            { className: 'mdr-image-error' },
-            h('div', null, error),
-            h('div', { className: 'mdr-image-error-path' }, path),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'mdr-btn',
-                onClick: () => {
-                  setError('')
-                  setRetry((value) => value + 1)
-                },
-              },
-              '重试',
-            ),
-          )
-        : null,
-    ),
-  )
+const { tab, onLocate } = props || {}
+const path = String((tab && tab.path) || '')
+const name = path.split('/').pop() || path || '图片'
+const stateKey = tab && tab.id ? String(tab.id) : path
+const src = path ? `${ROUTE}/api/raw?path=${encodeURIComponent(path)}` : ''
+const locate = typeof onLocate === 'function' ? () => onLocate(path) : null
+const [natural, setNatural] = React.useState(null)
+const [svgIntrinsic, setSvgIntrinsic] = React.useState(null)
+const [renderedRatio, setRenderedRatio] = React.useState(0)
+const [viewport, setViewport] = React.useState(null)
+const [zoom, setZoom] = React.useState(() => imageInitialZoom(tab, stateKey))
+const [loaded, setLoaded] = React.useState(false)
+const [error, setError] = React.useState('')
+const [retry, setRetry] = React.useState(0)
+const [dragging, setDragging] = React.useState(false)
+const stageRef = React.useRef(null)
+const panRef = React.useRef(null)
+const panCleanupRef = React.useRef(null)
+const suppressClickRef = React.useRef(false)
+const clickTimerRef = React.useRef(0)
+const pendingScrollRef = React.useRef(null)
+const restoredRef = React.useRef(false)
+const intrinsicRef = React.useRef(null)
+const zoomRef = React.useRef(zoom)
+zoomRef.current = zoom
+const viewportRef = React.useRef(viewport)
+viewportRef.current = viewport
+const sizedRef = React.useRef(false)
+const legacyNaturalRef = React.useRef(imageInitialNaturalZoom(tab, stateKey))
+const applyZoomRef = React.useRef(null)
+const persistState = (nextZoom, scroll) => {
+if (!stateKey) return
+const entry = imageViewStateCache.get(stateKey) || {}
+if (Number.isFinite(nextZoom)) entry.zoom = nextZoom
+if (scroll) {
+entry.scrollLeft = scroll.left
+entry.scrollTop = scroll.top
 }
-
+imageViewStateCache.set(stateKey, entry)
+if (tab && typeof tab === 'object') {
+if (Number.isFinite(nextZoom)) {
+tab.imgScale = nextZoom
+tab.imgZoom = Math.abs(nextZoom - 1) > 0.001
+}
+if (scroll) {
+tab.scrollLeft = scroll.left
+tab.scrollTop = scroll.top
+}
+}
+}
+React.useEffect(() => {
+const stage = stageRef.current
+if (!stage) return undefined
+const measure = () => {
+const width = Number(stage.clientWidth) || 0
+const height = Number(stage.clientHeight) || 0
+setViewport((previous) => (previous && previous.width === width && previous.height === height ? previous : { width, height }))
+}
+measure()
+let observer = null
+if (typeof ResizeObserver === 'function') {
+observer = new ResizeObserver(measure)
+observer.observe(stage)
+}
+if (typeof window !== 'undefined' && window.addEventListener) window.addEventListener('resize', measure)
+return () => {
+if (observer) observer.disconnect()
+if (typeof window !== 'undefined' && window.removeEventListener) window.removeEventListener('resize', measure)
+}
+}, [path])
+React.useEffect(() => {
+setNatural(null)
+setRenderedRatio(0)
+setLoaded(false)
+setError('')
+restoredRef.current = false
+}, [path])
+React.useEffect(() => {
+let alive = true
+if (!isSvgPath(path)) {
+setSvgIntrinsic(null)
+return () => {
+alive = false
+}
+}
+const cached = svgIntrinsicCache.get(path)
+if (cached) {
+setSvgIntrinsic(cached)
+return () => {
+alive = false
+}
+}
+setSvgIntrinsic(null)
+loadSvgIntrinsic(path).then((parsed) => {
+if (alive && parsed) setSvgIntrinsic(parsed)
+})
+return () => {
+alive = false
+}
+}, [path])
+React.useEffect(
+() => () => {
+if (clickTimerRef.current) clearTimeout(clickTimerRef.current)
+if (panCleanupRef.current) panCleanupRef.current()
+},
+[],
+)
+const viewWidth = viewport && viewport.width > 0 ? viewport.width : IMAGE_FALLBACK_VIEWPORT.width
+const viewHeight = viewport && viewport.height > 0 ? viewport.height : IMAGE_FALLBACK_VIEWPORT.height
+const intrinsic =
+svgIntrinsic && svgIntrinsic.width > 0 && svgIntrinsic.height > 0
+? svgIntrinsic
+: natural && natural.width > 0 && natural.height > 0
+? natural
+: null
+intrinsicRef.current = intrinsic
+const plan = intrinsic
+? imageFitPlan(intrinsic.width, intrinsic.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
+: null
+const fitScale = plan ? plan.scale : 1
+const base = intrinsic || imageVirtualBase(viewWidth, viewHeight, IMAGE_PAD, renderedRatio)
+const display = intrinsic || loaded ? imageDisplaySize(base.width, base.height, fitScale, zoom) : null
+const percent = intrinsic ? imageZoomPercent(zoom, fitScale) : Math.round(imageClampZoom(zoom) * 100)
+const atFit = Math.abs(zoom - 1) < 0.001
+sizedRef.current = !!display
+const canPan = !!display && (display.width > viewWidth - IMAGE_PAD * 2 || display.height > viewHeight - IMAGE_PAD * 2)
+React.useEffect(() => {
+if (!legacyNaturalRef.current || !natural) return
+legacyNaturalRef.current = false
+const targetPlan = imageFitPlan(natural.width, natural.height, viewWidth, viewHeight, IMAGE_PAD, IMAGE_TINY_FIT)
+const scale = targetPlan.scale
+if (scale > 0 && Math.abs(scale - 1) > 0.01 && applyZoomRef.current) applyZoomRef.current(1 / scale)
+}, [natural, viewWidth, viewHeight])
+React.useEffect(() => {
+if (restoredRef.current || !display) return
+restoredRef.current = true
+const stage = stageRef.current
+if (!stage) return
+const cached = stateKey ? imageViewStateCache.get(stateKey) : null
+const left = cached && Number.isFinite(cached.scrollLeft) ? cached.scrollLeft : Number(tab && tab.scrollLeft) || 0
+const top = cached && Number.isFinite(cached.scrollTop) ? cached.scrollTop : Number(tab && tab.scrollTop) || 0
+if (left > 0) stage.scrollLeft = left
+if (top > 0) stage.scrollTop = top
+}, [display && display.width, display && display.height, stateKey, tab])
+React.useEffect(() => {
+const stage = stageRef.current
+const pending = pendingScrollRef.current
+if (!stage || !pending) return
+pendingScrollRef.current = null
+stage.scrollLeft = pending.left
+stage.scrollTop = pending.top
+}, [zoom])
+React.useEffect(() => {
+const stage = stageRef.current
+if (!stage || typeof stage.addEventListener !== 'function') return undefined
+const onWheel = (event) => {
+if (!sizedRef.current) return
+const delta = Number(event.deltaY) || 0
+if (!delta) return
+if (typeof event.preventDefault === 'function') event.preventDefault()
+const factor = delta < 0 ? IMAGE_WHEEL_STEP : 1 / IMAGE_WHEEL_STEP
+if (applyZoomRef.current) {
+applyZoomRef.current(imageClampZoom(zoomRef.current * factor), {
+clientX: Number(event.clientX) || 0,
+clientY: Number(event.clientY) || 0,
+})
+}
+}
+stage.addEventListener('wheel', onWheel, { passive: false })
+return () => {
+if (typeof stage.removeEventListener === 'function') stage.removeEventListener('wheel', onWheel)
+}
+}, [path])
+const currentFitScale = () => {
+const stage = stageRef.current
+const width = stage && stage.clientWidth ? stage.clientWidth : viewportRef.current && viewportRef.current.width ? viewportRef.current.width : IMAGE_FALLBACK_VIEWPORT.width
+const height = stage && stage.clientHeight ? stage.clientHeight : viewportRef.current && viewportRef.current.height ? viewportRef.current.height : IMAGE_FALLBACK_VIEWPORT.height
+const size = intrinsicRef.current
+if (!size || !(size.width > 0) || !(size.height > 0)) return 1
+const plan = imageFitPlan(size.width, size.height, width, height, IMAGE_PAD, IMAGE_TINY_FIT)
+return plan.scale
+}
+const applyZoom = (nextValue, anchor) => {
+const next = imageClampZoom(nextValue)
+const current = imageClampZoom(zoomRef.current)
+if (Math.abs(next - current) < 0.001) return
+const stage = stageRef.current
+if (anchor && stage) {
+const rect = typeof stage.getBoundingClientRect === 'function' ? stage.getBoundingClientRect() : null
+if (rect) {
+pendingScrollRef.current = imageAnchoredScroll(
+stage.scrollLeft,
+stage.scrollTop,
+Number(anchor.clientX) - rect.left,
+Number(anchor.clientY) - rect.top,
+next / current,
+)
+}
+}
+zoomRef.current = next
+setZoom(next)
+persistState(next)
+}
+applyZoomRef.current = applyZoom
+const toggleZoom = () => {
+const base = imageClampZoom(zoomRef.current)
+if (Math.abs(base - 1) < 0.001) {
+const scale = currentFitScale()
+applyZoom(scale > 0 && scale < 1 ? 1 / scale : 2)
+} else {
+applyZoom(1)
+}
+}
+const onImageClick = () => {
+if (suppressClickRef.current) {
+suppressClickRef.current = false
+return
+}
+if (clickTimerRef.current) return
+clickTimerRef.current = setTimeout(() => {
+clickTimerRef.current = 0
+toggleZoom()
+}, 180)
+}
+const onImageDoubleClick = () => {
+if (clickTimerRef.current) {
+clearTimeout(clickTimerRef.current)
+clickTimerRef.current = 0
+}
+suppressClickRef.current = false
+applyZoom(1)
+}
+const onImageLoad = (event) => {
+setError('')
+setLoaded(true)
+const image = event && event.target
+if (!image) return
+const width = Number(image.naturalWidth) || 0
+const height = Number(image.naturalHeight) || 0
+if (width > 0 && height > 0) {
+setNatural({ width, height })
+setRenderedRatio(0)
+if (typeof image.style === 'object' && (!image.clientWidth || !image.clientHeight)) {
+image.style.width = `${width}px`
+image.style.height = `${height}px`
+}
+return
+}
+setNatural(null)
+const boxWidth = Number(image.clientWidth) || 0
+const boxHeight = Number(image.clientHeight) || 0
+setRenderedRatio(boxWidth > 0 && boxHeight > 0 ? boxWidth / boxHeight : 0)
+}
+const onImageError = () => {
+setLoaded(false)
+setError('图片加载失败：无法读取该文件（可能不是受支持的图片格式）')
+}
+const onStageScroll = () => {
+const stage = stageRef.current
+if (!stage) return
+persistState(undefined, { left: stage.scrollLeft || 0, top: stage.scrollTop || 0 })
+}
+const startPan = (event) => {
+const stage = stageRef.current
+if (!stage || !display) return
+if (event && event.button != null && event.button !== 0) return
+const target = event && event.target
+const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
+if (tag === 'BUTTON' || tag === 'INPUT') return
+const overflowing = stage.scrollWidth > stage.clientWidth + 1 || stage.scrollHeight > stage.clientHeight + 1
+if (!overflowing) return
+if (typeof window === 'undefined' || !window.addEventListener) return
+const pan = {
+startX: Number(event.clientX) || 0,
+startY: Number(event.clientY) || 0,
+left: stage.scrollLeft || 0,
+top: stage.scrollTop || 0,
+moved: false,
+}
+panRef.current = pan
+setDragging(true)
+const onMove = (moveEvent) => {
+const active = panRef.current
+if (!active) return
+const deltaX = (Number(moveEvent.clientX) || 0) - active.startX
+const deltaY = (Number(moveEvent.clientY) || 0) - active.startY
+if (Math.abs(deltaX) > 3 || Math.abs(deltaY) > 3) active.moved = true
+if (!active.moved) return
+if (typeof moveEvent.preventDefault === 'function') moveEvent.preventDefault()
+const next = imagePanScroll(active.left, active.top, deltaX, deltaY)
+stage.scrollLeft = next.left
+stage.scrollTop = next.top
+persistState(undefined, next)
+}
+const stop = () => {
+const active = panRef.current
+panRef.current = null
+setDragging(false)
+if (active && active.moved) suppressClickRef.current = true
+if (panCleanupRef.current === stop) panCleanupRef.current = null
+if (typeof window !== 'undefined' && window.removeEventListener) {
+window.removeEventListener('mousemove', onMove)
+window.removeEventListener('mouseup', stop)
+}
+}
+if (panCleanupRef.current) panCleanupRef.current()
+panCleanupRef.current = stop
+window.addEventListener('mousemove', onMove)
+window.addEventListener('mouseup', stop)
+}
+const head = h(
+'div',
+{ className: 'mdr-image-head' },
+h('span', { className: 'mdr-image-icon' }, h(Icons.image, { size: 14 })),
+h('span', { className: 'mdr-image-name', title: path || '（未选择图片）' }, name || '图片'),
+h(
+'span',
+{
+className: 'mdr-image-dims',
+title: intrinsic ? '图片原始尺寸' : '无法获取原始尺寸（SVG 可能只有 viewBox / width="100%"）',
+},
+intrinsic ? `${Math.round(intrinsic.width)}×${Math.round(intrinsic.height)} px` : '—',
+),
+h(
+'span',
+{
+className: 'mdr-image-zoom',
+title: atFit ? '当前为适应窗口' : `已放大到适应尺寸的 ${Math.round(imageClampZoom(zoom) * 100)}%`,
+},
+atFit ? '适应' : `${percent}%`,
+),
+h('span', { className: 'mdr-spacer' }),
+h('span', { className: 'mdr-image-hint' }, '滚轮缩放 · 拖动平移 · 双击还原'),
+locate
+? h('button', { type: 'button', className: 'mdr-btn', onClick: locate, title: '在左侧目录树中定位本文件' }, '定位')
+: null,
+)
+const stageClass =
+'mdr-image-stage' + (canPan ? ' mdr-image-pannable' : '') + (dragging ? ' mdr-image-dragging' : '')
+return h(
+'div',
+{ className: 'mdr-image' },
+h('style', { dangerouslySetInnerHTML: { __html: IMAGE_TAB_CSS } }),
+head,
+h(
+'div',
+{ className: stageClass, ref: stageRef, onMouseDown: startPan, onScroll: onStageScroll },
+h(
+'div',
+{ className: 'mdr-image-wrap' },
+src
+? h('img', {
+key: retry,
+className: 'mdr-image-img' + (display ? ' mdr-image-img-sized' : ''),
+src,
+alt: name,
+title: '点击切换 适应 / 100% · 双击还原 · 滚轮缩放 · 拖动平移',
+draggable: false,
+style: display ? { width: `${display.width}px`, height: `${display.height}px` } : undefined,
+onLoad: onImageLoad,
+onError: onImageError,
+onClick: onImageClick,
+onDoubleClick: onImageDoubleClick,
+})
+: null,
+),
+!loaded && !error && src ? h('div', { className: 'mdr-image-loading' }, '正在加载图片…') : null,
+error
+? h(
+'div',
+{ className: 'mdr-image-error' },
+h('div', null, error),
+h('div', { className: 'mdr-image-error-path' }, path),
+h(
+'button',
+{
+type: 'button',
+className: 'mdr-btn',
+onClick: () => {
+setError('')
+setRetry((value) => value + 1)
+},
+},
+'重试',
+),
+)
+: null,
+),
+)
+}
 // ---- 40-tabs.js ----
-/**
- * Tab strip: ordered list of open documents, click to switch, close button,
- * drag to reorder.
- *
- * The drag mechanism is deliberately the SAME as the task chips' one
- * (32-workbench.js `WorkbenchBar`): HTML5 drag & drop, `draggable` on the item,
- * the drag id in a ref, the left/right half of the target decides whether the
- * item lands before or after it, and a `.dragging` class dims the item that is
- * being moved. Copy it verbatim rather than reinventing it.
- */
-
 const TAB_KIND_LABELS = { code: 'code', html: 'html', image: 'img' }
-
-/** Is this event target the tab's close button? (A drag must not start there.) */
 function isTabCloseTarget(target) {
-  if (!target) return false
-  const cls = typeof target.className === 'string' ? target.className : ''
-  if (cls.split(/\s+/).includes('mdr-tab-close')) return true
-  return typeof target.closest === 'function' && !!target.closest('.mdr-tab-close')
+if (!target) return false
+const cls = typeof target.className === 'string' ? target.className : ''
+if (cls.split(/\s+/).includes('mdr-tab-close')) return true
+return typeof target.closest === 'function' && !!target.closest('.mdr-tab-close')
 }
-
 function TabBar(props) {
-  const { tabs, activeId, onActivate, onClose, onReorder } = props
-  const [draggingId, setDraggingId] = React.useState('')
-  const dragRef = React.useRef('')
-
-  const tabsEl = tabs.map((tab) =>
-    h(
-      'div',
-      {
-        key: tab.id,
-        className:
-          'mdr-tab' + (tab.id === activeId ? ' on' : '') + (draggingId === tab.id ? ' dragging' : ''),
-        'data-mdr-path': tab.path,
-        title:
-          tab.path +
-          (tab.branch ? ` @ ${tab.branch}` : '') +
-          (tab.commit ? ` @ ${String(tab.commit).slice(0, 7)}` : '') +
-          (tab.line ? ` · 跳转行 ${tab.line}` : '') +
-          ' · 拖拽可调整顺序',
-        draggable: true,
-        onClick: () => {
-          // A drag must not switch the tab.
-          if (dragRef.current) return
-          onActivate(tab.id)
-        },
-        onDragStart: (event) => {
-          if (isTabCloseTarget(event.target)) {
-            event.preventDefault()
-            return
-          }
-          dragRef.current = tab.id
-          setDraggingId(tab.id)
-          try {
-            event.dataTransfer.effectAllowed = 'move'
-            event.dataTransfer.setData('text/plain', tab.id)
-          } catch {
-            // some webviews expose a read-only dataTransfer; drag still reorders
-          }
-        },
-        onDragOver: (event) => {
-          if (!dragRef.current || dragRef.current === tab.id) return
-          event.preventDefault()
-          try {
-            event.dataTransfer.dropEffect = 'move'
-          } catch {
-            // ignore
-          }
-          const rect = event.currentTarget.getBoundingClientRect()
-          const before = event.clientX < rect.left + rect.width / 2
-          if (typeof onReorder === 'function') onReorder(dragRef.current, tab.id, before)
-        },
-        onDrop: (event) => event.preventDefault(),
-        onDragEnd: () => {
-          dragRef.current = ''
-          setDraggingId('')
-        },
-      },
-      h('span', { className: 'mdr-tab-name' }, tab.path.split('/').pop()),
-      TAB_KIND_LABELS[tab.kind]
-        ? h(
-            'span',
-            {
-              className: 'mdr-tip',
-              style: {
-                fontSize: 10,
-                lineHeight: 1.4,
-                padding: '0 4px',
-                border: '1px solid var(--dsw-alias-border-l1)',
-                borderRadius: 8,
-              },
-            },
-            TAB_KIND_LABELS[tab.kind],
-          )
-        : null,
-      h(
-        'span',
-        {
-          className: 'mdr-tab-close',
-          title: '关闭',
-          onClick: (event) => {
-            event.stopPropagation()
-            onClose(tab.id)
-          },
-        },
-        h(Icons.close, { size: 14 }),
-      ),
-    ),
-  )
-
-  return h(
-    'div',
-    { className: 'mdr-tabbar' },
-    tabs.length === 0 ? h('div', { className: 'mdr-tip', style: { padding: '6px 4px' } }, '未打开文件') : null,
-    tabsEl,
-  )
+const { tabs, activeId, onActivate, onClose, onReorder } = props
+const [draggingId, setDraggingId] = React.useState('')
+const dragRef = React.useRef('')
+const tabsEl = tabs.map((tab) =>
+h(
+'div',
+{
+key: tab.id,
+className:
+'mdr-tab' + (tab.id === activeId ? ' on' : '') + (draggingId === tab.id ? ' dragging' : ''),
+'data-mdr-path': tab.path,
+title:
+tab.path +
+(tab.branch ? ` @ ${tab.branch}` : '') +
+(tab.commit ? ` @ ${String(tab.commit).slice(0, 7)}` : '') +
+(tab.line ? ` · 跳转行 ${tab.line}` : '') +
+' · 拖拽可调整顺序',
+draggable: true,
+onClick: () => {
+if (dragRef.current) return
+onActivate(tab.id)
+},
+onDragStart: (event) => {
+if (isTabCloseTarget(event.target)) {
+event.preventDefault()
+return
 }
-
+dragRef.current = tab.id
+setDraggingId(tab.id)
+try {
+event.dataTransfer.effectAllowed = 'move'
+event.dataTransfer.setData('text/plain', tab.id)
+} catch {
+}
+},
+onDragOver: (event) => {
+if (!dragRef.current || dragRef.current === tab.id) return
+event.preventDefault()
+try {
+event.dataTransfer.dropEffect = 'move'
+} catch {
+}
+const rect = event.currentTarget.getBoundingClientRect()
+const before = event.clientX < rect.left + rect.width / 2
+if (typeof onReorder === 'function') onReorder(dragRef.current, tab.id, before)
+},
+onDrop: (event) => event.preventDefault(),
+onDragEnd: () => {
+dragRef.current = ''
+setDraggingId('')
+},
+},
+h('span', { className: 'mdr-tab-name' }, tab.path.split('/').pop()),
+TAB_KIND_LABELS[tab.kind]
+? h(
+'span',
+{
+className: 'mdr-tip',
+style: {
+fontSize: 10,
+lineHeight: 1.4,
+padding: '0 4px',
+border: '1px solid var(--dsw-alias-border-l1)',
+borderRadius: 8,
+},
+},
+TAB_KIND_LABELS[tab.kind],
+)
+: null,
+h(
+'span',
+{
+className: 'mdr-tab-close',
+title: '关闭',
+onClick: (event) => {
+event.stopPropagation()
+onClose(tab.id)
+},
+},
+h(Icons.close, { size: 14 }),
+),
+),
+)
+return h(
+'div',
+{ className: 'mdr-tabbar' },
+tabs.length === 0 ? h('div', { className: 'mdr-tip', style: { padding: '6px 4px' } }, '未打开文件') : null,
+tabsEl,
+)
+}
 // ---- 45-json.js ----
-/** JSON formatting tool (owned by the search slice). */
-
 const JSON_INDENT = 2
-
-/**
- * Parse JSON and locate the first syntax error as line/column.
- *
- * Chrome's JSON.parse message carries no position (or, on newer versions, a
- * "position N" suffix); Node/Firefox include a position. Prefer the message
- * position and fall back to the hand scanner below.
- */
 function jsonParse(text) {
-  try {
-    return { ok: true, value: JSON.parse(text) }
-  } catch (error) {
-    let line = 1
-    let col = 1
-    const match = /position (\d+)/.exec(String((error && error.message) || ''))
-    if (match) {
-      const pos = parseInt(match[1], 10)
-      const lines = text.slice(0, pos).split('\n')
-      line = lines.length
-      col = lines[lines.length - 1].length + 1
-    } else {
-      const loc = jsonLocateError(text)
-      if (loc) {
-        line = loc.line
-        col = loc.col
-      }
-    }
-    return { ok: false, line, col, message: String((error && error.message) || error) }
-  }
+try {
+return { ok: true, value: JSON.parse(text) }
+} catch (error) {
+let line = 1
+let col = 1
+const match = /position (\d+)/.exec(String((error && error.message) || ''))
+if (match) {
+const pos = parseInt(match[1], 10)
+const lines = text.slice(0, pos).split('\n')
+line = lines.length
+col = lines[lines.length - 1].length + 1
+} else {
+const loc = jsonLocateError(text)
+if (loc) {
+line = loc.line
+col = loc.col
 }
-
-/**
- * Lightweight JSON scanner used when the parse error carries no position.
- * Walks characters tracking string/escape state and a bracket stack and returns
- * the first structural problem; it never calls JSON.parse again.
- */
+}
+return { ok: false, line, col, message: String((error && error.message) || error) }
+}
+}
 function jsonLocateError(text) {
-  let i = 0
-  let line = 1
-  let col = 1
-  const n = text.length
-  const stack = []
-  const adv = () => {
-    if (text[i] === '\n') {
-      line += 1
-      col = 1
-    } else col += 1
-    i += 1
-  }
-  const err = (message) => ({ line, col, message })
-  const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r'
-  const isDigit = (c) => c >= '0' && c <= '9'
-
-  while (i < n) {
-    const ch = text[i]
-    if (isWs(ch)) {
-      adv()
-      continue
-    }
-    if (ch === '"') {
-      const startLine = line
-      const startCol = col
-      adv()
-      let closed = false
-      while (i < n) {
-        const c = text[i]
-        if (c === '\\') {
-          adv()
-          if (i < n) adv()
-          continue
-        }
-        if (c === '"') {
-          adv()
-          closed = true
-          break
-        }
-        if (c === '\n') break // unescaped newline inside a string
-        adv()
-      }
-      if (!closed) return { line: startLine, col: startCol, message: '字符串未闭合' }
-      continue
-    }
-    if (ch === '{' || ch === '[') {
-      stack.push(ch === '{' ? '}' : ']')
-      adv()
-      continue
-    }
-    if (ch === '}' || ch === ']') {
-      const expect = stack.pop()
-      if (expect !== ch) return err(expect ? `意外的 '${ch}'，期望 '${expect}'` : `多余的 '${ch}'`)
-      adv()
-      continue
-    }
-    if (ch === ':') {
-      adv()
-      continue
-    }
-    if (ch === ',') {
-      adv()
-      // trailing comma: [1,2,] / {"a":1,}
-      let j = i
-      while (j < n && isWs(text[j])) j += 1
-      if (text[j] === '}' || text[j] === ']') return { line, col, message: '尾随逗号' }
-      continue
-    }
-    if (isDigit(ch) || ch === '-') {
-      adv()
-      while (i < n && /[0-9.eE+\-]/.test(text[i])) adv()
-      continue
-    }
-    if (text.startsWith('true', i) || text.startsWith('false', i) || text.startsWith('null', i)) {
-      const len = text.startsWith('true', i) ? 4 : text.startsWith('false', i) ? 5 : 4
-      for (let k = 0; k < len; k += 1) adv()
-      continue
-    }
-    return err(`意外的字符 '${ch}'`)
-  }
-  if (stack.length) return { line, col, message: `缺少闭合符 '${stack[stack.length - 1]}'` }
-  return null
+let i = 0
+let line = 1
+let col = 1
+const n = text.length
+const stack = []
+const adv = () => {
+if (text[i] === '\n') {
+line += 1
+col = 1
+} else col += 1
+i += 1
 }
-
+const err = (message) => ({ line, col, message })
+const isWs = (c) => c === ' ' || c === '\t' || c === '\n' || c === '\r'
+const isDigit = (c) => c >= '0' && c <= '9'
+while (i < n) {
+const ch = text[i]
+if (isWs(ch)) {
+adv()
+continue
+}
+if (ch === '"') {
+const startLine = line
+const startCol = col
+adv()
+let closed = false
+while (i < n) {
+const c = text[i]
+if (c === '\\') {
+adv()
+if (i < n) adv()
+continue
+}
+if (c === '"') {
+adv()
+closed = true
+break
+}
+if (c === '\n') break // unescaped newline inside a string
+adv()
+}
+if (!closed) return { line: startLine, col: startCol, message: '字符串未闭合' }
+continue
+}
+if (ch === '{' || ch === '[') {
+stack.push(ch === '{' ? '}' : ']')
+adv()
+continue
+}
+if (ch === '}' || ch === ']') {
+const expect = stack.pop()
+if (expect !== ch) return err(expect ? `意外的 '${ch}'，期望 '${expect}'` : `多余的 '${ch}'`)
+adv()
+continue
+}
+if (ch === ':') {
+adv()
+continue
+}
+if (ch === ',') {
+adv()
+let j = i
+while (j < n && isWs(text[j])) j += 1
+if (text[j] === '}' || text[j] === ']') return { line, col, message: '尾随逗号' }
+continue
+}
+if (isDigit(ch) || ch === '-') {
+adv()
+while (i < n && /[0-9.eE+\-]/.test(text[i])) adv()
+continue
+}
+if (text.startsWith('true', i) || text.startsWith('false', i) || text.startsWith('null', i)) {
+const len = text.startsWith('true', i) ? 4 : text.startsWith('false', i) ? 5 : 4
+for (let k = 0; k < len; k += 1) adv()
+continue
+}
+return err(`意外的字符 '${ch}'`)
+}
+if (stack.length) return { line, col, message: `缺少闭合符 '${stack[stack.length - 1]}'` }
+return null
+}
 function highlightJson(text) {
-  try {
-    if (!window.hljs || typeof window.hljs.highlight !== 'function') return escapeHtml(text)
-    return window.hljs.highlight(text, { language: 'json', ignoreIllegals: true }).value
-  } catch {
-    return escapeHtml(text)
-  }
+try {
+if (!window.hljs || typeof window.hljs.highlight !== 'function') return escapeHtml(text)
+return window.hljs.highlight(text, { language: 'json', ignoreIllegals: true }).value
+} catch {
+return escapeHtml(text)
 }
-
+}
 const JSON_CSS = `
 .mdr-json-panel{width:min(1100px,92vw);height:min(720px,88vh);max-height:88vh}
 .mdr-json-head{gap:8px}
@@ -8501,1658 +6732,1443 @@ const JSON_CSS = `
 .mdr-json-bad{color:var(--dsw-alias-state-error-primary)}
 @media (max-width:720px){.mdr-json-subtitle{display:none}}
 `
-
 function JsonTool(props) {
-  const { onClose } = props
-  const inputRef = React.useRef(null)
-  const outputRef = React.useRef(null)
-  const [source, setSource] = React.useState('')
-  const [output, setOutput] = React.useState(null)
-  const [status, setStatus] = React.useState({ kind: 'info', text: 'Ctrl+Enter 格式化' })
-
-  React.useEffect(() => {
-    const input = inputRef.current
-    if (input && typeof input.focus === 'function') input.focus()
-    return undefined
-  }, [])
-
-  const run = (kind) => {
-    const text = source
-    if (!text.trim()) {
-      setOutput(null)
-      setStatus({ kind: 'bad', text: '输入为空' })
-      return
-    }
-    const parsed = jsonParse(text)
-    if (!parsed.ok) {
-      setOutput({ text: '', html: '', error: `JSON 解析错误：${parsed.message}\n位置：第 ${parsed.line} 行，第 ${parsed.col} 列` })
-      setStatus({ kind: 'bad', text: `解析失败：第 ${parsed.line} 行，第 ${parsed.col} 列` })
-      return
-    }
-    let result
-    try {
-      result = kind === 'minify' ? JSON.stringify(parsed.value) : JSON.stringify(parsed.value, null, JSON_INDENT)
-    } catch (error) {
-      setOutput({ text: '', html: '', error: `序列化失败：${String((error && error.message) || error)}` })
-      setStatus({ kind: 'bad', text: '序列化失败' })
-      return
-    }
-    setOutput({ text: result, html: highlightJson(result), error: '' })
-    setStatus({ kind: 'ok', text: `解析成功（${kind === 'minify' ? '已压缩' : '已格式化'}，${result.length} 字符）` })
-  }
-
-  const selectOutput = () => {
-    const node = outputRef.current
-    if (!node) return false
-    try {
-      const range = document.createRange()
-      range.selectNodeContents(node)
-      const selection = window.getSelection ? window.getSelection() : null
-      if (!selection) return false
-      selection.removeAllRanges()
-      selection.addRange(range)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  const copyOutput = () => {
-    const text = output && output.text
-    if (!text) {
-      setStatus({ kind: 'bad', text: '无输出可复制' })
-      return
-    }
-    // http:// origins have no navigator.clipboard in Chromium: fall back to
-    // selecting the output (and execCommand, which needs a user gesture).
-    const fallback = () => {
-      const selected = selectOutput()
-      let copied = false
-      try {
-        copied = selected && document.execCommand ? document.execCommand('copy') : false
-      } catch {
-        copied = false
-      }
-      if (copied) setStatus({ kind: 'ok', text: '已复制到剪贴板' })
-      else if (selected) setStatus({ kind: 'ok', text: '已选中输出文本，按 Ctrl+C 复制' })
-      else setStatus({ kind: 'bad', text: '复制失败，请手动选择输出文本' })
-    }
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      navigator.clipboard.writeText(text).then(
-        () => setStatus({ kind: 'ok', text: '已复制到剪贴板' }),
-        () => fallback(),
-      )
-    } else {
-      fallback()
-    }
-  }
-
-  const clearAll = () => {
-    setSource('')
-    setOutput(null)
-    setStatus({ kind: 'ok', text: '已清空' })
-    const input = inputRef.current
-    if (input && typeof input.focus === 'function') input.focus()
-  }
-
-  const onInputKeyDown = (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-      event.preventDefault()
-      run('format')
-    }
-  }
-
-  let outputNode
-  if (output == null) {
-    outputNode = h('span', { className: 'mdr-json-placeholder' }, '格式化 / 压缩后的结果会显示在这里')
-  } else if (output.error) {
-    outputNode = h('span', { className: 'mdr-json-error' }, output.error)
-  } else {
-    outputNode = h('pre', { className: 'mdr-json-pre' }, h('code', { className: 'hljs', dangerouslySetInnerHTML: { __html: output.html } }))
-  }
-
-  const statusClass = status.kind === 'ok' ? 'mdr-json-ok' : status.kind === 'bad' ? 'mdr-json-bad' : 'mdr-tip'
-
-  return h(
-    'div',
-    { className: 'mdr-overlay', onClick: onClose },
-    h(
-      'div',
-      {
-        className: 'mdr-panel mdr-json-panel',
-        onClick: (event) => event.stopPropagation(),
-      },
-      h('style', { dangerouslySetInnerHTML: { __html: JSON_CSS } }),
-      h(
-        'div',
-        { className: 'mdr-panel-head mdr-json-head' },
-        h(Icons.code, { size: 14 }),
-        h('span', null, 'JSON 工具'),
-        h('span', { className: 'mdr-json-subtitle mdr-tip' }, '粘贴 JSON → 格式化 / 压缩 / 校验'),
-        h('span', { className: 'mdr-spacer' }),
-        h('button', { type: 'button', className: 'mdr-btn', title: '格式化（2 空格缩进，Ctrl+Enter）', onClick: () => run('format') }, '格式化'),
-        h('button', { type: 'button', className: 'mdr-btn', title: '压缩为单行', onClick: () => run('minify') }, '压缩'),
-        h('button', { type: 'button', className: 'mdr-btn', title: '复制输出结果', onClick: copyOutput }, '复制结果'),
-        h('button', { type: 'button', className: 'mdr-btn', title: '清空输入和输出', onClick: clearAll }, '清空'),
-        h(
-          'button',
-          { type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
-          h(Icons.close, { size: 12 }),
-        ),
-      ),
-      h(
-        'div',
-        { className: 'mdr-json-body' },
-        h(
-          'div',
-          { className: 'mdr-json-col' },
-          h('div', { className: 'mdr-json-label' }, '输入'),
-          h('textarea', {
-            ref: inputRef,
-            className: 'mdr-json-input',
-            value: source,
-            spellCheck: false,
-            autoComplete: 'off',
-            'aria-label': 'JSON 输入',
-            placeholder: '{"key": "value", "list": [1, 2, 3]}',
-            onChange: (event) => setSource(event.target.value),
-            onKeyDown: onInputKeyDown,
-          }),
-        ),
-        h('div', { className: 'mdr-json-split' }),
-        h(
-          'div',
-          { className: 'mdr-json-col' },
-          h('div', { className: 'mdr-json-label' }, '输出'),
-          h('div', { className: 'mdr-json-output', ref: outputRef }, outputNode),
-        ),
-      ),
-      h('div', { className: 'mdr-json-footer' }, h('span', { className: statusClass }, status.text)),
-    ),
-  )
+const { onClose } = props
+const inputRef = React.useRef(null)
+const outputRef = React.useRef(null)
+const [source, setSource] = React.useState('')
+const [output, setOutput] = React.useState(null)
+const [status, setStatus] = React.useState({ kind: 'info', text: 'Ctrl+Enter 格式化' })
+React.useEffect(() => {
+const input = inputRef.current
+if (input && typeof input.focus === 'function') input.focus()
+return undefined
+}, [])
+const run = (kind) => {
+const text = source
+if (!text.trim()) {
+setOutput(null)
+setStatus({ kind: 'bad', text: '输入为空' })
+return
 }
-
+const parsed = jsonParse(text)
+if (!parsed.ok) {
+setOutput({ text: '', html: '', error: `JSON 解析错误：${parsed.message}\n位置：第 ${parsed.line} 行，第 ${parsed.col} 列` })
+setStatus({ kind: 'bad', text: `解析失败：第 ${parsed.line} 行，第 ${parsed.col} 列` })
+return
+}
+let result
+try {
+result = kind === 'minify' ? JSON.stringify(parsed.value) : JSON.stringify(parsed.value, null, JSON_INDENT)
+} catch (error) {
+setOutput({ text: '', html: '', error: `序列化失败：${String((error && error.message) || error)}` })
+setStatus({ kind: 'bad', text: '序列化失败' })
+return
+}
+setOutput({ text: result, html: highlightJson(result), error: '' })
+setStatus({ kind: 'ok', text: `解析成功（${kind === 'minify' ? '已压缩' : '已格式化'}，${result.length} 字符）` })
+}
+const selectOutput = () => {
+const node = outputRef.current
+if (!node) return false
+try {
+const range = document.createRange()
+range.selectNodeContents(node)
+const selection = window.getSelection ? window.getSelection() : null
+if (!selection) return false
+selection.removeAllRanges()
+selection.addRange(range)
+return true
+} catch {
+return false
+}
+}
+const copyOutput = () => {
+const text = output && output.text
+if (!text) {
+setStatus({ kind: 'bad', text: '无输出可复制' })
+return
+}
+const fallback = () => {
+const selected = selectOutput()
+let copied = false
+try {
+copied = selected && document.execCommand ? document.execCommand('copy') : false
+} catch {
+copied = false
+}
+if (copied) setStatus({ kind: 'ok', text: '已复制到剪贴板' })
+else if (selected) setStatus({ kind: 'ok', text: '已选中输出文本，按 Ctrl+C 复制' })
+else setStatus({ kind: 'bad', text: '复制失败，请手动选择输出文本' })
+}
+if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+navigator.clipboard.writeText(text).then(
+() => setStatus({ kind: 'ok', text: '已复制到剪贴板' }),
+() => fallback(),
+)
+} else {
+fallback()
+}
+}
+const clearAll = () => {
+setSource('')
+setOutput(null)
+setStatus({ kind: 'ok', text: '已清空' })
+const input = inputRef.current
+if (input && typeof input.focus === 'function') input.focus()
+}
+const onInputKeyDown = (event) => {
+if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+event.preventDefault()
+run('format')
+}
+}
+let outputNode
+if (output == null) {
+outputNode = h('span', { className: 'mdr-json-placeholder' }, '格式化 / 压缩后的结果会显示在这里')
+} else if (output.error) {
+outputNode = h('span', { className: 'mdr-json-error' }, output.error)
+} else {
+outputNode = h('pre', { className: 'mdr-json-pre' }, h('code', { className: 'hljs', dangerouslySetInnerHTML: { __html: output.html } }))
+}
+const statusClass = status.kind === 'ok' ? 'mdr-json-ok' : status.kind === 'bad' ? 'mdr-json-bad' : 'mdr-tip'
+return h(
+'div',
+{ className: 'mdr-overlay', onClick: onClose },
+h(
+'div',
+{
+className: 'mdr-panel mdr-json-panel',
+onClick: (event) => event.stopPropagation(),
+},
+h('style', { dangerouslySetInnerHTML: { __html: JSON_CSS } }),
+h(
+'div',
+{ className: 'mdr-panel-head mdr-json-head' },
+h(Icons.code, { size: 14 }),
+h('span', null, 'JSON 工具'),
+h('span', { className: 'mdr-json-subtitle mdr-tip' }, '粘贴 JSON → 格式化 / 压缩 / 校验'),
+h('span', { className: 'mdr-spacer' }),
+h('button', { type: 'button', className: 'mdr-btn', title: '格式化（2 空格缩进，Ctrl+Enter）', onClick: () => run('format') }, '格式化'),
+h('button', { type: 'button', className: 'mdr-btn', title: '压缩为单行', onClick: () => run('minify') }, '压缩'),
+h('button', { type: 'button', className: 'mdr-btn', title: '复制输出结果', onClick: copyOutput }, '复制结果'),
+h('button', { type: 'button', className: 'mdr-btn', title: '清空输入和输出', onClick: clearAll }, '清空'),
+h(
+'button',
+{ type: 'button', className: 'mdr-btn', title: '关闭（Esc）', 'aria-label': '关闭', onClick: onClose },
+h(Icons.close, { size: 12 }),
+),
+),
+h(
+'div',
+{ className: 'mdr-json-body' },
+h(
+'div',
+{ className: 'mdr-json-col' },
+h('div', { className: 'mdr-json-label' }, '输入'),
+h('textarea', {
+ref: inputRef,
+className: 'mdr-json-input',
+value: source,
+spellCheck: false,
+autoComplete: 'off',
+'aria-label': 'JSON 输入',
+placeholder: '{"key": "value", "list": [1, 2, 3]}',
+onChange: (event) => setSource(event.target.value),
+onKeyDown: onInputKeyDown,
+}),
+),
+h('div', { className: 'mdr-json-split' }),
+h(
+'div',
+{ className: 'mdr-json-col' },
+h('div', { className: 'mdr-json-label' }, '输出'),
+h('div', { className: 'mdr-json-output', ref: outputRef }, outputNode),
+),
+),
+h('div', { className: 'mdr-json-footer' }, h('span', { className: statusClass }, status.text)),
+),
+)
+}
 // ---- 50-app.js ----
-/** App shell: 项目 → 任务 workbench, tab kinds, nav history, Harness slots. */
-
 const NavBackIcon = svgIcon(['M15 18l-6-6 6-6'])
 const NavFwdIcon = svgIcon(['M9 18l6-6-6-6'])
-
-/**
- * 项目管理 panel (topbar 项目 button, Alt+P). Every workspace root is a 项目;
- * `currentProject` = null is the 全部 view whose tree top level lists the roots.
- * Add/remove go through POST /api/roots { action: 'add' | 'remove', path }.
- */
 function ProjectsPanel(props) {
-  const { meta, current, onSwitch, onAdd, onRemove, onClose } = props
-  const [value, setValue] = React.useState('')
-  const roots = (meta && meta.roots) || []
-  const single = !!(meta && meta.single)
-  const submit = () => {
-    const text = value.trim()
-    if (!text) return
-    onAdd(text)
-    setValue('')
-  }
-  const switchButton = (name, active) =>
-    h(
-      'button',
-      {
-        className: 'mdr-btn' + (active ? ' on' : ''),
-        disabled: active,
-        onClick: (event) => {
-          event.stopPropagation()
-          if (!active) onSwitch(name)
-        },
-      },
-      active ? '当前' : '切换',
-    )
-  return h(
-    'div',
-    { className: 'mdr-roots', style: { width: 430 } },
-    h(
-      'div',
-      { style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
-      h('h3', { style: { margin: 0, flex: 1 } }, '项目管理'),
-      h('span', { className: 'mdr-tip' }, '添加 / 切换 / 移除项目'),
-      h('span', { className: 'mdr-btn', onClick: onClose }, '✕'),
-    ),
-    current
-      ? h(
-          'div',
-          { className: 'mdr-root-row', style: { cursor: 'pointer' }, onClick: () => onSwitch('') },
-          h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '全部项目'),
-          h('span', { className: 'mdr-root-path' }, '目录树顶层聚合显示所有项目'),
-          switchButton('', false),
-        )
-      : null,
-    roots.map((root) =>
-      h(
-        'div',
-        {
-          className: 'mdr-root-row',
-          key: root.path,
-          style: { cursor: current === root.name ? 'default' : 'pointer' },
-          onClick: () => onSwitch(root.name),
-        },
-        h(
-          'span',
-          { style: { flex: '0 0 auto', fontWeight: current === root.name ? 600 : 400, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
-          root.name + (current === root.name ? ' ✓' : ''),
-        ),
-        h('span', { className: 'mdr-root-path', title: root.path }, root.path),
-        switchButton(root.name, current === root.name),
-        h(
-          'button',
-          {
-            className: 'mdr-btn',
-            title: '从工作区移除该项目（不删除磁盘文件；其标签页关闭）',
-            disabled: single && roots.length <= 1,
-            onClick: (event) => {
-              event.stopPropagation()
-              onRemove(root.path)
-            },
-          },
-          '移除',
-        ),
-      ),
-    ),
-    h('input', {
-      value,
-      placeholder: '添加项目：输入根目录绝对路径，回车确认',
-      onChange: (event) => setValue(event.target.value),
-      onKeyDown: (event) => {
-        if (event.key === 'Enter') {
-          event.preventDefault()
-          submit()
-        }
-      },
-    }),
-    h(
-      'div',
-      { className: 'mdr-tip', style: { marginTop: 8, lineHeight: 1.6 } },
-      roots.length > 1
-        ? '目录树顶层跟随当前项目；「全部项目」模式下列表显示所有项目根。'
-        : '当前为单项目模式；添加第二个项目后可在项目管理里切换 / 聚合浏览。',
-    ),
-  )
+const { meta, current, onSwitch, onAdd, onRemove, onClose } = props
+const [value, setValue] = React.useState('')
+const roots = (meta && meta.roots) || []
+const single = !!(meta && meta.single)
+const submit = () => {
+const text = value.trim()
+if (!text) return
+onAdd(text)
+setValue('')
 }
-
+const switchButton = (name, active) =>
+h(
+'button',
+{
+className: 'mdr-btn' + (active ? ' on' : ''),
+disabled: active,
+onClick: (event) => {
+event.stopPropagation()
+if (!active) onSwitch(name)
+},
+},
+active ? '当前' : '切换',
+)
+return h(
+'div',
+{ className: 'mdr-roots', style: { width: 430 } },
+h(
+'div',
+{ style: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 } },
+h('h3', { style: { margin: 0, flex: 1 } }, '项目管理'),
+h('span', { className: 'mdr-tip' }, '添加 / 切换 / 移除项目'),
+h('span', { className: 'mdr-btn', onClick: onClose }, '✕'),
+),
+current
+? h(
+'div',
+{ className: 'mdr-root-row', style: { cursor: 'pointer' }, onClick: () => onSwitch('') },
+h('span', { style: { fontWeight: 600, flex: '0 0 auto' } }, '全部项目'),
+h('span', { className: 'mdr-root-path' }, '目录树顶层聚合显示所有项目'),
+switchButton('', false),
+)
+: null,
+roots.map((root) =>
+h(
+'div',
+{
+className: 'mdr-root-row',
+key: root.path,
+style: { cursor: current === root.name ? 'default' : 'pointer' },
+onClick: () => onSwitch(root.name),
+},
+h(
+'span',
+{ style: { flex: '0 0 auto', fontWeight: current === root.name ? 600 : 400, maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+root.name + (current === root.name ? ' ✓' : ''),
+),
+h('span', { className: 'mdr-root-path', title: root.path }, root.path),
+switchButton(root.name, current === root.name),
+h(
+'button',
+{
+className: 'mdr-btn',
+title: '从工作区移除该项目（不删除磁盘文件；其标签页关闭）',
+disabled: single && roots.length <= 1,
+onClick: (event) => {
+event.stopPropagation()
+onRemove(root.path)
+},
+},
+'移除',
+),
+),
+),
+h('input', {
+value,
+placeholder: '添加项目：输入根目录绝对路径，回车确认',
+onChange: (event) => setValue(event.target.value),
+onKeyDown: (event) => {
+if (event.key === 'Enter') {
+event.preventDefault()
+submit()
+}
+},
+}),
+h(
+'div',
+{ className: 'mdr-tip', style: { marginTop: 8, lineHeight: 1.6 } },
+roots.length > 1
+? '目录树顶层跟随当前项目；「全部项目」模式下列表显示所有项目根。'
+: '当前为单项目模式；添加第二个项目后可在项目管理里切换 / 聚合浏览。',
+),
+)
+}
 function EmptyState(props) {
-  const { meta, currentProject } = props
-  const roots = (meta && meta.roots) || []
-  return h(
-    'div',
-    { className: 'mdr-empty' },
-    h(Icons.doc, { size: 40 }),
-    h('h2', null, 'Markdown Reader'),
-    h('div', null, '左侧目录树选择文档，或在顶栏输入相对路径。'),
-    h(
-      'div',
-      { className: 'mdr-tip' },
-      roots.length
-        ? currentProject
-          ? `当前项目：${currentProject}`
-          : `全部项目：${roots.map((root) => root.name).join(' · ')}`
-        : '尚未打开项目',
-    ),
-  )
+const { meta, currentProject } = props
+const roots = (meta && meta.roots) || []
+return h(
+'div',
+{ className: 'mdr-empty' },
+h(Icons.doc, { size: 40 }),
+h('h2', null, 'Markdown Reader'),
+h('div', null, '左侧目录树选择文档，或在顶栏输入相对路径。'),
+h(
+'div',
+{ className: 'mdr-tip' },
+roots.length
+? currentProject
+? `当前项目：${currentProject}`
+: `全部项目：${roots.map((root) => root.name).join(' · ')}`
+: '尚未打开项目',
+),
+)
 }
-
-/** Git 图 icon (topbar button) — same glyph as the original standalone tool. */
 function GitGraphIcon(props) {
-  const size = (props && props.size) || 14
-  return h(
-    'svg',
-    {
-      width: size,
-      height: size,
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.8,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': true,
-      style: { display: 'block', flex: '0 0 auto' },
-    },
-    h('circle', { cx: 6, cy: 5, r: 3 }),
-    h('circle', { cx: 18, cy: 19, r: 3 }),
-    h('circle', { cx: 6, cy: 19, r: 3 }),
-    h('path', { d: 'M6 8v8M9 5h4a5 5 0 0 1 5 5v6' }),
-  )
+const size = (props && props.size) || 14
+return h(
+'svg',
+{
+width: size,
+height: size,
+viewBox: '0 0 24 24',
+fill: 'none',
+stroke: 'currentColor',
+strokeWidth: 1.8,
+strokeLinecap: 'round',
+strokeLinejoin: 'round',
+'aria-hidden': true,
+style: { display: 'block', flex: '0 0 auto' },
+},
+h('circle', { cx: 6, cy: 5, r: 3 }),
+h('circle', { cx: 18, cy: 19, r: 3 }),
+h('circle', { cx: 6, cy: 19, r: 3 }),
+h('path', { d: 'M6 8v8M9 5h4a5 5 0 0 1 5 5v6' }),
+)
 }
-
-/**
- * Collapse an accidentally doubled multi-root prefix: `X/X/rest` -> `X/rest`.
- *
- * Only in multi-root mode and only when `X` is an actual workspace root — a
- * single-root project legitimately may contain `<dir>/<dir>/…` and must not be
- * rewritten. The old locator prepended the current project to an already
- * prefixed path and persisted the dead `X/X/...` paths into the tree expansion
- * store; the Host now tolerates them but the client also self-heals here.
- */
 function collapseDoubledVtopPrefix(rel, meta) {
-  const text = String(rel == null ? '' : rel)
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-  if (!meta || meta.single || !Array.isArray(meta.roots)) return text
-  let segs = text.split('/').filter(Boolean)
-  while (segs.length >= 2 && segs[0] === segs[1] && meta.roots.some((root) => root.name === segs[0])) {
-    segs = segs.slice(1)
-  }
-  return segs.join('/')
+const text = String(rel == null ? '' : rel)
+.replace(/\\/g, '/')
+.replace(/^\/+/, '')
+if (!meta || meta.single || !Array.isArray(meta.roots)) return text
+let segs = text.split('/').filter(Boolean)
+while (segs.length >= 2 && segs[0] === segs[1] && meta.roots.some((root) => root.name === segs[0])) {
+segs = segs.slice(1)
 }
-
+return segs.join('/')
+}
 function App() {
-  // 「上一次会话的项目选择」在首帧就决定任务集 / 展开态，避免先渲染 全部 再闪切。
-  const initialProjectRef = React.useRef(loadProjectSelection())
-  const initialWorkbenchRef = React.useRef(null)
-  if (!initialWorkbenchRef.current) {
-    const restored = restoreWorkbench(initialProjectRef.current)
-    if (restored) initialWorkbenchRef.current = restored
-    else {
-      const task = newTaskRecord('默认')
-      initialWorkbenchRef.current = { tasks: [task], activeTaskId: task.id }
-    }
-  }
-
-  const [meta, setMeta] = React.useState(null)
-  const [currentProject, setCurrentProject] = React.useState(initialProjectRef.current)
-  const [workbench, setWorkbench] = React.useState(initialWorkbenchRef.current)
-  const [dirs, setDirs] = React.useState({})
-  const [expanded, setExpanded] = React.useState(() => new Set(loadTreeExpansion(initialProjectRef.current)))
-  const [error, setError] = React.useState('')
-  const [pathInput, setPathInput] = React.useState('')
-  const [projectsOpen, setProjectsOpen] = React.useState(false)
-  const [overlay, setOverlay] = React.useState(null)
-  const [modalRequest, setModalRequest] = React.useState(null)
-  const [syncOpen, setSyncOpen] = React.useState(false)
-  const [gitOpen, setGitOpen] = React.useState(false)
-  const [failedDirs, setFailedDirs] = React.useState({})
-  const [vendorReady, setVendorReady] = React.useState(false)
-  const [locateTarget, setLocateTarget] = React.useState('')
-  const [nav, setNav] = React.useState({ stack: [], idx: -1 })
-
-  const inflightDirsRef = React.useRef(new Set())
-  const inflightTabsRef = React.useRef(new Set())
-  const dirsRef = React.useRef(dirs)
-  const expandedRef = React.useRef(expanded)
-  const workbenchRef = React.useRef(workbench)
-  const metaRef = React.useRef(meta)
-  const currentProjectRef = React.useRef(currentProject)
-  const contentRef = React.useRef(null)
-  const navRef = React.useRef(nav)
-  const panelsRef = React.useRef({ modal: false, sync: false, git: false, projects: false })
-  const switchProjectRef = React.useRef(null)
-  dirsRef.current = dirs
-  expandedRef.current = expanded
-  workbenchRef.current = workbench
-  metaRef.current = meta
-  currentProjectRef.current = currentProject
-  navRef.current = nav
-  panelsRef.current = {
-    modal: !!modalRequest,
-    sync: syncOpen,
-    git: gitOpen,
-    projects: projectsOpen,
-  }
-
-  /**
-   * Forget an expanded directory that no longer exists.
-   *
-   * The expansion set is persisted per project, so a directory the user
-   * deleted stayed in the stored set and was requested on EVERY open - each
-   * request failing with "目录不存在" and showing an error. The path is dropped
-   * from the in-memory set and from the stored set.
-   */
-  const pruneExpanded = React.useCallback((rel) => {
-    const key = String(rel == null ? '' : rel)
-    const current = expandedRef.current
-    if (!current.has(key)) return
-    const next = new Set(current)
-    next.delete(key)
-    expandedRef.current = next
-    setExpanded(next)
-    saveTreeExpansion(currentProjectRef.current, next)
-  }, [])
-
-  const activeTask = workbench.tasks.find((task) => task.id === workbench.activeTaskId) || workbench.tasks[0] || null
-  const tabs = activeTask ? activeTask.tabs : []
-  const activeId = activeTask ? activeTask.activeId : null
-  const activeTab = tabs.find((tab) => tab.id === activeId) || null
-  const multi = !!(meta && !meta.single)
-  const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
-  // 项目模式：目录树顶层 = 该项目根的下一层；全部模式（或单根）= 虚拟顶层 ''。
-  const rootKey = currentProject && multi ? currentProject : ''
-  const activeTabKey = activeTab
-    ? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
-    : ''
-
-  /* ------------------------------------------------- 文件内搜索 (Ctrl+F) */
-
-  const [fsOpen, setFsOpen] = React.useState(false)
-  const [fsQuery, setFsQuery] = React.useState('')
-  const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
-  const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
-  // Refs mirror the state: the callbacks below must see the CURRENT values.
-  // `fsAppliedRef` holds the query that was actually searched: a different one
-  // means "search again", the same one means "next match" (the standalone
-  // reader's rule).
-  const fsQueryRef = React.useRef('')
-  const fsAppliedRef = React.useRef('')
-  const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
-
-  const fsController = React.useCallback(
-    () => fileSearchController(activeTab ? activeTab.id : ''),
-    [activeTab],
-  )
-
-  const runFileSearch = React.useCallback(
-    (query) => {
-      const controller = fsController()
-      if (!controller) {
-        fsAppliedRef.current = query
-        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
-        return
-      }
-      const result = controller.search(query, fsOptionsRef.current)
-      fsAppliedRef.current = query
-      setFsInfo({
-        count: Number(result.count || 0),
-        index: Number(result.index == null ? -1 : result.index),
-        status: result.error || (result.count ? '' : '无匹配'),
-      })
-    },
-    [fsController],
-  )
-
-  const gotoFileSearch = React.useCallback(
-    (delta) => {
-      const controller = fsController()
-      if (!controller) {
-        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
-        return
-      }
-      // A changed query means "search", not "navigate".
-      if (fsQueryRef.current !== fsAppliedRef.current) {
-        runFileSearch(fsQueryRef.current)
-        return
-      }
-      const result = controller.goto(delta)
-      setFsInfo({
-        count: Number(result.count || 0),
-        index: Number(result.index == null ? -1 : result.index),
-        status: result.error || (result.count ? '' : '无匹配'),
-      })
-    },
-    [fsController, runFileSearch],
-  )
-
-  const closeFileSearch = React.useCallback(() => {
-    const controller = fsController()
-    if (controller) controller.clear()
-    setFsOpen(false)
-    setFsQuery('')
-    fsQueryRef.current = ''
-    fsAppliedRef.current = ''
-    setFsInfo({ count: 0, index: -1, status: '' })
-  }, [fsController])
-
-  const openFileSearch = React.useCallback(() => {
-    setFsOpen(true)
-  }, [])
-
-  const toggleFileSearchOption = React.useCallback((key) => {
-    setFsOptions((prev) => {
-      const next = { ...prev, [key]: !prev[key] }
-      fsOptionsRef.current = next
-      return next
-    })
-  }, [])
-
-  /** Save the active markdown tab scroll NOW, before the DOM switches away. */
-  const saveActiveScroll = React.useCallback(() => {
-    const scroller = contentRef.current
-    if (!scroller) return
-    const wb = workbenchRef.current
-    const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
-    const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
-    if (!tab || tab.kind !== 'md') return
-    scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
-    rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
-  }, [])
-
-  /** Patch one tab wherever it lives (tab ids are unique per kind:path). */
-  const patchTab = React.useCallback((id, patch) => {
-    setWorkbench((prev) => {
-      let changed = false
-      const tasks = prev.tasks.map((task) => {
-        if (!task.tabs.some((tab) => tab.id === id)) return task
-        const tabs = task.tabs.map((tab) => {
-          if (tab.id !== id) return tab
-          changed = true
-          return { ...tab, ...patch }
-        })
-        return { ...task, tabs }
-      })
-      return changed ? { ...prev, tasks } : prev
-    })
-  }, [])
-
-  const saveWorkbenchNow = React.useCallback(() => {
-    saveWorkbench(currentProjectRef.current, workbenchRef.current)
-  }, [])
-
-  /* ------------------------------------------------------------ navigation */
-
-  const pushNav = React.useCallback((entry) => {
-    if (!entry || !entry.path) return
-    setNav((prev) => {
-      const current = prev.stack[prev.idx]
-      if (current && current.path === entry.path && (current.line || 0) === (entry.line || 0)) return prev
-      const stack = prev.stack.slice(0, prev.idx + 1)
-      stack.push({
-        path: entry.path,
-        line: entry.line || 0,
-        branch: entry.branch || '',
-        commit: entry.commit || '',
-        kind: entry.kind || '',
-        taskId: entry.taskId || '',
-      })
-      if (stack.length > 200) stack.shift()
-      return { stack, idx: stack.length - 1 }
-    })
-  }, [])
-
-  /**
-   * Re-open a history entry: switch to the task that owns the tab when possible,
-   * (re)open the tab, apply the line / git version. Markdown scroll comes back
-   * from the per-file scroll store (saveActiveScroll ran before we left).
-   */
-  const applyNavEntry = React.useCallback((entry) => {
-    if (!entry || !entry.path) return
-    // Definition jumps may open a non-code extension as a code tab; the entry
-    // remembers the intended kind so Alt+← restores the same tab.
-    const kind = entry.kind === 'code' || entry.kind === 'md' ? entry.kind : kindForPath(entry.path)
-    const id = `${kind}:${entry.path}`
-    const wb = workbenchRef.current
-    const candidates = wb.tasks.filter((task) => task.tabs.some((tab) => tab.id === id))
-    const targetTask =
-      candidates.find((task) => task.id === entry.taskId) ||
-      candidates.find((task) => task.id === wb.activeTaskId) ||
-      candidates[0] ||
-      wb.tasks.find((task) => task.id === wb.activeTaskId) ||
-      wb.tasks[0]
-    if (!targetTask) return
-    setWorkbench((prev) => {
-      const tasks = prev.tasks.map((task) => {
-        if (task.id !== targetTask.id) return task
-        const index = task.tabs.findIndex((tab) => tab.id === id)
-        let tabs
-        if (index >= 0) {
-          tabs = task.tabs.map((tab) =>
-            tab.id === id
-              ? {
-                  ...tab,
-                  line: entry.line || 0,
-                  branch: entry.branch || tab.branch || '',
-                  commit: entry.commit || tab.commit || '',
-                  navFrom: true,
-                }
-              : tab,
-          )
-        } else {
-          tabs = task.tabs.concat([
-            {
-              id,
-              kind,
-              path: entry.path,
-              content: null,
-              lang: kind === 'code' ? langForPath(entry.path) : kind === 'html' ? 'xml' : '',
-              line: entry.line || 0,
-              branch: entry.branch || '',
-              commit: entry.commit || '',
-              htmlMode: 'render',
-              navFrom: true,
-              error: '',
-              scroll: recallTabScroll(tabScrollKey(targetTask.id, id)),
-            },
-          ])
-        }
-        return { ...task, tabs, activeId: id }
-      })
-      return { ...prev, tasks, activeTaskId: targetTask.id }
-    })
-    if (kind === 'md') {
-      const top = recallTabScroll(tabScrollKey(targetTask.id, id))
-      if (top > 0) {
-        scrollStorage.set(mdScrollKey(targetTask.id, entry.path), top)
-        const apply = () => {
-          const scroller = contentRef.current
-          if (scroller && Math.abs(scroller.scrollTop - top) > 2) scroller.scrollTop = top
-        }
-        setTimeout(apply, 0)
-        setTimeout(apply, 180)
-      }
-    }
-  }, [])
-
-  const goNav = React.useCallback(
-    (delta) => {
-      const state = navRef.current
-      const next = state.idx + delta
-      if (next < 0 || next >= state.stack.length) return
-      const entry = state.stack[next]
-      saveActiveScroll()
-      setNav({ stack: state.stack, idx: next })
-      applyNavEntry(entry)
-    },
-    [saveActiveScroll, applyNavEntry],
-  )
-
-  /* --------------------------------------------------------------- loading */
-
-  const loadDir = React.useCallback((rel) => {
-    // Defensive: a stale persisted `X/X/...` expansion path must never be
-    // requested as-is (see collapseDoubledVtopPrefix).
-    const key = collapseDoubledVtopPrefix(String(rel == null ? '' : rel), metaRef.current)
-    // 同一目录可能被「恢复展开态 / 展开点击 / 刷新」同时要求加载，inflight 去重。
-    if (inflightDirsRef.current.has(key)) return Promise.resolve()
-    inflightDirsRef.current.add(key)
-    setFailedDirs((prev) => {
-      if (!prev[key]) return prev
-      const next = { ...prev }
-      delete next[key]
-      return next
-    })
-    return fetchJson('/api/list', { path: key })
-      .then((payload) => {
-        const entries = Array.isArray(payload.entries) ? payload.entries : []
-        setDirs((prev) => ({ ...prev, [key]: entries }))
-      })
-      .catch((err) => {
-        setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
-        const message = String((err && err.message) || err)
-        if (/目录不存在|not found|ENOENT/i.test(message)) {
-          // The directory was deleted (the user removed a docs folder). A
-          // persisted expansion path pointing at it must not produce an error
-          // on EVERY open: drop the path silently and forget it.
-          pruneExpanded(key)
-          return
-        }
-        setError(message)
-      })
-      .finally(() => {
-        inflightDirsRef.current.delete(key)
-      })
-  }, [])
-
-  const loadTab = React.useCallback(
-    (id, kind, rel) => {
-      if (!id || inflightTabsRef.current.has(id)) return
-      inflightTabsRef.current.add(id)
-      const endpoint = kind === 'md' ? '/api/markdown' : '/api/code'
-      fetchJson(endpoint, { path: rel })
-        .then((payload) => {
-          patchTab(id, {
-            content: payload.content,
-            lang: payload.lang || langForPath(rel) || (kind === 'html' ? 'xml' : ''),
-            error: '',
-          })
-        })
-        .catch((err) => {
-          const message = String((err && err.message) || err)
-          // A file the user deleted keeps its own error in the tab; the global
-          // banner would repeat it on every open.
-          if (!/不存在|not found|ENOENT/i.test(message)) setError(message)
-          patchTab(id, { error: message })
-        })
-        .finally(() => {
-          inflightTabsRef.current.delete(id)
-        })
-    },
-    [patchTab],
-  )
-
-  /* --------------------------------------------------------- open / close */
-
-  const openPath = React.useCallback(
-    (rel, line, opts) => {
-      const options = opts || {}
-      const value = String(rel || '')
-        .replace(/\\/g, '/')
-        .replace(/^\/+/, '')
-        .trim()
-      if (!value) return
-      // A definition jump always opens in the CODE view, even when the target is
-      // .html/.vue/... (opts.kind overrides the extension-based tab kind).
-      const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
-      const id = `${kind}:${value}`
-      const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
-      saveActiveScroll()
-      setWorkbench((prev) => {
-        const tasks = prev.tasks.map((task) => {
-          if (task.id !== prev.activeTaskId) return task
-          const index = task.tabs.findIndex((tab) => tab.id === id)
-          if (index >= 0) {
-            const tabs = task.tabs.map((tab) =>
-              tab.id === id
-                ? {
-                    ...tab,
-                    line: line == null ? tab.line : targetLine,
-                    branch: options.branch || tab.branch || '',
-                    commit: options.commit || tab.commit || '',
-                    navFrom: options.jump ? true : !!tab.navFrom,
-                    // undefined = leave the existing entry bar alone
-                    ...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
-                  }
-                : tab,
-            )
-            return { ...task, tabs, activeId: id }
-          }
-          const tab = {
-            id,
-            kind,
-            path: value,
-            content: null,
-            lang: kind === 'code' ? langForPath(value) : kind === 'html' ? 'xml' : '',
-            line: targetLine,
-            branch: options.branch || '',
-            commit: options.commit || '',
-            htmlMode: 'render',
-            navFrom: !!options.jump,
-            defBar: options.defBar !== undefined ? options.defBar : null,
-            error: '',
-            scroll: 0,
-          }
-          // Open next to the tab that started the jump (reference behaviour),
-          // not always at the far right.
-          const anchorIndex = task.tabs.findIndex((tabItem) => tabItem.id === task.activeId)
-          const tabs = task.tabs.slice()
-          if (anchorIndex >= 0) tabs.splice(anchorIndex + 1, 0, tab)
-          else tabs.push(tab)
-          return { ...task, tabs, activeId: id }
-        })
-        return { ...prev, tasks }
-      })
-      // Definition jumps first record the clicked source position (the original's
-      // ctrlJump pushNav(src.path, lineNo)) so ← 返回 / Alt+← return to the token.
-      if (options.from && options.from.path) {
-        pushNav({
-          path: options.from.path,
-          line: Math.max(0, Number(options.from.line) || 0),
-          branch: options.from.branch || '',
-          commit: options.from.commit || '',
-          kind: 'code',
-          taskId: workbenchRef.current.activeTaskId,
-        })
-      }
-      pushNav({
-        path: value,
-        line: targetLine,
-        branch: options.branch || '',
-        commit: options.commit || '',
-        kind,
-        taskId: workbenchRef.current.activeTaskId,
-      })
-    },
-    [saveActiveScroll, pushNav],
-  )
-
-  const activateTab = React.useCallback(
-    (id) => {
-      const wb = workbenchRef.current
-      const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
-      if (!task || task.activeId === id || !task.tabs.some((tab) => tab.id === id)) return
-      saveActiveScroll()
-      setWorkbench((prev) => ({
-        ...prev,
-        tasks: prev.tasks.map((item) => (item.id === prev.activeTaskId ? { ...item, activeId: id } : item)),
-      }))
-    },
-    [saveActiveScroll],
-  )
-
-  const closeTab = React.useCallback(
-    (id) => {
-      saveActiveScroll()
-      inflightTabsRef.current.delete(id)
-      const closingPath = id.slice(id.indexOf(':') + 1)
-      setModalRequest((current) => (current && current.path === closingPath ? null : current))
-      setWorkbench((prev) => {
-        const owner = prev.tasks.find((task) => task.tabs.some((tab) => tab.id === id))
-        if (!owner) return prev
-        const tasks = prev.tasks.map((task) => {
-          if (task.id !== owner.id) return task
-          const index = task.tabs.findIndex((tab) => tab.id === id)
-          const nextTabs = task.tabs.filter((tab) => tab.id !== id)
-          let activeId = task.activeId
-          if (activeId === id) activeId = nextTabs.length ? nextTabs[Math.min(Math.max(index, 0), nextTabs.length - 1)].id : null
-          return { ...task, tabs: nextTabs, activeId }
-        })
-        return { ...prev, tasks }
-      })
-    },
-    [saveActiveScroll],
-  )
-
-  /* --------------------------------------------------------------- tasks */
-
-  const switchTask = React.useCallback(
-    (id) => {
-      if (id === workbenchRef.current.activeTaskId) return
-      if (!workbenchRef.current.tasks.some((task) => task.id === id)) return
-      saveActiveScroll()
-      setWorkbench((prev) => ({ ...prev, activeTaskId: id }))
-    },
-    [saveActiveScroll],
-  )
-
-  const newTask = React.useCallback(() => {
-    saveActiveScroll()
-    const task = newTaskRecord(`任务${taskSeq + 1}`)
-    setWorkbench((prev) => ({ tasks: prev.tasks.concat([task]), activeTaskId: task.id }))
-  }, [saveActiveScroll])
-
-  const renameTask = React.useCallback((id, name) => {
-    const value = String(name || '').trim()
-    if (!value) return
-    setWorkbench((prev) => ({
-      ...prev,
-      tasks: prev.tasks.map((task) => (task.id === id ? { ...task, name: value } : task)),
-    }))
-  }, [])
-
-  const deleteTask = React.useCallback(
-    (id) => {
-      saveActiveScroll()
-      setWorkbench((prev) => {
-        if (!prev.tasks.some((task) => task.id === id)) return prev
-        if (prev.tasks.length <= 1) {
-          // Never leave the workbench without a task: the last × clears it.
-          return {
-            ...prev,
-            tasks: prev.tasks.map((task) => (task.id === id ? { ...task, tabs: [], activeId: null } : task)),
-          }
-        }
-        const index = prev.tasks.findIndex((task) => task.id === id)
-        const tasks = prev.tasks.filter((task) => task.id !== id)
-        const activeTaskId =
-          prev.activeTaskId === id ? tasks[Math.min(Math.max(index, 0), tasks.length - 1)].id : prev.activeTaskId
-        return { tasks, activeTaskId }
-      })
-    },
-    [saveActiveScroll],
-  )
-
-  const reorderTasks = React.useCallback((dragId, targetId, before) => {
-    if (!dragId || !targetId || dragId === targetId) return
-    setWorkbench((prev) => {
-      const from = prev.tasks.findIndex((task) => task.id === dragId)
-      if (from < 0) return prev
-      const tasks = prev.tasks.slice()
-      const [moved] = tasks.splice(from, 1)
-      const targetIndex = tasks.findIndex((task) => task.id === targetId)
-      if (targetIndex < 0) return prev
-      tasks.splice(before ? targetIndex : targetIndex + 1, 0, moved)
-      return { ...prev, tasks }
-    })
-  }, [])
-
-  /**
-   * Drag a tab to another position INSIDE the active task.
-   *
-   * The same mechanism as the task chips (`reorderTasks`): the dragged id comes
-   * from the tab bar, the target's left/right half decides whether the tab
-   * lands before or after it.
-   */
-  const reorderTabs = React.useCallback((dragId, targetId, before) => {
-    if (!dragId || !targetId || dragId === targetId) return
-    setWorkbench((prev) => {
-      const task = prev.tasks.find((item) => item.id === prev.activeTaskId)
-      if (!task) return prev
-      const from = task.tabs.findIndex((tab) => tab.id === dragId)
-      if (from < 0) return prev
-      const tabs = task.tabs.slice()
-      const [moved] = tabs.splice(from, 1)
-      const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
-      if (targetIndex < 0) return prev
-      tabs.splice(before ? targetIndex : targetIndex + 1, 0, moved)
-      return {
-        ...prev,
-        tasks: prev.tasks.map((item) => (item.id === task.id ? { ...item, tabs } : item)),
-      }
-    })
-  }, [])
-
-  /* ----------------------------------------------------------------- tree */
-
-  const toggleDir = React.useCallback(
-    (rel) => {
-      const willOpen = !expandedRef.current.has(rel)
-      const next = new Set(expandedRef.current)
-      if (willOpen) next.add(rel)
-      else next.delete(rel)
-      setExpanded(next)
-      expandedRef.current = next
-      saveTreeExpansion(currentProjectRef.current, next)
-      if (willOpen && !dirsRef.current[rel]) loadDir(rel)
-    },
-    [loadDir],
-  )
-
-  const refreshTree = React.useCallback(() => {
-    const current = currentProjectRef.current
-    const metaNow = metaRef.current
-    const root = current && metaNow && !metaNow.single ? current : ''
-    const active = expandedRef.current
-    const paths = [root, ...[...active].filter((rel) => rel && rel !== root)]
-    paths.forEach((rel) => loadDir(rel))
-    setFailedDirs((prev) => (Object.keys(prev).length ? {} : prev))
-    setDirs((prev) => {
-      const next = { ...prev }
-      for (const rel of Object.keys(next)) {
-        if (rel !== root && !active.has(rel)) delete next[rel]
-      }
-      return next
-    })
-  }, [loadDir])
-
-  /** Expand the file's ancestors (respecting project prefixes) and highlight it. */
-  const locateInTree = React.useCallback(
-    (filePath) => {
-      const metaNow = metaRef.current
-      // Self-heal a doubled prefix on the file path itself (old persisted tabs).
-      const path = collapseDoubledVtopPrefix(String(filePath || ''), metaNow)
-      if (!path) return
-      const roots = metaNow ? metaNow.roots.map((root) => root.name) : []
-      const multiNow = !!(metaNow && !metaNow.single)
-      const segs = path.split('/').filter(Boolean)
-      const current = currentProjectRef.current
-      // Tree node paths are already vtop-prefixed in multi-root mode. A path
-      // that already starts with a root name (e.g. 20260917-微服务/docs/...)
-      // must be used AS-IS — prepending the current project again produced the
-      // dead `20260917-微服务/20260917-微服务/docs/...` set.
-      const alreadyPrefixed = multiNow && roots.includes(segs[0])
-      const fullPaths = alreadyPrefixed
-        ? [segs.join('/')]
-        : multiNow
-          ? (current ? [current] : roots).map((prefix) => `${prefix}/${segs.join('/')}`)
-          : [segs.join('/')]
-      const next = new Set(expandedRef.current)
-      for (const full of fullPaths) {
-        const parts = full.split('/')
-        for (let index = 1; index < parts.length; index += 1) next.add(parts.slice(0, index).join('/'))
-      }
-      if (current && multiNow) next.add(current) // project-scoped tree root
-      setExpanded(next)
-      expandedRef.current = next
-      saveTreeExpansion(current, next)
-      for (const rel of next) {
-        if (!dirsRef.current[rel]) loadDir(rel)
-      }
-      // 高亮目标也要用「树节点实际路径」：多根模式未带前缀时补当前项目。
-      const locatePath = alreadyPrefixed || !multiNow ? path : current ? `${current}/${path}` : path
-      setLocateTarget(locatePath)
-      setTimeout(() => setLocateTarget(''), 2600)
-    },
-    [loadDir],
-  )
-
-  /* -------------------------------------------------------------- project */
-
-  const switchProject = React.useCallback(
-    (name) => {
-      const next = name || null
-      if (next === currentProjectRef.current) {
-        setProjectsOpen(false)
-        return
-      }
-      saveActiveScroll()
-      saveWorkbench(currentProjectRef.current, workbenchRef.current)
-      const restored = restoreWorkbench(next)
-      let nextWorkbench
-      if (restored) nextWorkbench = restored
-      else {
-        const task = newTaskRecord('默认')
-        nextWorkbench = { tasks: [task], activeTaskId: task.id }
-      }
-      setProjectsOpen(false)
-      setCurrentProject(next)
-      currentProjectRef.current = next
-      setProjectScope(next)
-      saveProjectSelection(next)
-      setWorkbench(nextWorkbench)
-      workbenchRef.current = nextWorkbench
-      const nextExpanded = new Set(
-        loadTreeExpansion(next).map((rel) => collapseDoubledVtopPrefix(rel, metaRef.current)),
-      )
-      setExpanded(nextExpanded)
-      expandedRef.current = nextExpanded
-      setDirs({})
-      dirsRef.current = {}
-      setFailedDirs({})
-      setLocateTarget('')
-      setOverlay(null)
-      setModalRequest(null)
-    },
-    [saveActiveScroll],
-  )
-  switchProjectRef.current = switchProject
-
-  /** Close tabs belonging to a removed project (across every task). */
-  const pruneProjectTabs = React.useCallback((name) => {
-    if (!name) return
-    const prefix = `${name}/`
-    setWorkbench((prev) => {
-      let changed = false
-      const tasks = prev.tasks.map((task) => {
-        if (!task.tabs.some((tab) => tab.path === name || tab.path.startsWith(prefix))) return task
-        changed = true
-        const nextTabs = task.tabs.filter((tab) => !(tab.path === name || tab.path.startsWith(prefix)))
-        let activeId = task.activeId
-        if (!nextTabs.some((tab) => tab.id === activeId)) activeId = nextTabs.length ? nextTabs[nextTabs.length - 1].id : null
-        return { ...task, tabs: nextTabs, activeId }
-      })
-      return changed ? { ...prev, tasks } : prev
-    })
-  }, [])
-
-  const changeRoots = React.useCallback(
-    (action, pathValue) => {
-      const previousRoots = (metaRef.current && metaRef.current.roots) || []
-      const removed = action === 'remove' ? previousRoots.find((root) => root.path === pathValue) : null
-      postJson('/api/roots', { action, path: pathValue })
-        .then((payload) => {
-          const roots = Array.isArray(payload.roots) ? payload.roots : []
-          setMeta({ ok: true, roots, single: !!payload.single })
-          setDirs({})
-          dirsRef.current = {}
-          setFailedDirs({})
-          if (removed) {
-            pruneProjectTabs(removed.name)
-            const prefix = `${removed.name}/`
-            const next = new Set([...expandedRef.current].filter((rel) => rel !== removed.name && !rel.startsWith(prefix)))
-            setExpanded(next)
-            expandedRef.current = next
-            saveTreeExpansion(currentProjectRef.current, next)
-          }
-          const current = currentProjectRef.current
-          if (current && !roots.some((root) => root.name === current)) {
-            // 当前项目被移除（或根列表被整体重置）→ 回到「全部」
-            if (switchProjectRef.current) switchProjectRef.current(null)
-          }
-        })
-        .catch((err) => setError(String((err && err.message) || err)))
-    },
-    [pruneProjectTabs],
-  )
-
-  const refreshActive = React.useCallback(() => {
-    const wb = workbenchRef.current
-    const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
-    const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
-    if (!tab || tab.kind === 'image') return
-    patchTab(tab.id, { error: '' })
-    loadTab(tab.id, tab.kind, tab.path)
-  }, [patchTab, loadTab])
-
-  /* -------------------------------------------------------------- effects */
-
-  React.useEffect(() => {
-    ensureVendor()
-      .then(() => setVendorReady(true))
-      .catch((err) => setError(String((err && err.message) || err)))
-  }, [])
-
-  React.useEffect(() => {
-    if (!error) return undefined
-    const timer = setTimeout(() => setError(''), 6000)
-    return () => clearTimeout(timer)
-  }, [error])
-
-  const closeModal = React.useCallback(() => setModalRequest(null), [])
-  const closeSync = React.useCallback(() => setSyncOpen(false), [])
-  const closeGit = React.useCallback(() => setGitOpen(false), [])
-
-  React.useEffect(() => {
-    const onKeyDown = (event) => {
-      const target = event.target
-      const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
-      const inField = tag === 'INPUT' || tag === 'TEXTAREA'
-      const mod = event.ctrlKey || event.metaKey
-      if (mod && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'f') {
-        event.preventDefault()
-        setOverlay('search')
-        return
-      }
-      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
-        // 文件内搜索（Ctrl+F）：浏览器自带的那个找不到插件面板里的内容。
-        event.preventDefault()
-        openFileSearch()
-        return
-      }
-      if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
-        event.preventDefault()
-        setOverlay('files')
-        return
-      }
-      if (event.altKey && !mod && !inField) {
-        if (event.key === 'ArrowLeft') {
-          event.preventDefault()
-          goNav(-1)
-        } else if (event.key === 'ArrowRight') {
-          event.preventDefault()
-          goNav(1)
-        } else if (event.key.toLowerCase() === 'p') {
-          event.preventDefault()
-          setProjectsOpen((value) => !value)
-        }
-        return
-      }
-      if (event.key !== 'Escape') return
-      // Esc 逐层关闭：代码弹窗 → 版本树 → 同步面板 → 项目管理 → 其它遮罩。
-      const panels = panelsRef.current
-      if (panels.modal) {
-        // 代码弹窗自己也有 Esc 监听（定义候选列表打开时只关候选列表，并用
-        // preventDefault 表明「已处理」）。App 的监听器注册更早、会先跑，所以
-        // 延到微任务里再判断：弹窗已处理就什么都不做，否则由 App 关掉弹窗。
-        const current = event
-        Promise.resolve().then(() => {
-          if (!current.defaultPrevented) closeModal()
-        })
-      } else if (panels.git) closeGit()
-      else if (panels.sync) closeSync()
-      else if (panels.projects) setProjectsOpen(false)
-      else setOverlay((current) => (current ? null : current))
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [goNav, closeModal, closeSync, closeGit, openFileSearch])
-
-  // 旧版本 locator 曾把「项目名/项目名/...」双前缀写进展开态持久化。多根模式下
-  // 折叠一次并回写（只折叠「首两段相同且首段是真实项目名」的路径，单根模式不动）。
-  React.useEffect(() => {
-    if (!meta) return
-    const previous = expandedRef.current
-    const next = new Set()
-    let changed = false
-    for (const rel of previous) {
-      const fixed = collapseDoubledVtopPrefix(rel, meta)
-      if (fixed !== rel) changed = true
-      if (fixed) next.add(fixed)
-    }
-    if (!changed) return
-    setExpanded(next)
-    expandedRef.current = next
-    saveTreeExpansion(currentProjectRef.current, next)
-  }, [meta, currentProject])
-
-  // Panel switch unmounts/remounts Page: `dirs` starts empty while `expanded`
-  // came from storage. Once meta (and the project-scoped root) is known, load
-  // every expanded dir that has no data yet, not only the root.
-  React.useEffect(() => {
-    if (!meta) return
-    const targets = new Set([rootKey])
-    for (const rel of expandedRef.current) {
-      const clean = collapseDoubledVtopPrefix(rel, meta)
-      if (clean && !dirsRef.current[clean]) targets.add(clean)
-    }
-    for (const rel of targets) loadDir(rel)
-  }, [meta, currentProject, rootKey, loadDir])
-
-  // Persist the workbench of the current project, and the project selection /
-  // search scope. Switching projects saves the old set explicitly first.
-  React.useEffect(() => {
-    saveWorkbench(currentProject, workbench)
-  }, [currentProject, workbench])
-
-  React.useEffect(() => {
-    setProjectScope(currentProject)
-    saveProjectSelection(currentProject)
-  }, [currentProject])
-
-  // Activation-time lazy load: md/code/html content is fetched when a tab
-  // becomes active (image tabs need no text).
-  React.useEffect(() => {
-    if (!activeTab) return
-    if (activeTab.kind === 'image' || activeTab.content != null || activeTab.error) return
-    loadTab(activeTab.id, activeTab.kind, activeTab.path)
-  }, [workbench.activeTaskId, activeTabKey, loadTab])
-
-  React.useEffect(() => {
-    const scroller = contentRef.current
-    if (!scroller) return undefined
-    const onScroll = () => {
-      const wb = workbenchRef.current
-      const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
-      const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
-      if (!task || !tab || tab.kind !== 'md') return
-      scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
-      rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
-    }
-    const onBeforeUnload = () => {
-      onScroll()
-      saveWorkbenchNow()
-      scrollStorage.flushNow()
-    }
-    scroller.addEventListener('scroll', onScroll, { passive: true })
-    window.addEventListener('beforeunload', onBeforeUnload)
-    return () => {
-      scroller.removeEventListener('scroll', onScroll)
-      window.removeEventListener('beforeunload', onBeforeUnload)
-    }
-  }, [saveWorkbenchNow])
-
-  /**
-   * Restore the reading position when the active TASK or TAB changes.
-   *
-   * The markdown view restores its own position when it MOUNTS - but the tab id
-   * is `<kind>:<path>`, so the same document open in two tasks is the SAME key:
-   * React reuses the view, nothing remounts, and the position of the task you
-   * came back to was never applied ("切任务到别的任务，滚动位置就没了"). This
-   * effect applies it explicitly, per task.
-   */
-  React.useEffect(() => {
-    if (!activeTab || activeTab.kind !== 'md') return undefined
-    const scroller = contentRef.current
-    if (!scroller) return undefined
-    const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
-    if (target <= 0) return undefined
-    const apply = () => {
-      const el = contentRef.current
-      if (el && Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
-    }
-    apply()
-    const timer = setTimeout(apply, 150)
-    return () => clearTimeout(timer)
-  }, [workbench.activeTaskId, activeTabKey])
-
-  React.useEffect(() => {
-    let cancelled = false
-    fetchJson('/api/meta')
-      .then((payload) => {
-        if (cancelled) return
-        setMeta(payload)
-        const names = (payload.roots || []).map((root) => root.name)
-        const project = currentProjectRef.current
-        if (project && !names.includes(project) && switchProjectRef.current) switchProjectRef.current(null)
-      })
-      .catch((err) => {
-        if (!cancelled) setError(String((err && err.message) || err))
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  /* ------------------------------------------------------------- handlers */
-
-  /**
-   * Markdown link routing (attributes written by 10-markdown.js):
-   *   data-path / data-kind / data-line / data-branch / data-commit.
-   * code + plain click → modal; code + Ctrl/Cmd → tab; md/html/image → tab.
-   * Resolved repository links keep their href: Shift+click / right-click stay
-   * native so the remote repo page is still reachable.
-   */
-  const onContentClick = (event) => {
-    const target = event.target
-    const anchor = target && target.closest ? target.closest('a[data-path]') : null
-    if (!anchor) return
-    const rel = (anchor.dataset.path || '').trim()
-    if (!rel) return
-    if (event.shiftKey && anchor.hasAttribute('href')) return
-    event.preventDefault()
-    const kind = anchor.dataset.kind || kindForPath(rel)
-    const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
-    const branch = anchor.dataset.branch || ''
-    const commit = anchor.dataset.commit || ''
-    const modifier = event.ctrlKey || event.metaKey
-    if (kind === 'code') {
-      if (modifier) openPath(rel, line, { branch, commit, jump: true })
-      else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit })
-      return
-    }
-    openPath(rel, line, { branch, commit })
-  }
-
-  const projectLabel = currentProject || (meta && meta.roots.length > 1 ? '全部项目' : '项目')
-  const projectsTitle = currentProject
-    ? `当前项目 ${currentProject}（Alt+P 项目管理）`
-    : meta && meta.roots.length > 1
-      ? '全部项目（Alt+P 项目管理）'
-      : '项目管理（Alt+P）'
-  const treeLabel = currentProject
-    ? currentProject
-    : meta && meta.roots.length > 1
-      ? `全部项目（${rootNames.length}）`
-      : rootNames[0] || '项目'
-  const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
-
-  return h(
-    React.Fragment,
-    null,
-    h(
-      'div',
-      { className: 'mdr-topbar' },
-      h('span', { className: 'mdr-brand' }, h(Icons.doc, { size: 16 }), 'Markdown Reader'),
-      h(
-        'button',
-        {
-          className: 'mdr-btn',
-          disabled: nav.idx <= 0,
-          title: '后退（Alt+←）',
-          onClick: () => goNav(-1),
-        },
-        h(NavBackIcon, { size: 14 }),
-      ),
-      h(
-        'button',
-        {
-          className: 'mdr-btn',
-          disabled: nav.idx >= nav.stack.length - 1,
-          title: '前进（Alt+→）',
-          onClick: () => goNav(1),
-        },
-        h(NavFwdIcon, { size: 14 }),
-      ),
-      h('input', {
-        className: 'mdr-path',
-        value: pathInput,
-        placeholder: '输入相对路径回车打开（如 docs/需求/x.md）',
-        onChange: (event) => setPathInput(event.target.value),
-        onKeyDown: (event) => {
-          if (event.key !== 'Enter') return
-          openPath(pathInput, null)
-          setPathInput('')
-        },
-      }),
-      h('span', { className: 'mdr-spacer' }),
-      h(
-        'button',
-        {
-          className: 'mdr-btn' + (projectsOpen ? ' on' : ''),
-          onClick: () => setProjectsOpen((value) => !value),
-          title: projectsTitle,
-        },
-        h(Icons.layers, { size: 14 }),
-        projectLabel,
-      ),
-      h('button', { className: 'mdr-btn', onClick: () => setOverlay('json'), title: 'JSON 格式化工具' }, 'JSON'),
-      h(
-        'button',
-        {
-          className: 'mdr-btn' + (syncOpen ? ' on' : ''),
-          onClick: () => {
-            setSyncOpen(true)
-            setGitOpen(false)
-          },
-          title: '检查更新',
-        },
-        h(Icons.refresh, { size: 14 }),
-        '同步',
-      ),
-      h(
-        'button',
-        {
-          className: 'mdr-btn' + (gitOpen ? ' on' : ''),
-          onClick: () => {
-            setGitOpen(true)
-            setSyncOpen(false)
-          },
-          title: '版本树',
-        },
-        h(GitGraphIcon, { size: 14 }),
-        'Git 图',
-      ),
-      h(
-        'button',
-        { className: 'mdr-btn', onClick: refreshActive, disabled: !activeTab, title: '重新读取当前文件' },
-        h(Icons.refresh, { size: 14 }),
-        '刷新',
-      ),
-    ),
-    projectsOpen
-      ? h(ProjectsPanel, {
-          meta,
-          current: currentProject,
-          onSwitch: switchProject,
-          onAdd: (value) => changeRoots('add', value),
-          onRemove: (value) => changeRoots('remove', value),
-          onClose: () => setProjectsOpen(false),
-        })
-      : null,
-    h(WorkbenchBar, {
-      tasks: workbench.tasks,
-      activeTaskId: workbench.activeTaskId,
-      onSwitch: switchTask,
-      onNew: newTask,
-      onRename: renameTask,
-      onDelete: deleteTask,
-      onReorder: reorderTasks,
-    }),
-    h(
-      'div',
-      { className: 'mdr-body' },
-      h(
-        'div',
-        { className: 'mdr-tree' },
-        h(
-          'div',
-          { className: 'mdr-tree-toolbar' },
-          h('span', { className: 'mdr-tree-tip', title: treeTitle }, treeLabel),
-          h('span', { className: 'mdr-spacer' }),
-          h('button', { className: 'mdr-btn', onClick: refreshTree, title: '刷新目录树' }, h(Icons.refresh, { size: 13 })),
-        ),
-        h(Tree, {
-          rootEntries: dirs[rootKey],
-          rootPath: rootKey,
-          expanded,
-          dirs,
-          failed: failedDirs,
-          activePath: activeTab ? activeTab.path : '',
-          locatedPath: locateTarget,
-          onToggle: toggleDir,
-          onOpen: (rel) => openPath(rel, null),
-        }),
-      ),
-      h(
-        'div',
-        { className: 'mdr-right' },
-        h(TabBar, {
-          tabs,
-          activeId,
-          onActivate: activateTab,
-          onClose: closeTab,
-          onReorder: reorderTabs,
-        }),
-        h(
-          'div',
-          {
-            className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''),
-            ref: contentRef,
-            onClick: onContentClick,
-          },
-          activeTab == null
-            ? h(EmptyState, { meta, currentProject })
-            : activeTab.kind === 'md'
-              ? vendorReady
-                ? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames, taskId: workbench.activeTaskId })
-                : h('div', { className: 'mdr-empty' }, '渲染库加载中…')
-              : activeTab.kind === 'code'
-                ? h(CodeView, {
-                    key: activeTab.id,
-                    tab: activeTab,
-                    // The reading position belongs to the task (the tab id is
-                    // shared between tasks).
-                    taskId: workbench.activeTaskId,
-                    // Definition jumps pass {kind:'code', branch, commit, defBar}
-                    // so a .vue/.html target still opens as code and keeps the
-                    // rendered git version + 「实现」 entry bar.
-                    onOpen: (rel, line, opts) => openPath(rel, line, { ...(opts || {}), jump: true }),
-                    onBack: () => goNav(-1),
-                  })
-                : activeTab.kind === 'html'
-                  ? typeof HtmlTabView === 'function'
-                    ? h(HtmlTabView, {
-                        key: activeTab.id,
-                        tab: activeTab,
-                        onToggleMode: (mode) => patchTab(activeTab.id, { htmlMode: mode === 'source' ? 'source' : 'render' }),
-                        onLocate: () => locateInTree(activeTab.path),
-                      })
-                    : h('div', { className: 'mdr-empty' }, 'HTML 视图未就绪')
-                  : activeTab.kind === 'image'
-                    ? typeof ImageView === 'function'
-                      ? h(ImageView, {
-                          key: activeTab.id,
-                          tab: activeTab,
-                          onLocate: () => locateInTree(activeTab.path),
-                        })
-                      : h('div', { className: 'mdr-empty' }, '图片视图未就绪')
-                    : h('div', { className: 'mdr-empty' }, '不支持的文件类型'),
-        ),
-      ),
-    ),
-    // 文件内搜索条（Ctrl+F）：浮在内容区右上角，属于插件面板内部。
-    fsOpen
-      ? h(FileSearchWidget, {
-          query: fsQuery,
-          onQuery: (value) => {
-            fsQueryRef.current = value
-            setFsQuery(value)
-          },
-          count: fsInfo.count,
-          index: fsInfo.index,
-          status: fsInfo.status,
-          options: fsOptions,
-          onToggleOption: toggleFileSearchOption,
-          onSearch: runFileSearch,
-          onNext: () => gotoFileSearch(1),
-          onPrev: () => gotoFileSearch(-1),
-          onClose: closeFileSearch,
-          onGlobal: () => {
-            closeFileSearch()
-            setOverlay('search')
-          },
-        })
-      : null,
-    error ? h('div', { className: 'mdr-err' }, error) : null,
-    overlay === 'search'
-      ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
-      : null,
-    overlay === 'files'
-      ? h(SearchPanel, { mode: 'files', onClose: () => setOverlay(null), onOpen: (rel) => openPath(rel, null) })
-      : null,
-    overlay === 'json' ? h(JsonTool, { onClose: () => setOverlay(null) }) : null,
-    // 代码弹窗（24-modal.js 分片实现；分片未落地前 typeof 守卫保证不炸）。
-    typeof CodeModal === 'function' && modalRequest
-      ? h(CodeModal, {
-          request: modalRequest,
-          onClose: closeModal,
-          // 弹窗内部可能原地跳转过（返回栈），所以优先用弹窗回传的当前视图。
-          onOpenTab: (target) => {
-            const request = target && target.path ? target : modalRequest
-            closeModal()
-            if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
-          },
-          onOpen: (rel, line) => openPath(rel, line, { jump: true }),
-        })
-      : null,
-    typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,
-    typeof GitGraphModal === 'function' && gitOpen
-      ? h(GitGraphModal, { path: activeTab ? activeTab.path : '', onClose: closeGit, onOpen: openPath })
-      : null,
-  )
+const initialProjectRef = React.useRef(loadProjectSelection())
+const initialWorkbenchRef = React.useRef(null)
+if (!initialWorkbenchRef.current) {
+const restored = restoreWorkbench(initialProjectRef.current)
+if (restored) initialWorkbenchRef.current = restored
+else {
+const task = newTaskRecord('默认')
+initialWorkbenchRef.current = { tasks: [task], activeTaskId: task.id }
 }
-
+}
+const [meta, setMeta] = React.useState(null)
+const [currentProject, setCurrentProject] = React.useState(initialProjectRef.current)
+const [workbench, setWorkbench] = React.useState(initialWorkbenchRef.current)
+const [dirs, setDirs] = React.useState({})
+const [expanded, setExpanded] = React.useState(() => new Set(loadTreeExpansion(initialProjectRef.current)))
+const [error, setError] = React.useState('')
+const [pathInput, setPathInput] = React.useState('')
+const [projectsOpen, setProjectsOpen] = React.useState(false)
+const [overlay, setOverlay] = React.useState(null)
+const [modalRequest, setModalRequest] = React.useState(null)
+const [syncOpen, setSyncOpen] = React.useState(false)
+const [gitOpen, setGitOpen] = React.useState(false)
+const [failedDirs, setFailedDirs] = React.useState({})
+const [vendorReady, setVendorReady] = React.useState(false)
+const [locateTarget, setLocateTarget] = React.useState('')
+const [nav, setNav] = React.useState({ stack: [], idx: -1 })
+const inflightDirsRef = React.useRef(new Set())
+const inflightTabsRef = React.useRef(new Set())
+const dirsRef = React.useRef(dirs)
+const expandedRef = React.useRef(expanded)
+const workbenchRef = React.useRef(workbench)
+const metaRef = React.useRef(meta)
+const currentProjectRef = React.useRef(currentProject)
+const contentRef = React.useRef(null)
+const navRef = React.useRef(nav)
+const panelsRef = React.useRef({ modal: false, sync: false, git: false, projects: false })
+const switchProjectRef = React.useRef(null)
+dirsRef.current = dirs
+expandedRef.current = expanded
+workbenchRef.current = workbench
+metaRef.current = meta
+currentProjectRef.current = currentProject
+navRef.current = nav
+panelsRef.current = {
+modal: !!modalRequest,
+sync: syncOpen,
+git: gitOpen,
+projects: projectsOpen,
+}
+const pruneExpanded = React.useCallback((rel) => {
+const key = String(rel == null ? '' : rel)
+const current = expandedRef.current
+if (!current.has(key)) return
+const next = new Set(current)
+next.delete(key)
+expandedRef.current = next
+setExpanded(next)
+saveTreeExpansion(currentProjectRef.current, next)
+}, [])
+const activeTask = workbench.tasks.find((task) => task.id === workbench.activeTaskId) || workbench.tasks[0] || null
+const tabs = activeTask ? activeTask.tabs : []
+const activeId = activeTask ? activeTask.activeId : null
+const activeTab = tabs.find((tab) => tab.id === activeId) || null
+const multi = !!(meta && !meta.single)
+const rootNames = React.useMemo(() => (meta ? meta.roots.map((root) => root.name) : []), [meta])
+const rootKey = currentProject && multi ? currentProject : ''
+const activeTabKey = activeTab
+? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
+: ''
+const [fsOpen, setFsOpen] = React.useState(false)
+const [fsQuery, setFsQuery] = React.useState('')
+const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
+const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
+const fsQueryRef = React.useRef('')
+const fsAppliedRef = React.useRef('')
+const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
+const fsController = React.useCallback(
+() => fileSearchController(activeTab ? activeTab.id : ''),
+[activeTab],
+)
+const runFileSearch = React.useCallback(
+(query) => {
+const controller = fsController()
+if (!controller) {
+fsAppliedRef.current = query
+setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+return
+}
+const result = controller.search(query, fsOptionsRef.current)
+fsAppliedRef.current = query
+setFsInfo({
+count: Number(result.count || 0),
+index: Number(result.index == null ? -1 : result.index),
+status: result.error || (result.count ? '' : '无匹配'),
+})
+},
+[fsController],
+)
+const gotoFileSearch = React.useCallback(
+(delta) => {
+const controller = fsController()
+if (!controller) {
+setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+return
+}
+if (fsQueryRef.current !== fsAppliedRef.current) {
+runFileSearch(fsQueryRef.current)
+return
+}
+const result = controller.goto(delta)
+setFsInfo({
+count: Number(result.count || 0),
+index: Number(result.index == null ? -1 : result.index),
+status: result.error || (result.count ? '' : '无匹配'),
+})
+},
+[fsController, runFileSearch],
+)
+const closeFileSearch = React.useCallback(() => {
+const controller = fsController()
+if (controller) controller.clear()
+setFsOpen(false)
+setFsQuery('')
+fsQueryRef.current = ''
+fsAppliedRef.current = ''
+setFsInfo({ count: 0, index: -1, status: '' })
+}, [fsController])
+const openFileSearch = React.useCallback(() => {
+setFsOpen(true)
+}, [])
+const toggleFileSearchOption = React.useCallback((key) => {
+setFsOptions((prev) => {
+const next = { ...prev, [key]: !prev[key] }
+fsOptionsRef.current = next
+return next
+})
+}, [])
+const saveActiveScroll = React.useCallback(() => {
+const scroller = contentRef.current
+if (!scroller) return
+const wb = workbenchRef.current
+const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
+if (!tab || tab.kind !== 'md') return
+scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
+}, [])
+const patchTab = React.useCallback((id, patch) => {
+setWorkbench((prev) => {
+let changed = false
+const tasks = prev.tasks.map((task) => {
+if (!task.tabs.some((tab) => tab.id === id)) return task
+const tabs = task.tabs.map((tab) => {
+if (tab.id !== id) return tab
+changed = true
+return { ...tab, ...patch }
+})
+return { ...task, tabs }
+})
+return changed ? { ...prev, tasks } : prev
+})
+}, [])
+const saveWorkbenchNow = React.useCallback(() => {
+saveWorkbench(currentProjectRef.current, workbenchRef.current)
+}, [])
+const pushNav = React.useCallback((entry) => {
+if (!entry || !entry.path) return
+setNav((prev) => {
+const current = prev.stack[prev.idx]
+if (current && current.path === entry.path && (current.line || 0) === (entry.line || 0)) return prev
+const stack = prev.stack.slice(0, prev.idx + 1)
+stack.push({
+path: entry.path,
+line: entry.line || 0,
+branch: entry.branch || '',
+commit: entry.commit || '',
+kind: entry.kind || '',
+taskId: entry.taskId || '',
+})
+if (stack.length > 200) stack.shift()
+return { stack, idx: stack.length - 1 }
+})
+}, [])
+const applyNavEntry = React.useCallback((entry) => {
+if (!entry || !entry.path) return
+const kind = entry.kind === 'code' || entry.kind === 'md' ? entry.kind : kindForPath(entry.path)
+const id = `${kind}:${entry.path}`
+const wb = workbenchRef.current
+const candidates = wb.tasks.filter((task) => task.tabs.some((tab) => tab.id === id))
+const targetTask =
+candidates.find((task) => task.id === entry.taskId) ||
+candidates.find((task) => task.id === wb.activeTaskId) ||
+candidates[0] ||
+wb.tasks.find((task) => task.id === wb.activeTaskId) ||
+wb.tasks[0]
+if (!targetTask) return
+setWorkbench((prev) => {
+const tasks = prev.tasks.map((task) => {
+if (task.id !== targetTask.id) return task
+const index = task.tabs.findIndex((tab) => tab.id === id)
+let tabs
+if (index >= 0) {
+tabs = task.tabs.map((tab) =>
+tab.id === id
+? {
+...tab,
+line: entry.line || 0,
+branch: entry.branch || tab.branch || '',
+commit: entry.commit || tab.commit || '',
+navFrom: true,
+}
+: tab,
+)
+} else {
+tabs = task.tabs.concat([
+{
+id,
+kind,
+path: entry.path,
+content: null,
+lang: kind === 'code' ? langForPath(entry.path) : kind === 'html' ? 'xml' : '',
+line: entry.line || 0,
+branch: entry.branch || '',
+commit: entry.commit || '',
+htmlMode: 'render',
+navFrom: true,
+error: '',
+scroll: recallTabScroll(tabScrollKey(targetTask.id, id)),
+},
+])
+}
+return { ...task, tabs, activeId: id }
+})
+return { ...prev, tasks, activeTaskId: targetTask.id }
+})
+if (kind === 'md') {
+const top = recallTabScroll(tabScrollKey(targetTask.id, id))
+if (top > 0) {
+scrollStorage.set(mdScrollKey(targetTask.id, entry.path), top)
+const apply = () => {
+const scroller = contentRef.current
+if (scroller && Math.abs(scroller.scrollTop - top) > 2) scroller.scrollTop = top
+}
+setTimeout(apply, 0)
+setTimeout(apply, 180)
+}
+}
+}, [])
+const goNav = React.useCallback(
+(delta) => {
+const state = navRef.current
+const next = state.idx + delta
+if (next < 0 || next >= state.stack.length) return
+const entry = state.stack[next]
+saveActiveScroll()
+setNav({ stack: state.stack, idx: next })
+applyNavEntry(entry)
+},
+[saveActiveScroll, applyNavEntry],
+)
+const loadDir = React.useCallback((rel) => {
+const key = collapseDoubledVtopPrefix(String(rel == null ? '' : rel), metaRef.current)
+if (inflightDirsRef.current.has(key)) return Promise.resolve()
+inflightDirsRef.current.add(key)
+setFailedDirs((prev) => {
+if (!prev[key]) return prev
+const next = { ...prev }
+delete next[key]
+return next
+})
+return fetchJson('/api/list', { path: key })
+.then((payload) => {
+const entries = Array.isArray(payload.entries) ? payload.entries : []
+setDirs((prev) => ({ ...prev, [key]: entries }))
+})
+.catch((err) => {
+setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
+const message = String((err && err.message) || err)
+if (/目录不存在|not found|ENOENT/i.test(message)) {
+pruneExpanded(key)
+return
+}
+setError(message)
+})
+.finally(() => {
+inflightDirsRef.current.delete(key)
+})
+}, [])
+const loadTab = React.useCallback(
+(id, kind, rel) => {
+if (!id || inflightTabsRef.current.has(id)) return
+inflightTabsRef.current.add(id)
+const endpoint = kind === 'md' ? '/api/markdown' : '/api/code'
+fetchJson(endpoint, { path: rel })
+.then((payload) => {
+patchTab(id, {
+content: payload.content,
+lang: payload.lang || langForPath(rel) || (kind === 'html' ? 'xml' : ''),
+error: '',
+})
+})
+.catch((err) => {
+const message = String((err && err.message) || err)
+if (!/不存在|not found|ENOENT/i.test(message)) setError(message)
+patchTab(id, { error: message })
+})
+.finally(() => {
+inflightTabsRef.current.delete(id)
+})
+},
+[patchTab],
+)
+const openPath = React.useCallback(
+(rel, line, opts) => {
+const options = opts || {}
+const value = String(rel || '')
+.replace(/\\/g, '/')
+.replace(/^\/+/, '')
+.trim()
+if (!value) return
+const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
+const id = `${kind}:${value}`
+const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
+saveActiveScroll()
+setWorkbench((prev) => {
+const tasks = prev.tasks.map((task) => {
+if (task.id !== prev.activeTaskId) return task
+const index = task.tabs.findIndex((tab) => tab.id === id)
+if (index >= 0) {
+const tabs = task.tabs.map((tab) =>
+tab.id === id
+? {
+...tab,
+line: line == null ? tab.line : targetLine,
+branch: options.branch || tab.branch || '',
+commit: options.commit || tab.commit || '',
+navFrom: options.jump ? true : !!tab.navFrom,
+...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
+}
+: tab,
+)
+return { ...task, tabs, activeId: id }
+}
+const tab = {
+id,
+kind,
+path: value,
+content: null,
+lang: kind === 'code' ? langForPath(value) : kind === 'html' ? 'xml' : '',
+line: targetLine,
+branch: options.branch || '',
+commit: options.commit || '',
+htmlMode: 'render',
+navFrom: !!options.jump,
+defBar: options.defBar !== undefined ? options.defBar : null,
+error: '',
+scroll: 0,
+}
+const anchorIndex = task.tabs.findIndex((tabItem) => tabItem.id === task.activeId)
+const tabs = task.tabs.slice()
+if (anchorIndex >= 0) tabs.splice(anchorIndex + 1, 0, tab)
+else tabs.push(tab)
+return { ...task, tabs, activeId: id }
+})
+return { ...prev, tasks }
+})
+if (options.from && options.from.path) {
+pushNav({
+path: options.from.path,
+line: Math.max(0, Number(options.from.line) || 0),
+branch: options.from.branch || '',
+commit: options.from.commit || '',
+kind: 'code',
+taskId: workbenchRef.current.activeTaskId,
+})
+}
+pushNav({
+path: value,
+line: targetLine,
+branch: options.branch || '',
+commit: options.commit || '',
+kind,
+taskId: workbenchRef.current.activeTaskId,
+})
+},
+[saveActiveScroll, pushNav],
+)
+const activateTab = React.useCallback(
+(id) => {
+const wb = workbenchRef.current
+const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+if (!task || task.activeId === id || !task.tabs.some((tab) => tab.id === id)) return
+saveActiveScroll()
+setWorkbench((prev) => ({
+...prev,
+tasks: prev.tasks.map((item) => (item.id === prev.activeTaskId ? { ...item, activeId: id } : item)),
+}))
+},
+[saveActiveScroll],
+)
+const closeTab = React.useCallback(
+(id) => {
+saveActiveScroll()
+inflightTabsRef.current.delete(id)
+const closingPath = id.slice(id.indexOf(':') + 1)
+setModalRequest((current) => (current && current.path === closingPath ? null : current))
+setWorkbench((prev) => {
+const owner = prev.tasks.find((task) => task.tabs.some((tab) => tab.id === id))
+if (!owner) return prev
+const tasks = prev.tasks.map((task) => {
+if (task.id !== owner.id) return task
+const index = task.tabs.findIndex((tab) => tab.id === id)
+const nextTabs = task.tabs.filter((tab) => tab.id !== id)
+let activeId = task.activeId
+if (activeId === id) activeId = nextTabs.length ? nextTabs[Math.min(Math.max(index, 0), nextTabs.length - 1)].id : null
+return { ...task, tabs: nextTabs, activeId }
+})
+return { ...prev, tasks }
+})
+},
+[saveActiveScroll],
+)
+const switchTask = React.useCallback(
+(id) => {
+if (id === workbenchRef.current.activeTaskId) return
+if (!workbenchRef.current.tasks.some((task) => task.id === id)) return
+saveActiveScroll()
+setWorkbench((prev) => ({ ...prev, activeTaskId: id }))
+},
+[saveActiveScroll],
+)
+const newTask = React.useCallback(() => {
+saveActiveScroll()
+const task = newTaskRecord(`任务${taskSeq + 1}`)
+setWorkbench((prev) => ({ tasks: prev.tasks.concat([task]), activeTaskId: task.id }))
+}, [saveActiveScroll])
+const renameTask = React.useCallback((id, name) => {
+const value = String(name || '').trim()
+if (!value) return
+setWorkbench((prev) => ({
+...prev,
+tasks: prev.tasks.map((task) => (task.id === id ? { ...task, name: value } : task)),
+}))
+}, [])
+const deleteTask = React.useCallback(
+(id) => {
+saveActiveScroll()
+setWorkbench((prev) => {
+if (!prev.tasks.some((task) => task.id === id)) return prev
+if (prev.tasks.length <= 1) {
+return {
+...prev,
+tasks: prev.tasks.map((task) => (task.id === id ? { ...task, tabs: [], activeId: null } : task)),
+}
+}
+const index = prev.tasks.findIndex((task) => task.id === id)
+const tasks = prev.tasks.filter((task) => task.id !== id)
+const activeTaskId =
+prev.activeTaskId === id ? tasks[Math.min(Math.max(index, 0), tasks.length - 1)].id : prev.activeTaskId
+return { tasks, activeTaskId }
+})
+},
+[saveActiveScroll],
+)
+const reorderTasks = React.useCallback((dragId, targetId, before) => {
+if (!dragId || !targetId || dragId === targetId) return
+setWorkbench((prev) => {
+const from = prev.tasks.findIndex((task) => task.id === dragId)
+if (from < 0) return prev
+const tasks = prev.tasks.slice()
+const [moved] = tasks.splice(from, 1)
+const targetIndex = tasks.findIndex((task) => task.id === targetId)
+if (targetIndex < 0) return prev
+tasks.splice(before ? targetIndex : targetIndex + 1, 0, moved)
+return { ...prev, tasks }
+})
+}, [])
+const reorderTabs = React.useCallback((dragId, targetId, before) => {
+if (!dragId || !targetId || dragId === targetId) return
+setWorkbench((prev) => {
+const task = prev.tasks.find((item) => item.id === prev.activeTaskId)
+if (!task) return prev
+const from = task.tabs.findIndex((tab) => tab.id === dragId)
+if (from < 0) return prev
+const tabs = task.tabs.slice()
+const [moved] = tabs.splice(from, 1)
+const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
+if (targetIndex < 0) return prev
+tabs.splice(before ? targetIndex : targetIndex + 1, 0, moved)
+return {
+...prev,
+tasks: prev.tasks.map((item) => (item.id === task.id ? { ...item, tabs } : item)),
+}
+})
+}, [])
+const toggleDir = React.useCallback(
+(rel) => {
+const willOpen = !expandedRef.current.has(rel)
+const next = new Set(expandedRef.current)
+if (willOpen) next.add(rel)
+else next.delete(rel)
+setExpanded(next)
+expandedRef.current = next
+saveTreeExpansion(currentProjectRef.current, next)
+if (willOpen && !dirsRef.current[rel]) loadDir(rel)
+},
+[loadDir],
+)
+const refreshTree = React.useCallback(() => {
+const current = currentProjectRef.current
+const metaNow = metaRef.current
+const root = current && metaNow && !metaNow.single ? current : ''
+const active = expandedRef.current
+const paths = [root, ...[...active].filter((rel) => rel && rel !== root)]
+paths.forEach((rel) => loadDir(rel))
+setFailedDirs((prev) => (Object.keys(prev).length ? {} : prev))
+setDirs((prev) => {
+const next = { ...prev }
+for (const rel of Object.keys(next)) {
+if (rel !== root && !active.has(rel)) delete next[rel]
+}
+return next
+})
+}, [loadDir])
+const locateInTree = React.useCallback(
+(filePath) => {
+const metaNow = metaRef.current
+const path = collapseDoubledVtopPrefix(String(filePath || ''), metaNow)
+if (!path) return
+const roots = metaNow ? metaNow.roots.map((root) => root.name) : []
+const multiNow = !!(metaNow && !metaNow.single)
+const segs = path.split('/').filter(Boolean)
+const current = currentProjectRef.current
+const alreadyPrefixed = multiNow && roots.includes(segs[0])
+const fullPaths = alreadyPrefixed
+? [segs.join('/')]
+: multiNow
+? (current ? [current] : roots).map((prefix) => `${prefix}/${segs.join('/')}`)
+: [segs.join('/')]
+const next = new Set(expandedRef.current)
+for (const full of fullPaths) {
+const parts = full.split('/')
+for (let index = 1; index < parts.length; index += 1) next.add(parts.slice(0, index).join('/'))
+}
+if (current && multiNow) next.add(current) // project-scoped tree root
+setExpanded(next)
+expandedRef.current = next
+saveTreeExpansion(current, next)
+for (const rel of next) {
+if (!dirsRef.current[rel]) loadDir(rel)
+}
+const locatePath = alreadyPrefixed || !multiNow ? path : current ? `${current}/${path}` : path
+setLocateTarget(locatePath)
+setTimeout(() => setLocateTarget(''), 2600)
+},
+[loadDir],
+)
+const switchProject = React.useCallback(
+(name) => {
+const next = name || null
+if (next === currentProjectRef.current) {
+setProjectsOpen(false)
+return
+}
+saveActiveScroll()
+saveWorkbench(currentProjectRef.current, workbenchRef.current)
+const restored = restoreWorkbench(next)
+let nextWorkbench
+if (restored) nextWorkbench = restored
+else {
+const task = newTaskRecord('默认')
+nextWorkbench = { tasks: [task], activeTaskId: task.id }
+}
+setProjectsOpen(false)
+setCurrentProject(next)
+currentProjectRef.current = next
+setProjectScope(next)
+saveProjectSelection(next)
+setWorkbench(nextWorkbench)
+workbenchRef.current = nextWorkbench
+const nextExpanded = new Set(
+loadTreeExpansion(next).map((rel) => collapseDoubledVtopPrefix(rel, metaRef.current)),
+)
+setExpanded(nextExpanded)
+expandedRef.current = nextExpanded
+setDirs({})
+dirsRef.current = {}
+setFailedDirs({})
+setLocateTarget('')
+setOverlay(null)
+setModalRequest(null)
+},
+[saveActiveScroll],
+)
+switchProjectRef.current = switchProject
+const pruneProjectTabs = React.useCallback((name) => {
+if (!name) return
+const prefix = `${name}/`
+setWorkbench((prev) => {
+let changed = false
+const tasks = prev.tasks.map((task) => {
+if (!task.tabs.some((tab) => tab.path === name || tab.path.startsWith(prefix))) return task
+changed = true
+const nextTabs = task.tabs.filter((tab) => !(tab.path === name || tab.path.startsWith(prefix)))
+let activeId = task.activeId
+if (!nextTabs.some((tab) => tab.id === activeId)) activeId = nextTabs.length ? nextTabs[nextTabs.length - 1].id : null
+return { ...task, tabs: nextTabs, activeId }
+})
+return changed ? { ...prev, tasks } : prev
+})
+}, [])
+const changeRoots = React.useCallback(
+(action, pathValue) => {
+const previousRoots = (metaRef.current && metaRef.current.roots) || []
+const removed = action === 'remove' ? previousRoots.find((root) => root.path === pathValue) : null
+postJson('/api/roots', { action, path: pathValue })
+.then((payload) => {
+const roots = Array.isArray(payload.roots) ? payload.roots : []
+setMeta({ ok: true, roots, single: !!payload.single })
+setDirs({})
+dirsRef.current = {}
+setFailedDirs({})
+if (removed) {
+pruneProjectTabs(removed.name)
+const prefix = `${removed.name}/`
+const next = new Set([...expandedRef.current].filter((rel) => rel !== removed.name && !rel.startsWith(prefix)))
+setExpanded(next)
+expandedRef.current = next
+saveTreeExpansion(currentProjectRef.current, next)
+}
+const current = currentProjectRef.current
+if (current && !roots.some((root) => root.name === current)) {
+if (switchProjectRef.current) switchProjectRef.current(null)
+}
+})
+.catch((err) => setError(String((err && err.message) || err)))
+},
+[pruneProjectTabs],
+)
+const refreshActive = React.useCallback(() => {
+const wb = workbenchRef.current
+const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
+if (!tab || tab.kind === 'image') return
+patchTab(tab.id, { error: '' })
+loadTab(tab.id, tab.kind, tab.path)
+}, [patchTab, loadTab])
+React.useEffect(() => {
+ensureVendor()
+.then(() => setVendorReady(true))
+.catch((err) => setError(String((err && err.message) || err)))
+}, [])
+React.useEffect(() => {
+if (!error) return undefined
+const timer = setTimeout(() => setError(''), 6000)
+return () => clearTimeout(timer)
+}, [error])
+const closeModal = React.useCallback(() => setModalRequest(null), [])
+const closeSync = React.useCallback(() => setSyncOpen(false), [])
+const closeGit = React.useCallback(() => setGitOpen(false), [])
+React.useEffect(() => {
+const onKeyDown = (event) => {
+const target = event.target
+const tag = target && target.tagName ? String(target.tagName).toUpperCase() : ''
+const inField = tag === 'INPUT' || tag === 'TEXTAREA'
+const mod = event.ctrlKey || event.metaKey
+if (mod && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'f') {
+event.preventDefault()
+setOverlay('search')
+return
+}
+if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
+event.preventDefault()
+openFileSearch()
+return
+}
+if (mod && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'p') {
+event.preventDefault()
+setOverlay('files')
+return
+}
+if (event.altKey && !mod && !inField) {
+if (event.key === 'ArrowLeft') {
+event.preventDefault()
+goNav(-1)
+} else if (event.key === 'ArrowRight') {
+event.preventDefault()
+goNav(1)
+} else if (event.key.toLowerCase() === 'p') {
+event.preventDefault()
+setProjectsOpen((value) => !value)
+}
+return
+}
+if (event.key !== 'Escape') return
+const panels = panelsRef.current
+if (panels.modal) {
+const current = event
+Promise.resolve().then(() => {
+if (!current.defaultPrevented) closeModal()
+})
+} else if (panels.git) closeGit()
+else if (panels.sync) closeSync()
+else if (panels.projects) setProjectsOpen(false)
+else setOverlay((current) => (current ? null : current))
+}
+window.addEventListener('keydown', onKeyDown)
+return () => window.removeEventListener('keydown', onKeyDown)
+}, [goNav, closeModal, closeSync, closeGit, openFileSearch])
+React.useEffect(() => {
+if (!meta) return
+const previous = expandedRef.current
+const next = new Set()
+let changed = false
+for (const rel of previous) {
+const fixed = collapseDoubledVtopPrefix(rel, meta)
+if (fixed !== rel) changed = true
+if (fixed) next.add(fixed)
+}
+if (!changed) return
+setExpanded(next)
+expandedRef.current = next
+saveTreeExpansion(currentProjectRef.current, next)
+}, [meta, currentProject])
+React.useEffect(() => {
+if (!meta) return
+const targets = new Set([rootKey])
+for (const rel of expandedRef.current) {
+const clean = collapseDoubledVtopPrefix(rel, meta)
+if (clean && !dirsRef.current[clean]) targets.add(clean)
+}
+for (const rel of targets) loadDir(rel)
+}, [meta, currentProject, rootKey, loadDir])
+React.useEffect(() => {
+saveWorkbench(currentProject, workbench)
+}, [currentProject, workbench])
+React.useEffect(() => {
+setProjectScope(currentProject)
+saveProjectSelection(currentProject)
+}, [currentProject])
+React.useEffect(() => {
+if (!activeTab) return
+if (activeTab.kind === 'image' || activeTab.content != null || activeTab.error) return
+loadTab(activeTab.id, activeTab.kind, activeTab.path)
+}, [workbench.activeTaskId, activeTabKey, loadTab])
+React.useEffect(() => {
+const scroller = contentRef.current
+if (!scroller) return undefined
+const onScroll = () => {
+const wb = workbenchRef.current
+const task = wb.tasks.find((item) => item.id === wb.activeTaskId)
+const tab = task && task.activeId ? task.tabs.find((item) => item.id === task.activeId) : null
+if (!task || !tab || tab.kind !== 'md') return
+scrollStorage.set(mdScrollKey(task.id, tab.path), scroller.scrollTop)
+rememberTabScroll(tabScrollKey(task.id, tab.id), scroller.scrollTop)
+}
+const onBeforeUnload = () => {
+onScroll()
+saveWorkbenchNow()
+scrollStorage.flushNow()
+}
+scroller.addEventListener('scroll', onScroll, { passive: true })
+window.addEventListener('beforeunload', onBeforeUnload)
+return () => {
+scroller.removeEventListener('scroll', onScroll)
+window.removeEventListener('beforeunload', onBeforeUnload)
+}
+}, [saveWorkbenchNow])
+React.useEffect(() => {
+if (!activeTab || activeTab.kind !== 'md') return undefined
+const scroller = contentRef.current
+if (!scroller) return undefined
+const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
+if (target <= 0) return undefined
+const apply = () => {
+const el = contentRef.current
+if (el && Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
+}
+apply()
+const timer = setTimeout(apply, 150)
+return () => clearTimeout(timer)
+}, [workbench.activeTaskId, activeTabKey])
+React.useEffect(() => {
+let cancelled = false
+fetchJson('/api/meta')
+.then((payload) => {
+if (cancelled) return
+setMeta(payload)
+const names = (payload.roots || []).map((root) => root.name)
+const project = currentProjectRef.current
+if (project && !names.includes(project) && switchProjectRef.current) switchProjectRef.current(null)
+})
+.catch((err) => {
+if (!cancelled) setError(String((err && err.message) || err))
+})
+return () => {
+cancelled = true
+}
+}, [])
+const onContentClick = (event) => {
+const target = event.target
+const anchor = target && target.closest ? target.closest('a[data-path]') : null
+if (!anchor) return
+const rel = (anchor.dataset.path || '').trim()
+if (!rel) return
+if (event.shiftKey && anchor.hasAttribute('href')) return
+event.preventDefault()
+const kind = anchor.dataset.kind || kindForPath(rel)
+const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
+const branch = anchor.dataset.branch || ''
+const commit = anchor.dataset.commit || ''
+const modifier = event.ctrlKey || event.metaKey
+if (kind === 'code') {
+if (modifier) openPath(rel, line, { branch, commit, jump: true })
+else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit })
+return
+}
+openPath(rel, line, { branch, commit })
+}
+const projectLabel = currentProject || (meta && meta.roots.length > 1 ? '全部项目' : '项目')
+const projectsTitle = currentProject
+? `当前项目 ${currentProject}（Alt+P 项目管理）`
+: meta && meta.roots.length > 1
+? '全部项目（Alt+P 项目管理）'
+: '项目管理（Alt+P）'
+const treeLabel = currentProject
+? currentProject
+: meta && meta.roots.length > 1
+? `全部项目（${rootNames.length}）`
+: rootNames[0] || '项目'
+const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
+return h(
+React.Fragment,
+null,
+h(
+'div',
+{ className: 'mdr-topbar' },
+h('span', { className: 'mdr-brand' }, h(Icons.doc, { size: 16 }), 'Markdown Reader'),
+h(
+'button',
+{
+className: 'mdr-btn',
+disabled: nav.idx <= 0,
+title: '后退（Alt+←）',
+onClick: () => goNav(-1),
+},
+h(NavBackIcon, { size: 14 }),
+),
+h(
+'button',
+{
+className: 'mdr-btn',
+disabled: nav.idx >= nav.stack.length - 1,
+title: '前进（Alt+→）',
+onClick: () => goNav(1),
+},
+h(NavFwdIcon, { size: 14 }),
+),
+h('input', {
+className: 'mdr-path',
+value: pathInput,
+placeholder: '输入相对路径回车打开（如 docs/需求/x.md）',
+onChange: (event) => setPathInput(event.target.value),
+onKeyDown: (event) => {
+if (event.key !== 'Enter') return
+openPath(pathInput, null)
+setPathInput('')
+},
+}),
+h('span', { className: 'mdr-spacer' }),
+h(
+'button',
+{
+className: 'mdr-btn' + (projectsOpen ? ' on' : ''),
+onClick: () => setProjectsOpen((value) => !value),
+title: projectsTitle,
+},
+h(Icons.layers, { size: 14 }),
+projectLabel,
+),
+h('button', { className: 'mdr-btn', onClick: () => setOverlay('json'), title: 'JSON 格式化工具' }, 'JSON'),
+h(
+'button',
+{
+className: 'mdr-btn' + (syncOpen ? ' on' : ''),
+onClick: () => {
+setSyncOpen(true)
+setGitOpen(false)
+},
+title: '检查更新',
+},
+h(Icons.refresh, { size: 14 }),
+'同步',
+),
+h(
+'button',
+{
+className: 'mdr-btn' + (gitOpen ? ' on' : ''),
+onClick: () => {
+setGitOpen(true)
+setSyncOpen(false)
+},
+title: '版本树',
+},
+h(GitGraphIcon, { size: 14 }),
+'Git 图',
+),
+h(
+'button',
+{ className: 'mdr-btn', onClick: refreshActive, disabled: !activeTab, title: '重新读取当前文件' },
+h(Icons.refresh, { size: 14 }),
+'刷新',
+),
+),
+projectsOpen
+? h(ProjectsPanel, {
+meta,
+current: currentProject,
+onSwitch: switchProject,
+onAdd: (value) => changeRoots('add', value),
+onRemove: (value) => changeRoots('remove', value),
+onClose: () => setProjectsOpen(false),
+})
+: null,
+h(WorkbenchBar, {
+tasks: workbench.tasks,
+activeTaskId: workbench.activeTaskId,
+onSwitch: switchTask,
+onNew: newTask,
+onRename: renameTask,
+onDelete: deleteTask,
+onReorder: reorderTasks,
+}),
+h(
+'div',
+{ className: 'mdr-body' },
+h(
+'div',
+{ className: 'mdr-tree' },
+h(
+'div',
+{ className: 'mdr-tree-toolbar' },
+h('span', { className: 'mdr-tree-tip', title: treeTitle }, treeLabel),
+h('span', { className: 'mdr-spacer' }),
+h('button', { className: 'mdr-btn', onClick: refreshTree, title: '刷新目录树' }, h(Icons.refresh, { size: 13 })),
+),
+h(Tree, {
+rootEntries: dirs[rootKey],
+rootPath: rootKey,
+expanded,
+dirs,
+failed: failedDirs,
+activePath: activeTab ? activeTab.path : '',
+locatedPath: locateTarget,
+onToggle: toggleDir,
+onOpen: (rel) => openPath(rel, null),
+}),
+),
+h(
+'div',
+{ className: 'mdr-right' },
+h(TabBar, {
+tabs,
+activeId,
+onActivate: activateTab,
+onClose: closeTab,
+onReorder: reorderTabs,
+}),
+h(
+'div',
+{
+className: 'mdr-content' + (activeTab && activeTab.kind === 'code' ? ' code' : ''),
+ref: contentRef,
+onClick: onContentClick,
+},
+activeTab == null
+? h(EmptyState, { meta, currentProject })
+: activeTab.kind === 'md'
+? vendorReady
+? h(MarkdownView, { key: activeTab.id, tab: activeTab, multi, rootNames, taskId: workbench.activeTaskId })
+: h('div', { className: 'mdr-empty' }, '渲染库加载中…')
+: activeTab.kind === 'code'
+? h(CodeView, {
+key: activeTab.id,
+tab: activeTab,
+taskId: workbench.activeTaskId,
+onOpen: (rel, line, opts) => openPath(rel, line, { ...(opts || {}), jump: true }),
+onBack: () => goNav(-1),
+})
+: activeTab.kind === 'html'
+? typeof HtmlTabView === 'function'
+? h(HtmlTabView, {
+key: activeTab.id,
+tab: activeTab,
+onToggleMode: (mode) => patchTab(activeTab.id, { htmlMode: mode === 'source' ? 'source' : 'render' }),
+onLocate: () => locateInTree(activeTab.path),
+})
+: h('div', { className: 'mdr-empty' }, 'HTML 视图未就绪')
+: activeTab.kind === 'image'
+? typeof ImageView === 'function'
+? h(ImageView, {
+key: activeTab.id,
+tab: activeTab,
+onLocate: () => locateInTree(activeTab.path),
+})
+: h('div', { className: 'mdr-empty' }, '图片视图未就绪')
+: h('div', { className: 'mdr-empty' }, '不支持的文件类型'),
+),
+),
+),
+fsOpen
+? h(FileSearchWidget, {
+query: fsQuery,
+onQuery: (value) => {
+fsQueryRef.current = value
+setFsQuery(value)
+},
+count: fsInfo.count,
+index: fsInfo.index,
+status: fsInfo.status,
+options: fsOptions,
+onToggleOption: toggleFileSearchOption,
+onSearch: runFileSearch,
+onNext: () => gotoFileSearch(1),
+onPrev: () => gotoFileSearch(-1),
+onClose: closeFileSearch,
+onGlobal: () => {
+closeFileSearch()
+setOverlay('search')
+},
+})
+: null,
+error ? h('div', { className: 'mdr-err' }, error) : null,
+overlay === 'search'
+? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
+: null,
+overlay === 'files'
+? h(SearchPanel, { mode: 'files', onClose: () => setOverlay(null), onOpen: (rel) => openPath(rel, null) })
+: null,
+overlay === 'json' ? h(JsonTool, { onClose: () => setOverlay(null) }) : null,
+typeof CodeModal === 'function' && modalRequest
+? h(CodeModal, {
+request: modalRequest,
+onClose: closeModal,
+onOpenTab: (target) => {
+const request = target && target.path ? target : modalRequest
+closeModal()
+if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
+},
+onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+})
+: null,
+typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,
+typeof GitGraphModal === 'function' && gitOpen
+? h(GitGraphModal, { path: activeTab ? activeTab.path : '', onClose: closeGit, onOpen: openPath })
+: null,
+)
+}
 function Page() {
-  // The fence palette (hljs colours + the diff row colours) lives NEXT TO the
-  // app stylesheet, inside the plugin's own root: a <style> in <head> only
-  // reaches the document if the panel is rendered there, and the diff rows
-  // must keep their colours wherever the harness mounts the panel.
-  const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
-  const fileSearchCss = typeof FILE_SEARCH_CSS !== 'undefined' ? FILE_SEARCH_CSS : ''
-  // The panel root is captured so overlays (context menu, toast) are mounted
-  // INSIDE the panel: the Harness mounts it into its own DOM scope, and
-  // anything appended to document.body loses the panel's stylesheet and lands
-  // at the bottom of the Harness window.
-  const rootRef = (element) => {
-    if (typeof setPanelRoot === 'function') setPanelRoot(element)
-  }
-  const buildId = typeof BUILD_ID === 'undefined' ? '' : BUILD_ID
-  return h(
-    'div',
-    { className: 'mdr-root', ref: rootRef },
-    h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
-    fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
-    fileSearchCss
-      ? h('style', { id: 'mdr-filesearch-css', dangerouslySetInnerHTML: { __html: fileSearchCss } })
-      : null,
-    buildId
-      ? h(
-          'div',
-          {
-            className: 'mdr-build',
-            title:
-              `Markdown Reader 客户端构建 ${buildId}。若这里显示的是旧构建号，说明窗口还在跑旧代码 —— 刷新窗口（Ctrl+R）即可。`,
-          },
-          `build ${buildId}`,
-        )
-      : null,
-    h(App),
-  )
+const fenceCss = typeof FENCE_CSS !== 'undefined' ? FENCE_CSS : ''
+const fileSearchCss = typeof FILE_SEARCH_CSS !== 'undefined' ? FILE_SEARCH_CSS : ''
+const rootRef = (element) => {
+if (typeof setPanelRoot === 'function') setPanelRoot(element)
 }
-
+const buildId = typeof BUILD_ID === 'undefined' ? '' : BUILD_ID
+return h(
+'div',
+{ className: 'mdr-root', ref: rootRef },
+h('style', { dangerouslySetInnerHTML: { __html: APP_CSS } }),
+fenceCss ? h('style', { id: 'mdr-fence-css', dangerouslySetInnerHTML: { __html: fenceCss } }) : null,
+fileSearchCss
+? h('style', { id: 'mdr-filesearch-css', dangerouslySetInnerHTML: { __html: fileSearchCss } })
+: null,
+buildId
+? h(
+'div',
+{
+className: 'mdr-build',
+title:
+`Markdown Reader 客户端构建 ${buildId}。若这里显示的是旧构建号，说明窗口还在跑旧代码 —— 刷新窗口（Ctrl+R）即可。`,
+},
+`build ${buildId}`,
+)
+: null,
+h(App),
+)
+}
 function MarkdownReaderIcon(props) {
-  const size = (props && props.size) || 20
-  return h(
-    'svg',
-    {
-      width: size,
-      height: size,
-      viewBox: '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
-      strokeWidth: 1.7,
-      strokeLinecap: 'round',
-      strokeLinejoin: 'round',
-      'aria-hidden': true,
-      style: { display: 'block' },
-    },
-    h('path', { d: 'M6 3h8l4 4v14H6z' }),
-    h('path', { d: 'M14 3v4h4' }),
-    h('path', { d: 'M9 12h6' }),
-    h('path', { d: 'M9 16h4' }),
-  )
+const size = (props && props.size) || 20
+return h(
+'svg',
+{
+width: size,
+height: size,
+viewBox: '0 0 24 24',
+fill: 'none',
+stroke: 'currentColor',
+strokeWidth: 1.7,
+strokeLinecap: 'round',
+strokeLinejoin: 'round',
+'aria-hidden': true,
+style: { display: 'block' },
+},
+h('path', { d: 'M6 3h8l4 4v14H6z' }),
+h('path', { d: 'M14 3v4h4' }),
+h('path', { d: 'M9 12h6' }),
+h('path', { d: 'M9 16h4' }),
+)
 }
-
 function registerSlots(ctx) {
-  // Tell the Host which client build this browser loaded, and reload if the
-  // Host serves a newer one (the Harness caches plugin clients immutably).
-  try {
-    syncClientBuild()
-  } catch {
-    /* ignore */
-  }
-  // Report the DOM scope the panel lives in, so "why does this overlay end up
-  // at the bottom of the window" is answered by the app, not guessed.
-  try {
-    if (typeof cleanupStaleOverlays === 'function') cleanupStaleOverlays()
-    if (typeof reportClientDom === 'function') reportClientDom()
-    if (typeof startDomReport === 'function') startDomReport()
-  } catch {
-    /* ignore */
-  }
-  ctx.slots.inject('sidebar.panellist', () =>
-    ctx.slots.register(
-      { name: 'sidebar.panellist', id: 'markdown-reader', order: 20, label: 'Markdown Reader' },
-      MarkdownReaderIcon,
-    ),
-  )
-  ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'markdown-reader' }, Page))
+try {
+syncClientBuild()
+} catch {
 }
-
+try {
+if (typeof cleanupStaleOverlays === 'function') cleanupStaleOverlays()
+if (typeof reportClientDom === 'function') reportClientDom()
+if (typeof startDomReport === 'function') startDomReport()
+} catch {
+}
+ctx.slots.inject('sidebar.panellist', () =>
+ctx.slots.register(
+{ name: 'sidebar.panellist', id: 'markdown-reader', order: 20, label: 'Markdown Reader' },
+MarkdownReaderIcon,
+),
+)
+ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: 'markdown-reader' }, Page))
+}
         return { registerSlots };
       })();
     } catch (error) {
