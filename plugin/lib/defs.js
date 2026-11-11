@@ -26,6 +26,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { Worker } from 'node:worker_threads'
 import {
   parseJava,
   findConstDeclLineText,
@@ -86,6 +87,7 @@ const cache = {
   repos: new Map(), // rootAbs -> { at, list }
   repoJavaRoots: new Map(), // repoAbs -> { at, list }
   classIndex: new Map(), // rootAbs -> { at, map }
+  scopeClassIndex: new Map(), // moduleGroupAbs -> { at, map } (sibling modules of one repo)
   gitTree: new Map(), // `${repo}\u0000${rev}` -> { at, files }
   gitBlob: new Map(), // `${repo}\u0000${rev}\u0000${rel}` -> { at, content }
   models: new Map(), // content hash -> model
@@ -329,23 +331,49 @@ function loadFileContent(state, relPath, viewCommit) {
 function discoverGitRepos(rootAbs) {
   const hit = cache.repos.get(rootAbs)
   if (hit && now() - hit.at < REPO_TTL) return hit.list
-  const gitsDir = path.join(rootAbs, 'gits')
   const found = []
-  if (isDir(gitsDir)) {
-    const stack = [{ dir: gitsDir, depth: 0 }]
+  const seen = new Set()
+  const addRepo = (dir) => {
+    const abs = path.resolve(dir)
+    if (seen.has(abs)) return
+    seen.add(abs)
+    found.push(abs)
+  }
+  /**
+   * Walk a directory tree and collect every folder that holds a `.git`.
+   */
+  const scan = (startDir, maxDepth) => {
+    if (!isDir(startDir)) return
+    const stack = [{ dir: startDir, depth: 0 }]
     while (stack.length) {
       const { dir, depth } = stack.pop()
       for (const entry of readDir(dir)) {
         if (entry.name === '.git') {
-          found.push(dir)
+          addRepo(dir)
           continue
         }
         if (!entry.isDirectory()) continue
         if (REPO_SCAN_SKIP.has(entry.name)) continue
-        if (depth < 6) stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 })
+        if (depth < maxDepth) stack.push({ dir: path.join(dir, entry.name), depth: depth + 1 })
       }
     }
   }
+
+  // The CK layout keeps its repositories under `<root>/gits/`.
+  scan(path.join(rootAbs, 'gits'), 6)
+
+  /**
+   * OTHER layouts keep the repository deeper in the tree.
+   *
+   * The jjy workspace is `code/jjy/modules/<module>/.git` (the reader's root
+   * is `code`, and `code/jjy` itself is not a repository). It was invisible to
+   * the discovery, so the class index had no entry for it and EVERY
+   * cross-module jump in that workspace failed with 「未找到定义」 (the enum
+   * `HermesTypeEnum` lives in the sibling module `poseidon`). Scan the root's
+   * own tree for `.git` folders - the heavy directories are skipped.
+   */
+  scan(rootAbs, 4)
+
   found.sort()
   cache.repos.set(rootAbs, { at: now(), list: found })
   return found
@@ -386,26 +414,67 @@ function repoJavaRoots(repoAbs) {
       for (const sub of ['main', 'test']) roots.push(path.join(second, 'src', sub, 'java'))
     }
   }
-  const unique = [...new Set(roots.map((value) => path.resolve(value)))]
+
+  /**
+   * DEEPER module layouts.
+   *
+   * The jjy-o2o repository keeps its modules four levels down
+   * (`<repo>/xls-platform/jar/<module>/src/main/java`). The two levels above
+   * found nothing, so the class index had no entry for those modules and every
+   * cross-module jump into them failed with 「未找到定义」 - clicking an enum
+   * constant (`HermesTypeEnum.COUPON`) included. Walk the repository for
+   * `<dir>/src/{main,test}/java` instead of assuming a fixed depth.
+   */
+  const found = new Set(roots.map((value) => path.resolve(value)))
+  const stack = [{ dir: repoAbs, depth: 0 }]
+  while (stack.length) {
+    const { dir, depth } = stack.pop()
+    for (const entry of readDir(dir)) {
+      if (!entry.isDirectory()) continue
+      if (REPO_JAVA_ROOT_SKIP.has(entry.name)) continue
+      const child = path.join(dir, entry.name)
+      if (isDir(path.join(child, 'src'))) {
+        for (const sub of ['main', 'test']) {
+          const javaRoot = path.join(child, 'src', sub, 'java')
+          if (isDir(javaRoot)) found.add(path.resolve(javaRoot))
+        }
+      }
+      if (depth < 5) stack.push({ dir: child, depth: depth + 1 })
+    }
+  }
+
+  const unique = [...found]
   cache.repoJavaRoots.set(repoAbs, { at: now(), list: unique })
   return unique
 }
 
 /* ----------------------------------------------------------- class index */
 
+const CLASS_INDEX_TTL = 1800000 // 30 min: source trees rarely change mid-session
+const classIndexBuilds = new Map() // `${rootAbs}` / `${repoAbs}` -> Promise
+
 /**
- * FQN -> class file list for one workspace root (`_class_index` in the original).
- * Built lazily from the java source roots of every git repo under `<root>/gits`;
- * O(1) lookups afterwards (a click can query dozens of wildcard-import types).
+ * FQN -> class file list for the given repositories under `rootAbs`.
+ *
+ * Pure (only absolute paths in, entries out) so the same walk can run in a
+ * worker thread: on a monorepo the full walk takes seconds (80 repositories,
+ * 21k java files in the jjy workspace) and the Host lives in the Harness MAIN
+ * process - doing it there freezes the whole app, which is the trap documented
+ * in the skill for the basename index.
+ *
+ * `onlyRepos` narrows the walk to a few repositories: a cross-module jump
+ * almost always stays inside the clicked file's own repository, and one
+ * repository (~1 s) is much cheaper than the whole workspace (~4 s).
+ *
+ * @returns {Array<[string, string[]]>} entries, ready to build a Map from.
  */
-function classIndex(state, rootAbs) {
-  const hit = cache.classIndex.get(rootAbs)
-  if (hit && now() - hit.at < REPO_TTL) return hit.map
+export function buildClassIndexEntries(rootAbs, prefix, onlyRepos, scanDir) {
+  const entries = []
   const map = new Map()
-  const info = state.roots().find((root) => path.resolve(root.path) === path.resolve(rootAbs))
-  const prefix = state.single() || !info ? '' : `${info.name}/`
+  const prefixed = prefix || ''
   const rootReal = path.resolve(rootAbs)
-  for (const repo of discoverGitRepos(rootAbs)) {
+  const repos = onlyRepos && onlyRepos.length ? onlyRepos : discoverGitRepos(scanDir || rootAbs)
+  for (const repo of repos) {
     for (const javaRoot of repoJavaRoots(repo)) {
       if (!isDir(javaRoot)) continue
       const rootRel = path.relative(rootReal, javaRoot).replace(/\\/g, '/')
@@ -421,7 +490,7 @@ function classIndex(state, rootAbs) {
           const abs = path.join(dir, entry.name)
           const pkgRel = path.relative(javaRoot, abs).replace(/\\/g, '/')
           const fqn = pkgRel.slice(0, -'.java'.length).replace(/\//g, '.')
-          const rel = `${prefix}${rootRel ? rootRel + '/' : ''}${pkgRel}`
+          const rel = `${prefixed}${rootRel ? rootRel + '/' : ''}${pkgRel}`
           const bucket = map.get(fqn)
           if (bucket) bucket.push(rel)
           else map.set(fqn, [rel])
@@ -429,12 +498,192 @@ function classIndex(state, rootAbs) {
       }
     }
   }
+  for (const [fqn, files] of map) entries.push([fqn, files])
+  return entries
+}
+
+/**
+ * Build an index on a WORKER THREAD and install it, so a later ctrl+click is
+ * instant instead of blocking the main process.
+ * Fire-and-forget: one build per cache key at a time, failures are ignored.
+ *
+ * `key` is what the install replaces: a root (`rootAbs`) for the whole index,
+ * or `${rootAbs}\u0000${repo}` for a single repository.
+ */
+function prewarmIndex(key, workerData, install, onDone) {
+  const debug = process.env.MDR_DEBUG === '1'
+  if (debug) console.error('[defs] prewarm', key, 'ready=', install.ready(), 'running=', classIndexBuilds.has(key))
+  if (classIndexBuilds.has(key)) return
+  if (install.ready()) return
+  let worker = null
+  const promise = new Promise((resolve) => {
+    let done = false
+    const finish = (ok) => {
+      if (done) return
+      done = true
+      try {
+        if (worker) worker.terminate()
+      } catch {
+        // already gone
+      }
+      resolve(ok)
+    }
+    try {
+      worker = new Worker(new URL('./classindex-worker.js', import.meta.url), { workerData })
+    } catch {
+      finish(false)
+      return
+    }
+    worker.on('message', (message) => {
+      if (!message || !Array.isArray(message.entries)) {
+        if (debug) console.error('[defs] prewarm failed', key, message && message.error)
+        finish(false)
+        return
+      }
+      if (debug) console.error('[defs] prewarm done', key, message.entries.length, 'entries')
+      install.done(message.entries)
+      finish(true)
+      if (typeof onDone === 'function') {
+        try {
+          onDone()
+        } catch {
+          // chained prewarming is an optimisation only
+        }
+      }
+    })
+    worker.on('error', (error) => {
+      if (debug) console.error('[defs] prewarm error', key, error && error.message)
+      finish(false)
+    })
+    worker.on('exit', () => finish(false))
+  }).finally(() => classIndexBuilds.delete(key))
+  classIndexBuilds.set(key, promise)
+}
+
+/** Prefix the client-visible paths of a root need (`<vtop>/...` when multi-root). */
+export function classIndexPrefix(state, rootAbs) {
+  const info = state.roots().find((root) => path.resolve(root.path) === path.resolve(rootAbs))
+  return state.single() || !info ? '' : `${info.name}/`
+}
+
+/**
+ * The index SCOPE of a clicked file: the directory that holds its repository.
+ *
+ * A module layout like `gits/<project>/xls-platform/jar/<module>/.git` makes
+ * every module its own repository, so "the file's own repository" never
+ * contains the sibling module it refers to; the parent directory does. When the
+ * repository already sits directly under a workspace root the parent IS the
+ * root - that is the full index, so there is nothing cheaper to build.
+ */
+function scopeOfRepo(state, repo) {
+  if (!repo) return null
+  const parent = path.dirname(path.resolve(repo))
+  if (!parent || parent === path.resolve(repo)) return null
+  const roots = state.roots()
+  for (const root of roots) {
+    if (path.resolve(root.path) === parent) return null
+  }
+  return parent
+}
+
+/**
+ * Prewarm the index of the scope that owns `relPath` (fire and forget).
+ * Called when a code file is opened, so the first ctrl+click finds a ready
+ * index instead of building one in the main process.
+ */
+export function prewarmDefIndex(state, relPath) {
+  try {
+    const info = rootInfo(state, relPath)
+    if (!info || !info.rootAbs) return
+    const prefix = classIndexPrefix(state, info.rootAbs)
+    const scope = scopeOfRepo(state, repoForRel(state, relPath).repo)
+    if (!scope) {
+      const hit = cache.classIndex.get(info.rootAbs)
+      prewarmIndex(
+        info.rootAbs,
+        { rootAbs: info.rootAbs, prefix },
+        {
+          ready: () => {
+            const fresh = cache.classIndex.get(info.rootAbs)
+            return !!(fresh && now() - fresh.at < CLASS_INDEX_TTL)
+          },
+          done: (entries) => cache.classIndex.set(info.rootAbs, { at: now(), map: new Map(entries) }),
+        },
+      )
+      return
+    }
+    const hit = cache.scopeClassIndex.get(scope)
+    const warmRoot = () => {
+      const rootHit = cache.classIndex.get(info.rootAbs)
+      prewarmIndex(
+        info.rootAbs,
+        { rootAbs: info.rootAbs, prefix },
+        {
+          ready: () => {
+            const fresh = cache.classIndex.get(info.rootAbs)
+            return !!(fresh && now() - fresh.at < CLASS_INDEX_TTL)
+          },
+          done: (entries) => cache.classIndex.set(info.rootAbs, { at: now(), map: new Map(entries) }),
+        },
+      )
+    }
+    prewarmIndex(
+      `${info.rootAbs}\u0000${scope}`,
+      { rootAbs: info.rootAbs, prefix, scanDir: scope },
+      {
+        ready: () => !!(hit && now() - hit.at < CLASS_INDEX_TTL),
+        done: (entries) => cache.scopeClassIndex.set(scope, { at: now(), map: new Map(entries) }),
+      },
+      warmRoot,
+    )
+  } catch {
+    // prewarming is an optimisation only
+  }
+}
+
+/** FQN -> files for ONE module group (cached; the cheap half of the index). */
+function scopeClassIndex(state, scope, rootAbs) {
+  const hit = cache.scopeClassIndex.get(scope)
+  if (hit && now() - hit.at < CLASS_INDEX_TTL) return hit.map
+  const map = new Map(buildClassIndexEntries(rootAbs, classIndexPrefix(state, rootAbs), null, scope))
+  cache.scopeClassIndex.set(scope, { at: now(), map })
+  return map
+}
+
+/** Look a FQN up in the clicked file's module group first; null when unknown. */
+function lookupScope(state, preferRepo, rootAbs, fqn) {
+  const scope = scopeOfRepo(state, preferRepo)
+  if (!scope) return null
+  const bucket = scopeClassIndex(state, scope, rootAbs).get(fqn)
+  return bucket && bucket.length ? bucket : null
+}
+
+/**
+ * FQN -> class file list for one workspace root (`_class_index` in the original).
+ * Built lazily from the java source roots of every git repo under the root;
+ * O(1) lookups afterwards (a click can query dozens of wildcard-import types).
+ */
+function classIndex(state, rootAbs) {
+  const hit = cache.classIndex.get(rootAbs)
+  if (hit && now() - hit.at < CLASS_INDEX_TTL) return hit.map
+  const map = new Map(buildClassIndexEntries(rootAbs, classIndexPrefix(state, rootAbs)))
   cache.classIndex.set(rootAbs, { at: now(), map })
   return map
 }
 
-function typeSrcExists(state, fqn, preferRoot) {
+/**
+ * Does `fqn` exist as a source file?
+ *
+ * The clicked file's own repository is consulted first: a local type is there,
+ * and answering from one repository avoids building the whole workspace index
+ * (a monorepo root can hold 80 repositories) inside the Harness main process.
+ */
+function typeSrcExists(state, fqn, preferRoot, preferRepo) {
   if (!fqn || !preferRoot) return false
+  if (preferRepo) {
+    const own = lookupScope(state, preferRepo, preferRoot, fqn)
+    if (own) return true
+  }
   const bucket = classIndex(state, preferRoot).get(fqn)
   return !!(bucket && bucket.length)
 }
@@ -448,7 +697,7 @@ function isExternalFqn(fqn) {
  * wildcard imports (project-internal file first), java.lang whitelist, then
  * wildcard/JDK/project fallbacks and finally the same package.
  */
-function typeFqnInTree(state, model, typeName, pkg, preferRoot) {
+function typeFqnInTree(state, model, typeName, pkg, preferRoot, preferRepo) {
   for (const imp of model.imports) {
     if (!imp.wildcard && imp.path.endsWith('.' + typeName)) return imp.path
   }
@@ -460,7 +709,11 @@ function typeFqnInTree(state, model, typeName, pkg, preferRoot) {
     const base = imp.path.replace(/[.*]+$/, '')
     if (!base) continue
     const fqn = `${base}.${typeName}`
-    if (typeSrcExists(state, fqn, preferRoot)) return fqn
+    const jdk = base.startsWith('java.') || base.startsWith('javax.')
+    const external = isExternalFqn(base + '.')
+    // A framework/JDK package has no source here: asking the index would build
+    // the whole workspace index just to answer "no".
+    if (!jdk && !external && typeSrcExists(state, fqn, preferRoot, preferRepo)) return fqn
     if (base.startsWith('java.') || base.startsWith('javax.')) {
       if (!jdkHit) jdkHit = fqn
     } else if (isExternalFqn(base + '.')) {
@@ -482,12 +735,64 @@ function findByPackagePath(state, relJava, projRoot, preferRepo) {
   let fqn = String(relJava || '').replace(/\\/g, '/')
   if (fqn.endsWith('.java')) fqn = fqn.slice(0, -'.java'.length)
   fqn = fqn.replace(/\//g, '.')
+  // The clicked file's own repository first: a cross-module jump almost always
+  // stays inside it, and one repository is much cheaper to index than the
+  // whole workspace (a monorepo root can hold 80 repositories).
+  if (preferRepo) {
+    const own = lookupScope(state, preferRepo, projRoot, fqn)
+    if (own) return own[0]
+  }
   const bucket = classIndex(state, projRoot).get(fqn)
   if (!bucket || !bucket.length) return null
   if (preferRepo) {
     for (const candidate of bucket) {
       const { repo } = repoForRel(state, candidate)
       if (repo && sameReal(repo, preferRepo)) return candidate
+    }
+  }
+  return bucket[0]
+}
+
+/**
+ * Java file by SIMPLE class name, answered from the class index.
+ *
+ * `resolveTypeFile` used to fall back to `searchFile`, which walks the whole
+ * repository on EVERY click. Measured on the jjy-o2o repository: 1.7 s per
+ * unresolved name, in the Harness MAIN process - the same "the click freezes
+ * the app" trap as the basename index. The class index already holds every
+ * java file of every repository under the root, so scanning its keys answers
+ * the same question in a few milliseconds.
+ */
+function findBySimpleName(state, rootAbs, simpleName, preferRepo) {
+  if (!rootAbs || !simpleName) return null
+  const suffix = `.${simpleName}`
+  const collect = (index) => {
+    const bucket = []
+    for (const [fqn, files] of index) {
+      if (fqn !== simpleName && !fqn.endsWith(suffix)) continue
+      for (const rel of files) bucket.push(rel)
+    }
+    bucket.sort((a, b) => a.split('/').length - b.split('/').length)
+    return bucket
+  }
+  // The clicked file's own module group first (cheap), the whole root on a miss.
+  if (preferRepo) {
+    const scope = scopeOfRepo(state, preferRepo)
+    if (scope) {
+      const own = collect(scopeClassIndex(state, scope, rootAbs))
+      if (own.length) return own[0]
+    }
+  }
+  const index = classIndex(state, rootAbs)
+  if (!index.size) return null
+  const bucket = collect(index)
+  if (!bucket.length) return null
+  if (preferRepo) {
+    const prefRel = String(relOf(state, preferRepo) || '').replace(/\\/g, '/')
+    if (prefRel) {
+      for (const candidate of bucket) {
+        if (candidate.startsWith(`${prefRel}/`)) return candidate
+      }
     }
   }
   return bucket[0]
@@ -570,7 +875,7 @@ function resolveTypeFile(state, model, typeName, srcRel, viewCommit) {
   const preferRepo = repoForRel(state, srcRel).repo
   const fqn = String(typeName).includes('.')
     ? typeName
-    : typeFqnInTree(state, model, typeName, pkg, projRoot)
+    : typeFqnInTree(state, model, typeName, pkg, projRoot, preferRepo)
   const candidates = []
   if (fqn) {
     candidates.push(fqn.replace(/\./g, '/') + '.java')
@@ -593,6 +898,13 @@ function resolveTypeFile(state, model, typeName, srcRel, viewCommit) {
     if (hit) return hit
   }
   if (fqn && isExternalFqn(fqn)) return null
+  const byName = findBySimpleName(state, projRoot, typeName, preferRepo)
+  if (byName) return byName
+  // Only walk the tree when the class index has no coverage at all (a root
+  // without any java source root). Otherwise the index scan above is final -
+  // walking a big repository on every click blocked the Harness main process
+  // for 1.7 s per unresolved name.
+  if (projRoot && classIndex(state, projRoot).size) return null
   return searchFile(state, typeName + '.java', viewCommit, preferRepo, projRoot)
 }
 

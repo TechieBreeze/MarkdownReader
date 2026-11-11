@@ -14,7 +14,7 @@ import { promisify } from 'node:util'
 import { ROUTE, VERSION } from './constants.js'
 import { sendJson, sendError, sendFile, readBody } from './http.js'
 import { CODE_EXTS, MARKDOWN_EXTS, HIDDEN_DIR_NAMES } from './state.js'
-import { resolveDefinition } from './defs.js'
+import { resolveDefinition, prewarmDefIndex } from './defs.js'
 import { syncStatus, syncPull } from './sync.js'
 import { gitGraph, listRepos } from './gitgraph.js'
 import { renderHtmlPreview } from './htmlpreview.js'
@@ -248,9 +248,14 @@ function apiCode(res, state, url) {
   const abs = state.safePath(rel)
   const content = readTextFile(abs)
   const ext = path.extname(abs).toLowerCase()
+  const resolved = state.relOf(abs)
+  // A code file is about to be ctrl+clicked: warm the java class index for its
+  // root in a worker thread, so the first jump is instant instead of building
+  // the index (up to ~2 s on a monorepo) inside the Harness main process.
+  if (ext === '.java') prewarmDefIndex(state, resolved)
   return sendJson(res, 200, {
     ok: true,
-    path: state.relOf(abs),
+    path: resolved,
     content,
     lang: ext.replace(/^\./, ''),
     lineCount: content.split('\n').length,
