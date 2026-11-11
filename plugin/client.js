@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "410ab83086ef";
+    const BUILD_ID = "e0e679c26f2c";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1103,7 +1103,7 @@ const APP_CSS = `
 .mdr-tab .mdr-tab-close:active{cursor:pointer}
 .mdr-tab.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
 .mdr-tab-name{overflow:hidden;text-overflow:ellipsis}
-.mdr-tab-close{display:inline-flex;padding:1px;border-radius:4px;opacity:.55}
+.mdr-tab-close{display:inline-flex;align-items:center;justify-content:center;min-width:19px;min-height:19px;padding:2px 3px;border-radius:5px;opacity:.6}
 .mdr-tab-close:hover{opacity:1;background:var(--dsw-alias-bg-layer-2)}
 .mdr-content{flex:1;min-height:0;overflow:auto;position:relative;scroll-behavior:auto;overflow-anchor:none}
 .mdr-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;height:100%;color:var(--dsw-alias-label-secondary)}
@@ -8334,7 +8334,7 @@ function TabBar(props) {
             onClose(tab.id)
           },
         },
-        h(Icons.close, { size: 12 }),
+        h(Icons.close, { size: 14 }),
       ),
     ),
   )

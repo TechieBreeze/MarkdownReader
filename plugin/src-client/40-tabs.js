@@ -103,7 +103,7 @@ function TabBar(props) {
             onClose(tab.id)
           },
         },
-        h(Icons.close, { size: 12 }),
+        h(Icons.close, { size: 14 }),
       ),
     ),
   )
