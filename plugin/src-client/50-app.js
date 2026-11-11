@@ -725,6 +725,32 @@ function App() {
     })
   }, [])
 
+  /**
+   * Drag a tab to another position INSIDE the active task.
+   *
+   * The same mechanism as the task chips (`reorderTasks`): the dragged id comes
+   * from the tab bar, the target's left/right half decides whether the tab
+   * lands before or after it.
+   */
+  const reorderTabs = React.useCallback((dragId, targetId, before) => {
+    if (!dragId || !targetId || dragId === targetId) return
+    setWorkbench((prev) => {
+      const task = prev.tasks.find((item) => item.id === prev.activeTaskId)
+      if (!task) return prev
+      const from = task.tabs.findIndex((tab) => tab.id === dragId)
+      if (from < 0) return prev
+      const tabs = task.tabs.slice()
+      const [moved] = tabs.splice(from, 1)
+      const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
+      if (targetIndex < 0) return prev
+      tabs.splice(before ? targetIndex : targetIndex + 1, 0, moved)
+      return {
+        ...prev,
+        tasks: prev.tasks.map((item) => (item.id === task.id ? { ...item, tabs } : item)),
+      }
+    })
+  }, [])
+
   /* ----------------------------------------------------------------- tree */
 
   const toggleDir = React.useCallback(
@@ -1259,7 +1285,13 @@ function App() {
       h(
         'div',
         { className: 'mdr-right' },
-        h(TabBar, { tabs, activeId, onActivate: activateTab, onClose: closeTab }),
+        h(TabBar, {
+          tabs,
+          activeId,
+          onActivate: activateTab,
+          onClose: closeTab,
+          onReorder: reorderTabs,
+        }),
         h(
           'div',
           {

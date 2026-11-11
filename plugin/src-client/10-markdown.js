@@ -209,23 +209,39 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     const unique = [...new Set(candidates.map((item) => item.text))]
     // `from` lets the Host prefer THIS document's project root when the same
     // basename exists in several opened projects.
-    fetchJson('/api/exists', { path: unique, from: mdPath })
-      .then((payload) => {
-        const results = (payload && payload.results) || {}
-        for (const item of candidates) {
-          const hit = results[item.text]
-          if (!hit || !hit.exists || !hit.abs) continue
-          const anchor = document.createElement('a')
-          anchor.className = 'mdr-jump'
-          anchor.dataset.path = hit.abs
-          anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
-          anchor.title = hit.abs
-          anchor.textContent = item.text
-          item.code.textContent = ''
-          item.code.appendChild(anchor)
-        }
-      })
-      .catch(() => {})
+    //
+    // The Host resolves the bare paths through a basename index over the whole
+    // workspace; that index is built in the background, so the first answer can
+    // be incomplete. The Host says so (`indexReady: false`) and the client asks
+    // again a moment later - the document is readable meanwhile.
+    const linkBarePaths = (payload) => {
+      const results = (payload && payload.results) || {}
+      for (const item of candidates) {
+        // A retry must not link the same code element twice.
+        if (item.code.firstElementChild) continue
+        const hit = results[item.text]
+        if (!hit || !hit.exists || !hit.abs) continue
+        const anchor = document.createElement('a')
+        anchor.className = 'mdr-jump'
+        anchor.dataset.path = hit.abs
+        anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
+        anchor.title = hit.abs
+        anchor.textContent = item.text
+        item.code.textContent = ''
+        item.code.appendChild(anchor)
+      }
+    }
+    const ask = (attempt) => {
+      fetchJson('/api/exists', { path: unique, from: mdPath })
+        .then((payload) => {
+          linkBarePaths(payload)
+          if (payload && payload.indexReady === false && attempt < 5) {
+            setTimeout(() => ask(attempt + 1), 900 + attempt * 300)
+          }
+        })
+        .catch(() => {})
+    }
+    ask(0)
   }
 
   // 4) fenced code blocks -> the SAME pipeline as the code view (hljs language

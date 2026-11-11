@@ -1067,6 +1067,9 @@ const APP_CSS = `
 .mdr-tabbar{display:flex;align-items:stretch;gap:2px;overflow-x:auto;flex:0 0 auto;padding:3px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .mdr-tab{display:flex;align-items:center;gap:6px;max-width:230px;padding:5px 8px;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;font-size:12.5px}
 .mdr-tab:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-tab.dragging{opacity:.45}
+.mdr-tab[draggable="true"]{cursor:grab}
+.mdr-tab[draggable="true"]:active{cursor:grabbing}
 .mdr-tab.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
 .mdr-tab-name{overflow:hidden;text-overflow:ellipsis}
 .mdr-tab-close{display:inline-flex;padding:1px;border-radius:4px;opacity:.55}

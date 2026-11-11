@@ -265,7 +265,7 @@ const makeModule = new Function(
   `const React = require('react');
 const h = React.createElement;
 ${parts.join('\n')}
-return { SyncPanel, GitGraphModal, gitGraphLayout, gitGraphReachable, gitGraphResolveRepo, gitGraphResolveHead, gitGraphCopyText };`,
+return { SyncPanel, GitGraphModal, gitGraphLayout, gitGraphReachable, gitGraphResolveRepo, gitGraphResolveHead, gitGraphCopyText, TabBar };`,
 )
 
 const react = createReact()
@@ -859,6 +859,75 @@ async function testGitGraphEmpty() {
   }
 }
 
+/**
+ * The tab strip: click to switch, close button, and DRAG to reorder.
+ *
+ * The drag is the same mechanism as the task chips: `draggable` on the tab, the
+ * drag id in a ref, the target's left/right half decides before/after.
+ */
+async function testTabBarDrag() {
+  console.log('\n[9] the tab bar: drag to reorder')
+  const tabs = [
+    { id: 'md:docs/a.md', kind: 'md', path: 'docs/a.md' },
+    { id: 'md:docs/b.md', kind: 'md', path: 'docs/b.md' },
+    { id: 'code:src/C.java', kind: 'code', path: 'src/C.java' },
+  ]
+  const calls = []
+  const activated = []
+  let tree = await mount(
+    mod.TabBar,
+    {
+      tabs,
+      activeId: tabs[0].id,
+      onActivate: (id) => activated.push(id),
+      onClose: () => {},
+      onReorder: (dragId, targetId, before) => calls.push([dragId, targetId, before]),
+    },
+    react,
+  )
+  const tabNodes = byClass(tree, 'mdr-tab')
+  check('every tab is rendered', tabNodes.length === 3, tabNodes.length)
+  check('the tabs are draggable', tabNodes.every((node) => node.props.draggable === true))
+  check('the tab title mentions the drag', tabNodes[0].props.title.includes('拖拽'))
+
+  // Drag the first tab over the left half of the second one.
+  const dataTransfer = { effectAllowed: '', dropEffect: '', setData() {} }
+  tabNodes[0].props.onDragStart({ target: tabNodes[0], dataTransfer, preventDefault() {} })
+  check('the drag start remembers the tab', true)
+  tabNodes[1].props.onDragOver({
+    target: tabNodes[1],
+    currentTarget: { getBoundingClientRect: () => ({ left: 100, width: 80 }) },
+    clientX: 110,
+    dataTransfer,
+    preventDefault() {},
+  })
+  check('the drag over asks for a reorder before the target', calls.length === 1 && calls[0][0] === tabs[0].id && calls[0][1] === tabs[1].id && calls[0][2] === true, JSON.stringify(calls))
+  tabNodes[1].props.onDragOver({
+    target: tabNodes[1],
+    currentTarget: { getBoundingClientRect: () => ({ left: 100, width: 80 }) },
+    clientX: 170,
+    dataTransfer,
+    preventDefault() {},
+  })
+  check('the right half asks for a reorder after the target', calls[1] && calls[1][2] === false, JSON.stringify(calls))
+  // A click right after a drag must NOT switch the tab.
+  tabNodes[0].props.onClick({})
+  check('a click during a drag does not switch the tab', activated.length === 0, JSON.stringify(activated))
+  tabNodes[0].props.onDragEnd({})
+  tabNodes[0].props.onClick({})
+  check('a normal click switches the tab', activated.length === 1 && activated[0] === tabs[0].id, JSON.stringify(activated))
+  // The close button must not start a drag. The DOM target carries the class
+  // and answers `closest`, like the real element does.
+  let prevented = false
+  const closeNode = byClass(tree, 'mdr-tab-close')[0]
+  const closeTarget = {
+    className: 'mdr-tab-close',
+    closest: (selector) => (selector === '.mdr-tab-close' ? closeNode : null),
+  }
+  tabNodes[0].props.onDragStart({ target: closeTarget, dataTransfer, preventDefault: () => { prevented = true } })
+  check('dragging the close button is refused', prevented === true)
+}
+
 async function main() {
   console.log('Markdown Reader panels harness')
   testLayout()
@@ -871,6 +940,7 @@ async function main() {
   await testSyncPanelPullRefused()
   await testGitGraphModal()
   await testGitGraphEmpty()
+  await testTabBarDrag()
   console.log(`\n${checks - failures}/${checks} checks passed`)
   if (failures) process.exitCode = 1
 }
