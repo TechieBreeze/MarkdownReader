@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "319135305806";
+    const BUILD_ID = "fbee36cdb8e1";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -1079,6 +1079,10 @@ const APP_CSS = `
 .mdr-tab.dragging{opacity:.45}
 .mdr-tab[draggable="true"]{cursor:grab}
 .mdr-tab[draggable="true"]:active{cursor:grabbing}
+/* The close button is a button, not a drag handle: it must not show the grab
+   cursor (the user asked for exactly that). */
+.mdr-tab .mdr-tab-close{cursor:pointer}
+.mdr-tab .mdr-tab-close:active{cursor:pointer}
 .mdr-tab.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
 .mdr-tab-name{overflow:hidden;text-overflow:ellipsis}
 .mdr-tab-close{display:inline-flex;padding:1px;border-radius:4px;opacity:.55}
