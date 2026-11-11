@@ -1,4 +1,4 @@
-﻿/** Build src-client/*.js into the single client module the Harness loads. */
+/** Build src-client/*.js into the single client module the Harness loads. */
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -28,10 +28,43 @@ const ORDER = [
 ]
 const pkg = JSON.parse(fs.readFileSync(path.join(HERE, 'package.json'), 'utf8'))
 
+/**
+ * Strip the comments and the indentation of a source file.
+ *
+ * CONSERVATIVE on purpose: only whole-line `//` and `/* ... *\/` comments are
+ * removed and every remaining line is trimmed. Nothing inside a string, a
+ * regex or a template literal is touched - a line that merely CONTAINS `//`
+ * (a URL, a regex) stays exactly as it is.
+ *
+ * Why: the Harness serves the plugin clients of ALL plugins as ONE bundle
+ * script, and the local plugins' files are read from the workspace on every
+ * boot. The reader's client was the biggest of them (418 KB of comments and
+ * indentation); the smaller it is, the less the boot has to read and serve.
+ */
+function slim(text) {
+  const out = []
+  let inBlock = false
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim()
+    if (inBlock) {
+      if (trimmed.includes('*/')) inBlock = false
+      continue
+    }
+    if (trimmed.startsWith('/*')) {
+      if (!trimmed.includes('*/')) inBlock = true
+      continue
+    }
+    if (trimmed.startsWith('//')) continue
+    if (!trimmed) continue
+    out.push(trimmed)
+  }
+  return out.join('\n')
+}
+
 const parts = ORDER.map((file) => {
   const full = path.join(SRC, file)
   if (!fs.existsSync(full)) throw new Error(`missing client source: ${file}`)
-  return `// ---- ${file} ----\n${fs.readFileSync(full, 'utf8')}`
+  return `// ---- ${file} ----\n${slim(fs.readFileSync(full, 'utf8'))}`
 })
 
 /* Build id: a short hash of the client sources.
