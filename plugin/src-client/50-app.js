@@ -185,7 +185,7 @@ function App() {
   const [meta, setMeta] = React.useState(null)
   const [currentProject, setCurrentProject] = React.useState(initialProjectRef.current)
   const [workbench, setWorkbench] = React.useState(initialWorkbenchRef.current)
-  const [dirs, setDirs] = React.useState({})
+  const [dirs, setDirs] = React.useState(() => loadTreeDirs(initialProjectRef.current))
   const [expanded, setExpanded] = React.useState(() => new Set(loadTreeExpansion(initialProjectRef.current)))
   const [error, setError] = React.useState('')
   const [pathInput, setPathInput] = React.useState('')
@@ -494,7 +494,13 @@ function App() {
     return fetchJson('/api/list', { path: key })
       .then((payload) => {
         const entries = Array.isArray(payload.entries) ? payload.entries : []
-        setDirs((prev) => ({ ...prev, [key]: entries }))
+        setDirs((prev) => {
+          const next = { ...prev, [key]: entries }
+          // Keep the listings: they make the tree render instantly when the
+          // panel is mounted again after a trip to the conversation.
+          saveTreeDirs(currentProjectRef.current, next)
+          return next
+        })
       })
       .catch((err) => {
         setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
@@ -855,8 +861,10 @@ function App() {
       )
       setExpanded(nextExpanded)
       expandedRef.current = nextExpanded
-      setDirs({})
-      dirsRef.current = {}
+      // The cached listings of the new project make the tree render at once.
+      const nextDirs = loadTreeDirs(next)
+      setDirs(nextDirs)
+      dirsRef.current = nextDirs
       setFailedDirs({})
       setLocateTarget('')
       setOverlay(null)
@@ -1071,6 +1079,25 @@ function App() {
   }, [saveWorkbenchNow])
 
   /**
+   * The reading position of a markdown tab, from wherever it is remembered.
+   *
+   * Two stores: the per-path map (written on every scroll) and the per-tab
+   * memory (written when the tab is left and persisted with the workbench).
+   * The per-tab one is the fallback for the case the user hit: after a trip to
+   * the conversation the per-path map can be empty while the workbench still
+   * knows where the tab was.
+   */
+  const scrollTargetFor = React.useCallback((taskId, tab) => {
+    if (!tab || tab.kind !== 'md') return 0
+    const byPath = scrollStorage.get(mdScrollKey(taskId, tab.path))
+    const byTab =
+      typeof recallTabScroll === 'function' && typeof tabScrollKey === 'function'
+        ? recallTabScroll(tabScrollKey(taskId, tab.id))
+        : 0
+    return Math.max(byPath, byTab || 0)
+  }, [])
+
+  /**
    * Restore the reading position when the active TASK or TAB changes.
    *
    * The markdown view restores its own position when it MOUNTS - but the tab id
@@ -1083,7 +1110,7 @@ function App() {
     if (!activeTab || activeTab.kind !== 'md') return undefined
     const scroller = contentRef.current
     if (!scroller) return undefined
-    const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
+    const target = scrollTargetFor(workbench.activeTaskId, activeTab)
     if (target <= 0) return undefined
     const apply = () => {
       const el = contentRef.current
@@ -1092,7 +1119,24 @@ function App() {
     apply()
     const timer = setTimeout(apply, 150)
     return () => clearTimeout(timer)
-  }, [workbench.activeTaskId, activeTabKey])
+  }, [workbench.activeTaskId, activeTabKey, scrollTargetFor])
+
+  /**
+   * Save the reading position when the PANEL goes away.
+   *
+   * Switching to the conversation unmounts the plugin panel: the DOM (and the
+   * scroll position in it) is gone, so the position has to be written out
+   * before that happens - otherwise the tab comes back at the top.
+   */
+  React.useEffect(() => {
+    return () => {
+      saveActiveScroll()
+      // The per-tab position also lives in the persisted workbench: save it
+      // now, so the tab comes back where the user left it.
+      saveWorkbenchNow()
+      scrollStorage.flushNow()
+    }
+  }, [saveActiveScroll, saveWorkbenchNow])
 
   React.useEffect(() => {
     let cancelled = false

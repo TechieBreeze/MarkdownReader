@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "f8c7c6fba5bb";
+    const BUILD_ID = "aee3b9632209";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -657,6 +657,38 @@ return paths || []
 function saveTreeExpansion(project, paths) {
 writeStoredJson(treeStoreKey(project), { paths: [...paths] })
 }
+const TREE_DIRS_MAX_ENTRIES = 4000
+const TREE_DIRS_MAX_DIRS = 60
+function treeDirsKey(project) {
+return `mdreader.plugin.treedirs.${project || 'all'}.v1`
+}
+function loadTreeDirs(project) {
+const stored = readStoredJson(treeDirsKey(project), null)
+if (!stored || !stored.dirs || typeof stored.dirs !== 'object') return {}
+const out = {}
+let count = 0
+for (const [dir, entries] of Object.entries(stored.dirs)) {
+if (!Array.isArray(entries)) continue
+out[dir] = entries
+count += 1
+if (count >= TREE_DIRS_MAX_DIRS) break
+}
+return out
+}
+function saveTreeDirs(project, dirs) {
+try {
+const out = {}
+let count = 0
+for (const [dir, entries] of Object.entries(dirs || {})) {
+if (!Array.isArray(entries) || !entries.length) continue
+out[dir] = entries
+count += entries.length
+if (count >= TREE_DIRS_MAX_ENTRIES) break
+}
+writeStoredJson(treeDirsKey(project), { at: Date.now(), dirs: out })
+} catch {
+}
+}
 const scrollStorage = (() => {
 const cache = { value: null, timer: 0 }
 const read = () => {
@@ -1247,7 +1279,12 @@ boxRef.current.innerHTML = html
 enhanceMarkdown(boxRef.current, tab.path, multi, rootNames)
 setError('')
 const scroller = boxRef.current.closest('.mdr-content')
-const target = scrollStorage.get(scrollKey)
+const byPath = scrollStorage.get(scrollKey)
+const byTab =
+typeof recallTabScroll === 'function' && typeof tabScrollKey === 'function'
+? recallTabScroll(tabScrollKey(taskId, tab.id))
+: 0
+const target = Math.max(byPath, byTab || 0)
 if (target > 0) disposeRestore = restoreMarkdownScroll(scroller, target)
 else if (scroller) scroller.scrollTop = 0
 } catch (err) {
@@ -7054,7 +7091,7 @@ initialWorkbenchRef.current = { tasks: [task], activeTaskId: task.id }
 const [meta, setMeta] = React.useState(null)
 const [currentProject, setCurrentProject] = React.useState(initialProjectRef.current)
 const [workbench, setWorkbench] = React.useState(initialWorkbenchRef.current)
-const [dirs, setDirs] = React.useState({})
+const [dirs, setDirs] = React.useState(() => loadTreeDirs(initialProjectRef.current))
 const [expanded, setExpanded] = React.useState(() => new Set(loadTreeExpansion(initialProjectRef.current)))
 const [error, setError] = React.useState('')
 const [pathInput, setPathInput] = React.useState('')
@@ -7314,7 +7351,11 @@ return next
 return fetchJson('/api/list', { path: key })
 .then((payload) => {
 const entries = Array.isArray(payload.entries) ? payload.entries : []
-setDirs((prev) => ({ ...prev, [key]: entries }))
+setDirs((prev) => {
+const next = { ...prev, [key]: entries }
+saveTreeDirs(currentProjectRef.current, next)
+return next
+})
 })
 .catch((err) => {
 setFailedDirs((prev) => (prev[key] ? prev : { ...prev, [key]: true }))
@@ -7626,8 +7667,9 @@ loadTreeExpansion(next).map((rel) => collapseDoubledVtopPrefix(rel, metaRef.curr
 )
 setExpanded(nextExpanded)
 expandedRef.current = nextExpanded
-setDirs({})
-dirsRef.current = {}
+const nextDirs = loadTreeDirs(next)
+setDirs(nextDirs)
+dirsRef.current = nextDirs
 setFailedDirs({})
 setLocateTarget('')
 setOverlay(null)
@@ -7809,11 +7851,20 @@ scroller.removeEventListener('scroll', onScroll)
 window.removeEventListener('beforeunload', onBeforeUnload)
 }
 }, [saveWorkbenchNow])
+const scrollTargetFor = React.useCallback((taskId, tab) => {
+if (!tab || tab.kind !== 'md') return 0
+const byPath = scrollStorage.get(mdScrollKey(taskId, tab.path))
+const byTab =
+typeof recallTabScroll === 'function' && typeof tabScrollKey === 'function'
+? recallTabScroll(tabScrollKey(taskId, tab.id))
+: 0
+return Math.max(byPath, byTab || 0)
+}, [])
 React.useEffect(() => {
 if (!activeTab || activeTab.kind !== 'md') return undefined
 const scroller = contentRef.current
 if (!scroller) return undefined
-const target = scrollStorage.get(mdScrollKey(workbench.activeTaskId, activeTab.path))
+const target = scrollTargetFor(workbench.activeTaskId, activeTab)
 if (target <= 0) return undefined
 const apply = () => {
 const el = contentRef.current
@@ -7822,7 +7873,14 @@ if (el && Math.abs(el.scrollTop - target) > 2) el.scrollTop = target
 apply()
 const timer = setTimeout(apply, 150)
 return () => clearTimeout(timer)
-}, [workbench.activeTaskId, activeTabKey])
+}, [workbench.activeTaskId, activeTabKey, scrollTargetFor])
+React.useEffect(() => {
+return () => {
+saveActiveScroll()
+saveWorkbenchNow()
+scrollStorage.flushNow()
+}
+}, [saveActiveScroll, saveWorkbenchNow])
 React.useEffect(() => {
 let cancelled = false
 fetchJson('/api/meta')

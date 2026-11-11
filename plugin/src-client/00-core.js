@@ -941,6 +941,56 @@ function saveTreeExpansion(project, paths) {
 }
 
 /**
+ * The directory LISTINGS of the expanded folders, cached in sessionStorage.
+ *
+ * Switching to the conversation unmounts the plugin panel, and coming back
+ * remounts the whole app: the tree state (which folders are expanded) was
+ * restored, but the LISTINGS were not, so every expanded folder had to be
+ * fetched again before the tree could show anything ("目录加载也有延迟").
+ * The cache makes the tree render immediately; the fresh listings replace it
+ * in the background. It lives in localStorage (like the expansion state), not
+ * in sessionStorage.
+ */
+const TREE_DIRS_MAX_ENTRIES = 4000
+const TREE_DIRS_MAX_DIRS = 60
+
+function treeDirsKey(project) {
+  return `mdreader.plugin.treedirs.${project || 'all'}.v1`
+}
+
+/** Read the cached listings ({ dir: entries[] }). */
+function loadTreeDirs(project) {
+  const stored = readStoredJson(treeDirsKey(project), null)
+  if (!stored || !stored.dirs || typeof stored.dirs !== 'object') return {}
+  const out = {}
+  let count = 0
+  for (const [dir, entries] of Object.entries(stored.dirs)) {
+    if (!Array.isArray(entries)) continue
+    out[dir] = entries
+    count += 1
+    if (count >= TREE_DIRS_MAX_DIRS) break
+  }
+  return out
+}
+
+/** Merge the listings into the cache (and write it back). */
+function saveTreeDirs(project, dirs) {
+  try {
+    const out = {}
+    let count = 0
+    for (const [dir, entries] of Object.entries(dirs || {})) {
+      if (!Array.isArray(entries) || !entries.length) continue
+      out[dir] = entries
+      count += entries.length
+      if (count >= TREE_DIRS_MAX_ENTRIES) break
+    }
+    writeStoredJson(treeDirsKey(project), { at: Date.now(), dirs: out })
+  } catch {
+    // a full quota must never break the tree
+  }
+}
+
+/**
  * Per-tab scroll offsets, keyed by `${kind}:${path}`. Writes are debounced so a
  * scroll gesture costs one localStorage write per ~350ms, and the in-memory copy
  * is authoritative when storage is unavailable.
