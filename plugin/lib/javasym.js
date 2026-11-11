@@ -1259,7 +1259,14 @@ export function findTypeDecl(model, name) {
   return best
 }
 
-/** Field declaration lines with `name`; with Lombok filter as in the original. */
+/**
+ * Field declaration lines with `name`; with Lombok filter as in the original.
+ *
+ * The ENUM CONSTANTS count as fields: `HermesTypeEnum.COUPON` is a constant
+ * of the enum, not a field declaration, and without this the ctrl+click on an
+ * enum constant found nothing. An enum constant is never a Lombok field, so
+ * it is only offered when the Lombok filter is off.
+ */
 export function findFieldLines(model, name, withLombok) {
   const lines = []
   for (const field of model.fields) {
@@ -1270,6 +1277,11 @@ export function findFieldLines(model, name, withLombok) {
       if (!lombok) continue
     }
     lines.push(field.line)
+  }
+  if (!withLombok) {
+    for (const constant of model.enumConstants || []) {
+      if (constant.name === name && constant.line) lines.push(constant.line)
+    }
   }
   lines.sort((a, b) => a - b)
   return lines
