@@ -6,6 +6,7 @@
  * read-only git views. No client ever runs a shell command.
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -255,15 +256,32 @@ function apiCode(res, state, url) {
   })
 }
 
+/**
+ * Resolved paths, cached for a minute.
+ *
+ * Every mount of a document asks for the same bare paths ("切任务" re-mounts
+ * the document), and each miss costs a filesystem lookup plus a basename search.
+ * The cache turns the repeated question into a map lookup.
+ */
+const existsCache = new Map()
+const EXISTS_CACHE_TTL = 60000
+
 function apiExists(res, state, url) {
   const inputs = url.searchParams.getAll('path')
   const from = url.searchParams.get('from') || ''
   const preferredRoot = preferredRootFor(state, from)
   const results = {}
+  const now = Date.now()
   for (const input of inputs) {
     const text = String(input || '')
     if (!text) {
       results[input] = { abs: null, exists: false }
+      continue
+    }
+    const cacheKey = `${from}|${text}`
+    const cached = existsCache.get(cacheKey)
+    if (cached && now - cached.at < EXISTS_CACHE_TTL) {
+      results[input] = { abs: cached.abs, exists: cached.exists }
       continue
     }
     let abs = null
@@ -272,18 +290,20 @@ function apiExists(res, state, url) {
     } catch {
       abs = null
     }
-    if (!abs || !fs.existsSync(abs)) {
+    let found = null
+    if (abs && fs.existsSync(abs)) {
+      found = state.relOf(abs)
+    } else {
       const hit = searchByBasename(state, text, preferredRoot)
-      if (hit) {
-        results[input] = { abs: state.relOf(hit), exists: true }
-        continue
-      }
-      results[input] = { abs: null, exists: false }
-      continue
+      if (hit) found = state.relOf(hit)
     }
-    results[input] = { abs: state.relOf(abs), exists: true }
+    const entry = found ? { abs: found, exists: true } : { abs: null, exists: false }
+    existsCache.set(cacheKey, { abs: entry.abs, exists: entry.exists, at: now })
+    results[input] = entry
   }
-  return sendJson(res, 200, { ok: true, results })
+  // The basename index may still be building: the client asks again when it
+  // was not ready, so the bare paths become links a moment later.
+  return sendJson(res, 200, { ok: true, results, indexReady: nameIndexReady(state) })
 }
 
 /** Root that owns the requesting document (`from`), or null. */
@@ -305,44 +325,165 @@ function preferredRootFor(state, from) {
  * reader could not resolve the bare filenames docs cite in tables while it did
  * resolve shallower `.xml` mappers. Indexing once also keeps a doc with dozens of
  * bare paths from running dozens of directory walks.
+ *
+ * The walk is BIG (the 微服务 workspace holds >400k files and the walk took ~6 s
+ * in Node). Building it inside a request BLOCKED the whole Host: every other
+ * API call queued behind it, so opening a document felt like the app was
+ * hanging ("切任务加载文档速度慢"). Therefore:
+ *  - the index is built in the BACKGROUND, in chunks, yielding to the event loop
+ *    between chunks, so the Host keeps answering requests;
+ *  - it is PERSISTED on disk, so the next app start loads it in ~100 ms instead
+ *    of walking the workspace again;
+ *  - the request answers with what it knows and tells the client whether the
+ *    index was ready (`indexReady`), and the client asks again when it was not.
  */
-const nameIndex = { at: 0, key: '', map: new Map() }
-const NAME_INDEX_TTL = 90000
+const nameIndex = { at: 0, key: '', map: new Map(), building: false, ready: false, pending: null }
+const NAME_INDEX_TTL = 10 * 60 * 1000
 const NAME_INDEX_MAX_FILES = 400000
 const NAME_INDEX_MAX_DEPTH = 18
 
-function fileNameIndex(state) {
-  const key = state.roots().map((root) => root.path).join('|')
-  if (nameIndex.map.size && Date.now() - nameIndex.at < NAME_INDEX_TTL && nameIndex.key === key) return nameIndex.map
-  const map = new Map()
-  let files = 0
-  const stack = state.roots().map((root) => ({ dir: root.path, depth: 0 }))
-  while (stack.length && files < NAME_INDEX_MAX_FILES) {
-    const { dir, depth } = stack.pop()
-    let dirents
-    try {
-      dirents = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      continue
+/** Where the index is cached between app runs. */
+function nameIndexFile() {
+  const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh')
+  return path.join(home, 'markdown-reader.nameindex.json')
+}
+
+/** The identity of the current roots: a different set of roots needs a new index. */
+function nameIndexKey(state) {
+  return state.roots().map((root) => root.path).join('|')
+}
+
+/** Load the persisted index (fast path: no walk at all). */
+function loadNameIndexFromDisk(state) {
+  if (nameIndex.map.size) return nameIndex.map
+  try {
+    const raw = fs.readFileSync(nameIndexFile(), 'utf8')
+    const value = JSON.parse(raw)
+    if (!value || value.key !== nameIndexKey(state)) return nameIndex.map
+    if (!value.at || Date.now() - value.at > NAME_INDEX_TTL) return nameIndex.map
+    const map = new Map()
+    for (const item of value.entries || []) {
+      if (!Array.isArray(item) || item.length !== 2) continue
+      map.set(String(item[0]), [String(item[1])])
     }
-    for (const dirent of dirents) {
-      if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
-      const child = path.join(dir, dirent.name)
-      if (dirent.isDirectory()) {
-        if (depth < NAME_INDEX_MAX_DEPTH) stack.push({ dir: child, depth: depth + 1 })
+    if (!map.size) return nameIndex.map
+    nameIndex.at = value.at
+    nameIndex.key = value.key
+    nameIndex.map = map
+    nameIndex.ready = true
+  } catch {
+    // No cache yet: the background build will create it.
+  }
+  return nameIndex.map
+}
+
+/** Persist the index so the next app start does not walk the workspace again. */
+function saveNameIndexToDisk(state) {
+  try {
+    const entries = []
+    for (const [name, hits] of nameIndex.map) {
+      // Keep the SHALLOWEST hit: that is the one `searchByBasename` prefers
+      // (a doc's citation means the top-level file, not a copy deep in target/).
+      let best = hits[0]
+      let bestDepth = best.split(path.sep).length
+      for (const hit of hits) {
+        const depth = hit.split(path.sep).length
+        if (depth < bestDepth) {
+          best = hit
+          bestDepth = depth
+        }
+      }
+      entries.push([name, best])
+    }
+    const file = nameIndexFile()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(
+      file,
+      JSON.stringify({ at: nameIndex.at, key: nameIndex.key, entries }),
+      'utf8',
+    )
+  } catch {
+    // A read-only home is not a reason to break the reader.
+  }
+}
+
+/**
+ * Build the index in the background.
+ *
+ * The walk yields to the event loop every few directories, so the Host keeps
+ * serving requests while it runs.
+ */
+async function buildNameIndexAsync(state) {
+  if (nameIndex.building) return nameIndex.pending
+  nameIndex.building = true
+  const key = nameIndexKey(state)
+  const pending = (async () => {
+    const map = new Map()
+    let files = 0
+    const stack = state.roots().map((root) => ({ dir: root.path, depth: 0 }))
+    let ticks = 0
+    while (stack.length && files < NAME_INDEX_MAX_FILES) {
+      const { dir, depth } = stack.pop()
+      let dirents = null
+      try {
+        dirents = fs.readdirSync(dir, { withFileTypes: true })
+      } catch {
         continue
       }
-      if (!dirent.isFile()) continue
-      files += 1
-      const bucket = map.get(dirent.name)
-      if (bucket) bucket.push(child)
-      else map.set(dirent.name, [child])
+      for (const dirent of dirents) {
+        if (dirent.name.startsWith('.') || HIDDEN_DIR_NAMES.has(dirent.name)) continue
+        const child = path.join(dir, dirent.name)
+        if (dirent.isDirectory()) {
+          if (depth < NAME_INDEX_MAX_DEPTH) stack.push({ dir: child, depth: depth + 1 })
+          continue
+        }
+        if (!dirent.isFile()) continue
+        files += 1
+        const bucket = map.get(dirent.name)
+        if (bucket) bucket.push(child)
+        else map.set(dirent.name, [child])
+      }
+      ticks += 1
+      // Yield often enough that a request is never queued behind the walk.
+      if (ticks % 8 === 0) await new Promise((resolve) => setImmediate(resolve))
     }
+    nameIndex.at = Date.now()
+    nameIndex.key = key
+    nameIndex.map = map
+    nameIndex.ready = true
+    // The misses cached while the index was building may be hits now.
+    existsCache.clear()
+    saveNameIndexToDisk(state)
+  })()
+    .catch(() => {})
+    .finally(() => {
+      nameIndex.building = false
+    })
+  nameIndex.pending = pending
+  return pending
+}
+
+/** The index (possibly still being built) + whether it is complete. */
+function fileNameIndex(state) {
+  loadNameIndexFromDisk(state)
+  const key = nameIndexKey(state)
+  if (nameIndex.map.size && nameIndex.key !== key) {
+    // The roots changed: the old index does not describe this workspace.
+    nameIndex.map = new Map()
+    nameIndex.ready = false
   }
-  nameIndex.at = Date.now()
-  nameIndex.key = key
-  nameIndex.map = map
-  return map
+  if (!nameIndex.map.size && !nameIndex.building) {
+    // Start the walk right away; the request does NOT wait for it.
+    buildNameIndexAsync(state)
+  }
+  return nameIndex.map
+}
+
+/** Is the index complete? (The client asks again when it is not.) */
+function nameIndexReady(state) {
+  loadNameIndexFromDisk(state)
+  if (!nameIndex.map.size && !nameIndex.building) buildNameIndexAsync(state)
+  return nameIndex.ready
 }
 
 /** Resolve a bare (or partly wrong) citation by filename, preferring the doc's own root. */

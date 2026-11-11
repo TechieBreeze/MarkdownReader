@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "b38465f48667";
+    const BUILD_ID = "319135305806";
 // ---- 00-core.js ----
 /**
  * Core helpers shared by every client part: route, fetch helpers, path rules,
@@ -1076,6 +1076,9 @@ const APP_CSS = `
 .mdr-tabbar{display:flex;align-items:stretch;gap:2px;overflow-x:auto;flex:0 0 auto;padding:3px 8px 0;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 .mdr-tab{display:flex;align-items:center;gap:6px;max-width:230px;padding:5px 8px;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;font-size:12.5px}
 .mdr-tab:hover{background:var(--dsw-alias-bg-layer-2)}
+.mdr-tab.dragging{opacity:.45}
+.mdr-tab[draggable="true"]{cursor:grab}
+.mdr-tab[draggable="true"]:active{cursor:grabbing}
 .mdr-tab.on{background:var(--dsw-alias-bg-base);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
 .mdr-tab-name{overflow:hidden;text-overflow:ellipsis}
 .mdr-tab-close{display:inline-flex;padding:1px;border-radius:4px;opacity:.55}
@@ -1388,23 +1391,39 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
     const unique = [...new Set(candidates.map((item) => item.text))]
     // `from` lets the Host prefer THIS document's project root when the same
     // basename exists in several opened projects.
-    fetchJson('/api/exists', { path: unique, from: mdPath })
-      .then((payload) => {
-        const results = (payload && payload.results) || {}
-        for (const item of candidates) {
-          const hit = results[item.text]
-          if (!hit || !hit.exists || !hit.abs) continue
-          const anchor = document.createElement('a')
-          anchor.className = 'mdr-jump'
-          anchor.dataset.path = hit.abs
-          anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
-          anchor.title = hit.abs
-          anchor.textContent = item.text
-          item.code.textContent = ''
-          item.code.appendChild(anchor)
-        }
-      })
-      .catch(() => {})
+    //
+    // The Host resolves the bare paths through a basename index over the whole
+    // workspace; that index is built in the background, so the first answer can
+    // be incomplete. The Host says so (`indexReady: false`) and the client asks
+    // again a moment later - the document is readable meanwhile.
+    const linkBarePaths = (payload) => {
+      const results = (payload && payload.results) || {}
+      for (const item of candidates) {
+        // A retry must not link the same code element twice.
+        if (item.code.firstElementChild) continue
+        const hit = results[item.text]
+        if (!hit || !hit.exists || !hit.abs) continue
+        const anchor = document.createElement('a')
+        anchor.className = 'mdr-jump'
+        anchor.dataset.path = hit.abs
+        anchor.dataset.kind = linkKindFor(hit.abs) || 'code'
+        anchor.title = hit.abs
+        anchor.textContent = item.text
+        item.code.textContent = ''
+        item.code.appendChild(anchor)
+      }
+    }
+    const ask = (attempt) => {
+      fetchJson('/api/exists', { path: unique, from: mdPath })
+        .then((payload) => {
+          linkBarePaths(payload)
+          if (payload && payload.indexReady === false && attempt < 5) {
+            setTimeout(() => ask(attempt + 1), 900 + attempt * 300)
+          }
+        })
+        .catch(() => {})
+    }
+    ask(0)
   }
 
   // 4) fenced code blocks -> the SAME pipeline as the code view (hljs language
@@ -8188,61 +8207,121 @@ function ImageView(props) {
 }
 
 // ---- 40-tabs.js ----
-/** Tab strip: ordered list of open documents, click to switch, close button. */
+/**
+ * Tab strip: ordered list of open documents, click to switch, close button,
+ * drag to reorder.
+ *
+ * The drag mechanism is deliberately the SAME as the task chips' one
+ * (32-workbench.js `WorkbenchBar`): HTML5 drag & drop, `draggable` on the item,
+ * the drag id in a ref, the left/right half of the target decides whether the
+ * item lands before or after it, and a `.dragging` class dims the item that is
+ * being moved. Copy it verbatim rather than reinventing it.
+ */
 
 const TAB_KIND_LABELS = { code: 'code', html: 'html', image: 'img' }
 
+/** Is this event target the tab's close button? (A drag must not start there.) */
+function isTabCloseTarget(target) {
+  if (!target) return false
+  const cls = typeof target.className === 'string' ? target.className : ''
+  if (cls.split(/\s+/).includes('mdr-tab-close')) return true
+  return typeof target.closest === 'function' && !!target.closest('.mdr-tab-close')
+}
+
 function TabBar(props) {
-  const { tabs, activeId, onActivate, onClose } = props
+  const { tabs, activeId, onActivate, onClose, onReorder } = props
+  const [draggingId, setDraggingId] = React.useState('')
+  const dragRef = React.useRef('')
+
+  const tabsEl = tabs.map((tab) =>
+    h(
+      'div',
+      {
+        key: tab.id,
+        className:
+          'mdr-tab' + (tab.id === activeId ? ' on' : '') + (draggingId === tab.id ? ' dragging' : ''),
+        'data-mdr-path': tab.path,
+        title:
+          tab.path +
+          (tab.branch ? ` @ ${tab.branch}` : '') +
+          (tab.commit ? ` @ ${String(tab.commit).slice(0, 7)}` : '') +
+          (tab.line ? ` · 跳转行 ${tab.line}` : '') +
+          ' · 拖拽可调整顺序',
+        draggable: true,
+        onClick: () => {
+          // A drag must not switch the tab.
+          if (dragRef.current) return
+          onActivate(tab.id)
+        },
+        onDragStart: (event) => {
+          if (isTabCloseTarget(event.target)) {
+            event.preventDefault()
+            return
+          }
+          dragRef.current = tab.id
+          setDraggingId(tab.id)
+          try {
+            event.dataTransfer.effectAllowed = 'move'
+            event.dataTransfer.setData('text/plain', tab.id)
+          } catch {
+            // some webviews expose a read-only dataTransfer; drag still reorders
+          }
+        },
+        onDragOver: (event) => {
+          if (!dragRef.current || dragRef.current === tab.id) return
+          event.preventDefault()
+          try {
+            event.dataTransfer.dropEffect = 'move'
+          } catch {
+            // ignore
+          }
+          const rect = event.currentTarget.getBoundingClientRect()
+          const before = event.clientX < rect.left + rect.width / 2
+          if (typeof onReorder === 'function') onReorder(dragRef.current, tab.id, before)
+        },
+        onDrop: (event) => event.preventDefault(),
+        onDragEnd: () => {
+          dragRef.current = ''
+          setDraggingId('')
+        },
+      },
+      h('span', { className: 'mdr-tab-name' }, tab.path.split('/').pop()),
+      TAB_KIND_LABELS[tab.kind]
+        ? h(
+            'span',
+            {
+              className: 'mdr-tip',
+              style: {
+                fontSize: 10,
+                lineHeight: 1.4,
+                padding: '0 4px',
+                border: '1px solid var(--dsw-alias-border-l1)',
+                borderRadius: 8,
+              },
+            },
+            TAB_KIND_LABELS[tab.kind],
+          )
+        : null,
+      h(
+        'span',
+        {
+          className: 'mdr-tab-close',
+          title: '关闭',
+          onClick: (event) => {
+            event.stopPropagation()
+            onClose(tab.id)
+          },
+        },
+        h(Icons.close, { size: 12 }),
+      ),
+    ),
+  )
+
   return h(
     'div',
     { className: 'mdr-tabbar' },
     tabs.length === 0 ? h('div', { className: 'mdr-tip', style: { padding: '6px 4px' } }, '未打开文件') : null,
-    tabs.map((tab) =>
-      h(
-        'div',
-        {
-          key: tab.id,
-          className: 'mdr-tab' + (tab.id === activeId ? ' on' : ''),
-          'data-mdr-path': tab.path,
-          title:
-            tab.path +
-            (tab.branch ? ` @ ${tab.branch}` : '') +
-            (tab.commit ? ` @ ${String(tab.commit).slice(0, 7)}` : '') +
-            (tab.line ? ` · 跳转行 ${tab.line}` : ''),
-          onClick: () => onActivate(tab.id),
-        },
-        h('span', { className: 'mdr-tab-name' }, tab.path.split('/').pop()),
-        TAB_KIND_LABELS[tab.kind]
-          ? h(
-              'span',
-              {
-                className: 'mdr-tip',
-                style: {
-                  fontSize: 10,
-                  lineHeight: 1.4,
-                  padding: '0 4px',
-                  border: '1px solid var(--dsw-alias-border-l1)',
-                  borderRadius: 8,
-                },
-              },
-              TAB_KIND_LABELS[tab.kind],
-            )
-          : null,
-        h(
-          'span',
-          {
-            className: 'mdr-tab-close',
-            title: '关闭',
-            onClick: (event) => {
-              event.stopPropagation()
-              onClose(tab.id)
-            },
-          },
-          h(Icons.close, { size: 12 }),
-        ),
-      ),
-    ),
+    tabsEl,
   )
 }
 
@@ -9299,6 +9378,32 @@ function App() {
     })
   }, [])
 
+  /**
+   * Drag a tab to another position INSIDE the active task.
+   *
+   * The same mechanism as the task chips (`reorderTasks`): the dragged id comes
+   * from the tab bar, the target's left/right half decides whether the tab
+   * lands before or after it.
+   */
+  const reorderTabs = React.useCallback((dragId, targetId, before) => {
+    if (!dragId || !targetId || dragId === targetId) return
+    setWorkbench((prev) => {
+      const task = prev.tasks.find((item) => item.id === prev.activeTaskId)
+      if (!task) return prev
+      const from = task.tabs.findIndex((tab) => tab.id === dragId)
+      if (from < 0) return prev
+      const tabs = task.tabs.slice()
+      const [moved] = tabs.splice(from, 1)
+      const targetIndex = tabs.findIndex((tab) => tab.id === targetId)
+      if (targetIndex < 0) return prev
+      tabs.splice(before ? targetIndex : targetIndex + 1, 0, moved)
+      return {
+        ...prev,
+        tasks: prev.tasks.map((item) => (item.id === task.id ? { ...item, tabs } : item)),
+      }
+    })
+  }, [])
+
   /* ----------------------------------------------------------------- tree */
 
   const toggleDir = React.useCallback(
@@ -9833,7 +9938,13 @@ function App() {
       h(
         'div',
         { className: 'mdr-right' },
-        h(TabBar, { tabs, activeId, onActivate: activateTab, onClose: closeTab }),
+        h(TabBar, {
+          tabs,
+          activeId,
+          onActivate: activateTab,
+          onClose: closeTab,
+          onReorder: reorderTabs,
+        }),
         h(
           'div',
           {
