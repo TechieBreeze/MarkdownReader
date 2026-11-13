@@ -268,9 +268,14 @@ function App() {
   const fsAppliedRef = React.useRef('')
   const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
 
+  // 弹窗打开时搜索的是弹窗里的那份代码（原版 fsResolveScope：弹窗优先，其次标签页）。
   const fsController = React.useCallback(
-    () => fileSearchController(activeTab ? activeTab.id : ''),
-    [activeTab],
+    () =>
+      modalRequest
+        ? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal') ||
+          fileSearchController(activeTab ? activeTab.id : '')
+        : fileSearchController(activeTab ? activeTab.id : ''),
+    [activeTab, modalRequest],
   )
 
   const runFileSearch = React.useCallback(
@@ -1199,6 +1204,39 @@ function App() {
       : rootNames[0] || '项目'
   const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
 
+  /**
+   * The in-file search bar. It is rendered ONCE and mounted either in the panel
+   * (nothing modal is open) or inside the code popup's card - the standalone
+   * reader kept the bar above the popup, and the plugin originally left it in
+   * the panel where the popup's mask covered it.
+   */
+  const fileSearchBar = fsOpen
+    ? h(FileSearchWidget, {
+        query: fsQuery,
+        onQuery: (value) => {
+          fsQueryRef.current = value
+          setFsQuery(value)
+        },
+        count: fsInfo.count,
+        index: fsInfo.index,
+        status: fsInfo.status,
+        options: fsOptions,
+        onToggleOption: toggleFileSearchOption,
+        onSearch: runFileSearch,
+        onNext: () => gotoFileSearch(1),
+        onPrev: () => gotoFileSearch(-1),
+        onClose: closeFileSearch,
+        // 全局搜索面板 renders BELOW the popup, so it would be unreachable
+        // from inside the modal: the button is only offered from the panel.
+        onGlobal: modalRequest
+          ? null
+          : () => {
+              closeFileSearch()
+              setOverlay('search')
+            },
+      })
+    : null
+
   return h(
     React.Fragment,
     null,
@@ -1384,28 +1422,8 @@ function App() {
       ),
     ),
     // 文件内搜索条（Ctrl+F）：浮在内容区右上角，属于插件面板内部。
-    fsOpen
-      ? h(FileSearchWidget, {
-          query: fsQuery,
-          onQuery: (value) => {
-            fsQueryRef.current = value
-            setFsQuery(value)
-          },
-          count: fsInfo.count,
-          index: fsInfo.index,
-          status: fsInfo.status,
-          options: fsOptions,
-          onToggleOption: toggleFileSearchOption,
-          onSearch: runFileSearch,
-          onNext: () => gotoFileSearch(1),
-          onPrev: () => gotoFileSearch(-1),
-          onClose: closeFileSearch,
-          onGlobal: () => {
-            closeFileSearch()
-            setOverlay('search')
-          },
-        })
-      : null,
+    // 代码弹窗打开时它被挂到弹窗卡片里（弹窗遮罩会盖住面板里的浮层）。
+    !modalRequest ? fileSearchBar : null,
     error ? h('div', { className: 'mdr-err' }, error) : null,
     overlay === 'search'
       ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -1426,6 +1444,11 @@ function App() {
             if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
           },
           onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+          // File search while the popup is open: the bar lives in the card and
+          // the popup's controller wins over the tab's (弹窗优先，其次标签页).
+          searchBar: fileSearchBar,
+          searchOpen: fsOpen,
+          onCloseSearch: closeFileSearch,
         })
       : null,
     typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,

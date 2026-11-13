@@ -7,9 +7,13 @@
  * (Ctrl+P), so Ctrl+F did nothing at all.
  *
  * Design:
- *  - the ACTIVE view registers a search controller (tab id -> controller);
- *    the App only talks to that controller, so the widget does not care
- *    whether the tab shows markdown, code, html or an image;
+ *  - the ACTIVE view registers a search controller (key -> controller) and the
+ *    App only talks to that controller, so the widget does not care whether the
+ *    view shows markdown, code, html or an image;
+ *  - the CODE MODAL registers under MODAL_SEARCH_KEY and WINS while it is
+ *    open: the standalone reader resolved the scope as 「弹窗优先，其次标签页」
+ *    (`fsResolveScope`), and the plugin originally only looked at the active
+ *    tab, so Ctrl+F inside the code popup silently searched the tab behind it;
  *  - markdown is searched by RENDERED TEXT (matches are wrapped in
  *    `<mark class="mdr-fs-mark">`, the current one gets `.mdr-fs-cur`);
  *  - code is searched by LINE (the rows carry the plain text, so a match is a
@@ -19,10 +23,17 @@
  *    Shift+Enter to the previous one.
  */
 
+/**
+ * The code modal's controller key. Tab ids are `<kind>:<path>`, so the `@`
+ * prefix cannot collide with one.
+ */
+const MODAL_SEARCH_KEY = '@modal'
+
 /* ------------------------------------------------------------- styles */
 
 const FILE_SEARCH_CSS = `
 .mdr-fs{position:absolute;top:34px;right:14px;z-index:60;display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 28px rgba(0,0,0,.35);font-size:12.5px;color:var(--dsw-alias-label-primary)}
+.mdr-cmodal-body .mdr-fs{position:absolute;top:8px;right:14px;z-index:70;box-shadow:0 6px 20px rgba(0,0,0,.45)}
 .mdr-fs-input{width:210px;box-sizing:border-box;padding:3px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;outline:none}
 .mdr-fs-input:focus{border-color:var(--dsw-alias-brand-primary)}
 .mdr-fs-count{min-width:70px;text-align:center;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}

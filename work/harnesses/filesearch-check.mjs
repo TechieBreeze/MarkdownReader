@@ -64,6 +64,24 @@ check('the search runs on Enter, not per keystroke', /event\.key === 'Enter'/.te
 check('the three switches exist', /fileSearchRegex/.test(searchSource) && /opts\.cs/.test(searchSource) && /opts\.word/.test(searchSource) && /opts\.re/.test(searchSource))
 check('the bundle contains the new part', fs.readFileSync(path.join(ROOT, 'plugin', 'client.js'), 'utf8').includes('FileSearchWidget'))
 
+/* --------------------------------------------- the code modal (弹窗) scope */
+
+console.log('\n[1b] Ctrl+F inside the code modal searches the MODAL, not the tab')
+const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
+// The standalone reader resolved the scope as 「弹窗优先，其次标签页」
+// (`fsResolveScope`) and re-positioned its widget into the popup. The plugin
+// only looked at the active tab, so Ctrl+F inside the popup searched the tab
+// behind it and nothing was highlighted where the user was looking.
+check('the modal owns a search key', /MODAL_SEARCH_KEY/.test(searchSource))
+check('the modal registers its code body for search', /searchKey:\s*[^,\n]*MODAL_SEARCH_KEY/.test(modalSource))
+check('the App prefers the modal controller', /modalRequest\s*\?/.test(appSource) && /fileSearchController\([^)]*MODAL_SEARCH_KEY/.test(appSource))
+check('the bar is handed to the modal', /searchBar:\s*fileSearchBar/.test(appSource))
+check('the modal renders the bar inside its card', /searchBar\s*\|\|\s*null/.test(modalSource))
+check('the bar is only rendered in the panel without a modal', /!modalRequest \? fileSearchBar : null/.test(appSource))
+check('Esc closes the search before the popup', /onCloseSearch/.test(modalSource) && /searchOpen/.test(modalSource))
+check('the bar has an in-modal style', /\.mdr-cmodal-body \.mdr-fs/.test(searchSource))
+check('the global-search button is hidden inside the modal', /onGlobal:\s*modalRequest/.test(appSource))
+
 /* ----------------------------------------------------------- DOM checks */
 
 const chrome = findChrome()

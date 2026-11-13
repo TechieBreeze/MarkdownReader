@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "aee3b9632209";
+    const BUILD_ID = "e74a27b9b322";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -3490,7 +3490,7 @@ const CMODAL_CSS = `
 .mdr-cmodal-badge{flex:0 0 auto;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap}
 .mdr-cmodal-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .mdr-cmodal-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
-.mdr-cmodal-body{flex:1;min-height:0;display:flex;flex-direction:column}
+.mdr-cmodal-body{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 .mdr-cmodal-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
 .mdr-cmodal-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(226,192,141,.08);color:#e2c08d;font-size:12px;white-space:pre-wrap;word-break:break-all}
 .mdr-cmodal-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:4px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
@@ -3501,7 +3501,7 @@ const body = card && card.querySelector ? card.querySelector('.mdr-code-body') :
 return body ? body.scrollTop : 0
 }
 function CodeModalInner(props) {
-const { request, onClose, onOpenTab, onOpen } = props
+const { request, onClose, onOpenTab, onOpen, searchBar, searchOpen, onCloseSearch } = props
 const requestPath = String((request && request.path) || '')
 const requestLine = Math.max(0, Number(request && request.line) || 0)
 const requestBranch = String((request && request.branch) || '')
@@ -3714,11 +3714,15 @@ const onKeyDown = (event) => {
 if (event.key !== 'Escape') return
 event.preventDefault()
 event.stopImmediatePropagation()
+if (searchOpen && typeof onCloseSearch === 'function') {
+onCloseSearch()
+return
+}
 if (typeof onClose === 'function') onClose()
 }
 window.addEventListener('keydown', onKeyDown)
 return () => window.removeEventListener('keydown', onKeyDown)
-}, [onClose])
+}, [onClose, searchOpen, onCloseSearch])
 React.useEffect(() => {
 if (!requestBranch && !requestCommit) return
 if (pendingGitRef.current !== reqKey) return
@@ -3793,7 +3797,9 @@ targetLine: view.line || 0,
 viewKey,
 restoreScroll,
 jumpHover: isJavaKtLang(lang),
+searchKey: typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal',
 }),
+searchBar || null,
 )
 }
 return h(
@@ -4098,8 +4104,10 @@ h('div', { className: 'mdr-search-list', ref: listRef }, rowNodes),
 )
 }
 // ---- 26-filesearch.js ----
+const MODAL_SEARCH_KEY = '@modal'
 const FILE_SEARCH_CSS = `
 .mdr-fs{position:absolute;top:34px;right:14px;z-index:60;display:flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-overlay);box-shadow:0 10px 28px rgba(0,0,0,.35);font-size:12.5px;color:var(--dsw-alias-label-primary)}
+.mdr-cmodal-body .mdr-fs{position:absolute;top:8px;right:14px;z-index:70;box-shadow:0 6px 20px rgba(0,0,0,.45)}
 .mdr-fs-input{width:210px;box-sizing:border-box;padding:3px 7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;outline:none}
 .mdr-fs-input:focus{border-color:var(--dsw-alias-brand-primary)}
 .mdr-fs-count{min-width:70px;text-align:center;color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}
@@ -7155,8 +7163,12 @@ const fsQueryRef = React.useRef('')
 const fsAppliedRef = React.useRef('')
 const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
 const fsController = React.useCallback(
-() => fileSearchController(activeTab ? activeTab.id : ''),
-[activeTab],
+() =>
+modalRequest
+? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal') ||
+fileSearchController(activeTab ? activeTab.id : '')
+: fileSearchController(activeTab ? activeTab.id : ''),
+[activeTab, modalRequest],
 )
 const runFileSearch = React.useCallback(
 (query) => {
@@ -7930,6 +7942,30 @@ const treeLabel = currentProject
 ? `全部项目（${rootNames.length}）`
 : rootNames[0] || '项目'
 const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
+const fileSearchBar = fsOpen
+? h(FileSearchWidget, {
+query: fsQuery,
+onQuery: (value) => {
+fsQueryRef.current = value
+setFsQuery(value)
+},
+count: fsInfo.count,
+index: fsInfo.index,
+status: fsInfo.status,
+options: fsOptions,
+onToggleOption: toggleFileSearchOption,
+onSearch: runFileSearch,
+onNext: () => gotoFileSearch(1),
+onPrev: () => gotoFileSearch(-1),
+onClose: closeFileSearch,
+onGlobal: modalRequest
+? null
+: () => {
+closeFileSearch()
+setOverlay('search')
+},
+})
+: null
 return h(
 React.Fragment,
 null,
@@ -8109,28 +8145,7 @@ onLocate: () => locateInTree(activeTab.path),
 ),
 ),
 ),
-fsOpen
-? h(FileSearchWidget, {
-query: fsQuery,
-onQuery: (value) => {
-fsQueryRef.current = value
-setFsQuery(value)
-},
-count: fsInfo.count,
-index: fsInfo.index,
-status: fsInfo.status,
-options: fsOptions,
-onToggleOption: toggleFileSearchOption,
-onSearch: runFileSearch,
-onNext: () => gotoFileSearch(1),
-onPrev: () => gotoFileSearch(-1),
-onClose: closeFileSearch,
-onGlobal: () => {
-closeFileSearch()
-setOverlay('search')
-},
-})
-: null,
+!modalRequest ? fileSearchBar : null,
 error ? h('div', { className: 'mdr-err' }, error) : null,
 overlay === 'search'
 ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -8149,6 +8164,9 @@ closeModal()
 if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
 },
 onOpen: (rel, line) => openPath(rel, line, { jump: true }),
+searchBar: fileSearchBar,
+searchOpen: fsOpen,
+onCloseSearch: closeFileSearch,
 })
 : null,
 typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,

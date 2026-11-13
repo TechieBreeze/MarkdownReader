@@ -34,7 +34,7 @@ const CMODAL_CSS = `
 .mdr-cmodal-badge{flex:0 0 auto;padding:1px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap}
 .mdr-cmodal-btn{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer;white-space:nowrap}
 .mdr-cmodal-btn:hover{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}
-.mdr-cmodal-body{flex:1;min-height:0;display:flex;flex-direction:column}
+.mdr-cmodal-body{position:relative;flex:1;min-height:0;display:flex;flex-direction:column}
 .mdr-cmodal-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;color:var(--dsw-alias-label-secondary);font-size:12.5px;text-align:center}
 .mdr-cmodal-note{flex:0 0 auto;padding:5px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:rgba(226,192,141,.08);color:#e2c08d;font-size:12px;white-space:pre-wrap;word-break:break-all}
 .mdr-cmodal-defbar{display:flex;align-items:center;gap:6px;flex:0 0 auto;padding:4px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12px;color:var(--dsw-alias-label-secondary)}
@@ -52,7 +52,7 @@ function readModalScroll(card) {
  * null otherwise), so every mount is a fresh session with an empty back stack.
  */
 function CodeModalInner(props) {
-  const { request, onClose, onOpenTab, onOpen } = props
+  const { request, onClose, onOpenTab, onOpen, searchBar, searchOpen, onCloseSearch } = props
   const requestPath = String((request && request.path) || '')
   const requestLine = Math.max(0, Number(request && request.line) || 0)
   // Git-adapted link: the modal applies the requested branch/commit view inside
@@ -293,17 +293,23 @@ function CodeModalInner(props) {
     if (target && (target.branch || target.commit)) gitActions.applyTarget(target.branch || null, target.commit || null)
   }, [view, gitActions])
 
-  // Esc closes the modal.
+  // Esc closes the modal — but the in-file search bar is a LAYER on top of it
+  // (the standalone reader's rule: Esc closes the search first). The bar lives
+  // inside the card now, so its own Escape must not take the whole popup down.
   React.useEffect(() => {
     const onKeyDown = (event) => {
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopImmediatePropagation()
+      if (searchOpen && typeof onCloseSearch === 'function') {
+        onCloseSearch()
+        return
+      }
       if (typeof onClose === 'function') onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
+  }, [onClose, searchOpen, onCloseSearch])
 
   // Apply the git-adapted request view (branch/commit) once the file text is in.
   // In-place Ctrl+click navigation loads another file: the opener's branch/commit
@@ -387,7 +393,13 @@ function CodeModalInner(props) {
         viewKey,
         restoreScroll,
         jumpHover: isJavaKtLang(lang),
+        // In-file search (Ctrl+F) while the popup is open: the modal registers
+        // its own controller and the App prefers it over the tab behind it.
+        searchKey: typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal',
       }),
+      // The bar is rendered INSIDE the card so it is never covered by the mask
+      // (the standalone reader re-positioned its widget into the modal).
+      searchBar || null,
     )
   }
 
