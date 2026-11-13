@@ -256,90 +256,117 @@ function App() {
 
   /* ------------------------------------------------- 文件内搜索 (Ctrl+F) */
 
-  const [fsOpen, setFsOpen] = React.useState(false)
-  const [fsQuery, setFsQuery] = React.useState('')
-  const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
-  const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
-  // Refs mirror the state: the callbacks below must see the CURRENT values.
-  // `fsAppliedRef` holds the query that was actually searched: a different one
-  // means "search again", the same one means "next match" (the standalone
-  // reader's rule).
-  const fsQueryRef = React.useRef('')
-  const fsAppliedRef = React.useRef('')
-  const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
+  /**
+   * One bucket PER SCOPE: the code popup (弹窗) and the tabs (标签页) are
+   * separate search sessions.
+   *
+   * They shared one state, so a search opened inside the popup FOLLOWED the
+   * user into the tab when the popup closed (user report: 「弹窗内外搜索是分开
+   * 的，当前在弹窗内打开搜索后关闭弹窗，搜索会跟到标签页内」). The standalone
+   * reader was a single widget that re-resolved its scope on every search; in
+   * the plugin the popup is an overlay ON TOP of a still-mounted tab, so the
+   * two must not share a query, options, marks or the open state.
+   */
+  const emptyFsBucket = () => ({
+    open: false,
+    query: '',
+    applied: '',
+    info: { count: 0, index: -1, status: '' },
+    options: { cs: false, word: false, re: false },
+  })
+  const [fsBuckets, setFsBuckets] = React.useState(() => ({ tab: emptyFsBucket(), modal: emptyFsBucket() }))
+  // What is on screen decides which session Ctrl+F talks to.
+  const fsScope = modalRequest ? 'modal' : 'tab'
+  const fsBucketsRef = React.useRef(fsBuckets)
+  fsBucketsRef.current = fsBuckets
+  const fsScopeRef = React.useRef(fsScope)
+  fsScopeRef.current = fsScope
 
-  // 弹窗打开时搜索的是弹窗里的那份代码（原版 fsResolveScope：弹窗优先，其次标签页）。
-  const fsController = React.useCallback(
-    () =>
-      modalRequest
-        ? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal') ||
-          fileSearchController(activeTab ? activeTab.id : '')
+  const patchFs = React.useCallback((scope, patch) => {
+    setFsBuckets((prev) => ({ ...prev, [scope]: { ...prev[scope], ...patch } }))
+  }, [])
+
+  /** The controller of ONE scope: the popup's code body or the active tab's. */
+  const fsControllerOf = React.useCallback(
+    (scope) =>
+      scope === 'modal'
+        ? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal')
         : fileSearchController(activeTab ? activeTab.id : ''),
-    [activeTab, modalRequest],
+    [activeTab],
   )
 
-  const runFileSearch = React.useCallback(
-    (query) => {
-      const controller = fsController()
+  const runFileSearchIn = React.useCallback(
+    (scope, query) => {
+      const bucket = fsBucketsRef.current[scope]
+      const controller = fsControllerOf(scope)
       if (!controller) {
-        fsAppliedRef.current = query
-        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        patchFs(scope, { applied: query, info: { count: 0, index: -1, status: '该视图不可搜索' } })
         return
       }
-      const result = controller.search(query, fsOptionsRef.current)
-      fsAppliedRef.current = query
-      setFsInfo({
-        count: Number(result.count || 0),
-        index: Number(result.index == null ? -1 : result.index),
-        status: result.error || (result.count ? '' : '无匹配'),
+      const result = controller.search(query, bucket.options)
+      patchFs(scope, {
+        applied: query,
+        info: {
+          count: Number(result.count || 0),
+          index: Number(result.index == null ? -1 : result.index),
+          status: result.error || (result.count ? '' : '无匹配'),
+        },
       })
     },
-    [fsController],
+    [fsControllerOf, patchFs],
   )
 
-  const gotoFileSearch = React.useCallback(
-    (delta) => {
-      const controller = fsController()
+  const gotoFileSearchIn = React.useCallback(
+    (scope, delta) => {
+      const bucket = fsBucketsRef.current[scope]
+      const controller = fsControllerOf(scope)
       if (!controller) {
-        setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+        patchFs(scope, { info: { count: 0, index: -1, status: '该视图不可搜索' } })
         return
       }
       // A changed query means "search", not "navigate".
-      if (fsQueryRef.current !== fsAppliedRef.current) {
-        runFileSearch(fsQueryRef.current)
+      if (bucket.query !== bucket.applied) {
+        runFileSearchIn(scope, bucket.query)
         return
       }
       const result = controller.goto(delta)
-      setFsInfo({
-        count: Number(result.count || 0),
-        index: Number(result.index == null ? -1 : result.index),
-        status: result.error || (result.count ? '' : '无匹配'),
+      patchFs(scope, {
+        info: {
+          count: Number(result.count || 0),
+          index: Number(result.index == null ? -1 : result.index),
+          status: result.error || (result.count ? '' : '无匹配'),
+        },
       })
     },
-    [fsController, runFileSearch],
+    [fsControllerOf, patchFs, runFileSearchIn],
   )
 
-  const closeFileSearch = React.useCallback(() => {
-    const controller = fsController()
-    if (controller) controller.clear()
-    setFsOpen(false)
-    setFsQuery('')
-    fsQueryRef.current = ''
-    fsAppliedRef.current = ''
-    setFsInfo({ count: 0, index: -1, status: '' })
-  }, [fsController])
+  const closeFileSearchIn = React.useCallback(
+    (scope) => {
+      const controller = fsControllerOf(scope)
+      if (controller) controller.clear()
+      patchFs(scope, emptyFsBucket())
+    },
+    [fsControllerOf, patchFs],
+  )
 
-  const openFileSearch = React.useCallback(() => {
-    setFsOpen(true)
-  }, [])
+  const openFileSearch = React.useCallback(() => patchFs(fsScopeRef.current, { open: true }), [patchFs])
 
-  const toggleFileSearchOption = React.useCallback((key) => {
-    setFsOptions((prev) => {
-      const next = { ...prev, [key]: !prev[key] }
-      fsOptionsRef.current = next
-      return next
+  const toggleFileSearchOptionIn = React.useCallback((scope, key) => {
+    setFsBuckets((prev) => {
+      const bucket = prev[scope]
+      return { ...prev, [scope]: { ...bucket, options: { ...bucket.options, [key]: !bucket.options[key] } } }
     })
   }, [])
+
+  // Closing the popup ends ITS session; the tab keeps its own, and the popup's
+  // query can never migrate into it.
+  React.useEffect(() => {
+    if (modalRequest) return
+    setFsBuckets((prev) =>
+      prev.modal.open || prev.modal.query || prev.modal.applied ? { ...prev, modal: emptyFsBucket() } : prev,
+    )
+  }, [modalRequest])
 
   /** Save the active markdown tab scroll NOW, before the DOM switches away. */
   const saveActiveScroll = React.useCallback(() => {
@@ -1205,37 +1232,37 @@ function App() {
   const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
 
   /**
-   * The in-file search bar. It is rendered ONCE and mounted either in the panel
-   * (nothing modal is open) or inside the code popup's card - the standalone
-   * reader kept the bar above the popup, and the plugin originally left it in
-   * the panel where the popup's mask covered it.
+   * The in-file search bar for ONE scope. Each scope renders its own element
+   * from its own bucket, so the popup and the tabs are independent sessions
+   * (opening the popup never borrows the tab's query, and closing it never
+   * leaves the popup's query behind in the tab).
    */
-  const fileSearchBar = fsOpen
-    ? h(FileSearchWidget, {
-        query: fsQuery,
-        onQuery: (value) => {
-          fsQueryRef.current = value
-          setFsQuery(value)
-        },
-        count: fsInfo.count,
-        index: fsInfo.index,
-        status: fsInfo.status,
-        options: fsOptions,
-        onToggleOption: toggleFileSearchOption,
-        onSearch: runFileSearch,
-        onNext: () => gotoFileSearch(1),
-        onPrev: () => gotoFileSearch(-1),
-        onClose: closeFileSearch,
-        // 全局搜索面板 renders BELOW the popup, so it would be unreachable
-        // from inside the modal: the button is only offered from the panel.
-        onGlobal: modalRequest
+  const fileSearchBarFor = (scope) => {
+    const bucket = fsBuckets[scope]
+    if (!bucket.open) return null
+    return h(FileSearchWidget, {
+      query: bucket.query,
+      onQuery: (value) => patchFs(scope, { query: value }),
+      count: bucket.info.count,
+      index: bucket.info.index,
+      status: bucket.info.status,
+      options: bucket.options,
+      onToggleOption: (key) => toggleFileSearchOptionIn(scope, key),
+      onSearch: () => runFileSearchIn(scope, bucket.query),
+      onNext: () => gotoFileSearchIn(scope, 1),
+      onPrev: () => gotoFileSearchIn(scope, -1),
+      onClose: () => closeFileSearchIn(scope),
+      // 全局搜索面板 renders BELOW the popup, so it would be unreachable
+      // from inside the modal: the button is only offered from the panel.
+      onGlobal:
+        scope === 'modal'
           ? null
           : () => {
-              closeFileSearch()
+              closeFileSearchIn(scope)
               setOverlay('search')
             },
-      })
-    : null
+    })
+  }
 
   return h(
     React.Fragment,
@@ -1423,7 +1450,7 @@ function App() {
     ),
     // 文件内搜索条（Ctrl+F）：浮在内容区右上角，属于插件面板内部。
     // 代码弹窗打开时它被挂到弹窗卡片里（弹窗遮罩会盖住面板里的浮层）。
-    !modalRequest ? fileSearchBar : null,
+    !modalRequest ? fileSearchBarFor('tab') : null,
     error ? h('div', { className: 'mdr-err' }, error) : null,
     overlay === 'search'
       ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -1446,9 +1473,11 @@ function App() {
           onOpen: (rel, line) => openPath(rel, line, { jump: true }),
           // File search while the popup is open: the bar lives in the card and
           // the popup's controller wins over the tab's (弹窗优先，其次标签页).
-          searchBar: fileSearchBar,
-          searchOpen: fsOpen,
-          onCloseSearch: closeFileSearch,
+          // File search while the popup is open: the bar lives in the card and
+          // the popup has its OWN session (弹窗内外搜索互相独立).
+          searchBar: fileSearchBarFor('modal'),
+          searchOpen: fsBuckets.modal.open,
+          onCloseSearch: () => closeFileSearchIn('modal'),
         })
       : null,
     typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,

@@ -133,10 +133,21 @@ function syncClientBuild() {
  * has to be reloaded to get rid of it - which this check does as soon as it
  * sees that the served build is not its own.
  *
- * The reload is guarded per served build (sessionStorage), so a rebuild loop
- * cannot trap the page: after the reload the fresh instance matches the served
- * build and nothing reloads again.
+ * BUT: the file on disk is NOT the bundle the Harness will boot. The Harness
+ * serves an immutable URL for the bundle it REGISTERED when the plugin was
+ * enabled, and a rebuild only replaces the file. Reloading while those differ
+ * boots the stale URL -> 「import failed」 -> 「应用无法启动或已意外停止」.
+ * That window is exactly `build.mjs` .. re-enable (the app crashed twice this
+ * way), so the reload waits until the Host reports that the registered build IS
+ * the on-disk build. The 60 s fallback keeps a page from running stale code
+ * forever if the plugin never gets re-registered.
+ *
+ * The reload is also guarded per served build (sessionStorage), so a rebuild
+ * loop cannot trap the page.
  */
+const RELOAD_SETTLE_FALLBACK_MS = 60000
+const reloadSeen = { build: '', at: 0 }
+
 function checkClientBuild() {
   if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
   try {
@@ -144,6 +155,18 @@ function checkClientBuild() {
       .then((payload) => {
         const server = payload && payload.build
         if (!server || server === BUILD_ID) return
+        const registered = typeof payload.registered === 'string' ? payload.registered : ''
+        const now = Date.now()
+        if (reloadSeen.build !== server) {
+          // First sighting: remember it and look again on the next tick, so a
+          // rebuild that is still in flight cannot trigger the reload.
+          reloadSeen.build = server
+          reloadSeen.at = now
+          return
+        }
+        const registeredNow = registered === server
+        const settled = now - reloadSeen.at >= RELOAD_SETTLE_FALLBACK_MS
+        if (!registeredNow && !settled) return
         const key = `mdr.reload.${server}`
         try {
           if (window.sessionStorage.getItem(key)) return

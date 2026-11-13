@@ -8,6 +8,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -21,6 +22,28 @@ import { renderHtmlPreview } from './htmlpreview.js'
 import { resolveRepoUrls } from './gitlinks.js'
 
 const execFileAsync = promisify(execFile)
+
+/**
+ * The client build id this Host MODULE INSTANCE was activated with.
+ *
+ * Enabling the plugin re-imports this module, so the value is the bundle the
+ * Harness has REGISTERED - which is not the same as the bundle on disk while a
+ * rebuild is still being registered. The page reloads itself when it detects a
+ * newer bundle, and a reload that happens between `build.mjs` and the plugin
+ * being re-enabled boots the OLD registered bundle URL while the file on disk
+ * is already the new one: the import fails and the app shows
+ * 「应用无法启动或已意外停止」. Exposing this lets the client wait until the
+ * registered bundle matches the file before it reloads.
+ */
+const ACTIVATION_BUILD = (() => {
+  try {
+    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'client.build.json')
+    const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
+    return meta && typeof meta.build === 'string' ? meta.build : ''
+  } catch {
+    return ''
+  }
+})()
 
 const VENDOR_WHITELIST = new Set([
   'marked.min.js',
@@ -149,9 +172,18 @@ function clientBuild(state) {
   try {
     const file = path.join(state.packageDir, 'client.build.json')
     const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return { ok: true, build: meta.build || '', at: meta.at || '', bytes: meta.bytes || 0 }
+    return {
+      ok: true,
+      build: meta.build || '',
+      at: meta.at || '',
+      bytes: meta.bytes || 0,
+      // What the Harness has actually REGISTERED (see ACTIVATION_BUILD): the
+      // client must not reload while the two differ, or the boot fetches a
+      // stale bundle URL and the import fails.
+      registered: ACTIVATION_BUILD,
+    }
   } catch {
-    return { ok: true, build: '', at: '', bytes: 0 }
+    return { ok: true, build: '', at: '', bytes: 0, registered: ACTIVATION_BUILD }
   }
 }
 
