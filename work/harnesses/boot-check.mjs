@@ -94,3 +94,31 @@ exported.apply({
 if (registered.length < 2) throw new Error(`expected at least 2 slot registrations, got ${registered.length}`)
 console.log(`boot ok: factory evaluated, apply() registered ${registered.length} slots`)
 for (const entry of registered) console.log('  ·', JSON.stringify(entry.target))
+
+/**
+ * The self-reload must NEVER fire while the on-disk bundle is newer than the
+ * bundle the Harness has REGISTERED: a reload in that window boots the stale
+ * bundle URL, the client import fails and the app shows the crash dialog
+ * (observed twice on 2026-11-13, every time right after `node plugin/build.mjs`).
+ */
+const apiSource = fs.readFileSync(path.join(ROOT, 'plugin', 'lib', 'api.js'), 'utf8')
+const coreSource = fs.readFileSync(path.join(ROOT, 'plugin', 'src-client', '00-core.js'), 'utf8')
+const failures = []
+const expect = (name, condition) => {
+  if (condition) console.log(`  ok   ${name}`)
+  else {
+    failures.push(name)
+    console.log(`  FAIL ${name}`)
+  }
+}
+console.log('\n[reload guard]')
+expect('/api/client-build reports the REGISTERED build', /registered:\s*ACTIVATION_BUILD/.test(apiSource))
+expect('the registered build is captured at activation', /const ACTIVATION_BUILD = /.test(apiSource))
+expect('the client waits for registered === served', /registeredNow\s*=\s*registered === server/.test(coreSource))
+expect('the client requires a second sighting', /reloadSeen\.build !== server/.test(coreSource))
+if (failures.length) {
+  console.log(`\n${failures.length} check(s) failed`)
+  process.exitCode = 1
+} else {
+  console.log('\nreload guard ok')
+}

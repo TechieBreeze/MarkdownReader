@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "e74a27b9b322";
+    const BUILD_ID = "81f9bce8dac2";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -108,6 +108,8 @@ postJson('/api/client-ping', { build: BUILD_ID }).catch(() => {})
 }
 checkClientBuild()
 }
+const RELOAD_SETTLE_FALLBACK_MS = 60000
+const reloadSeen = { build: '', at: 0 }
 function checkClientBuild() {
 if (typeof BUILD_ID === 'undefined' || !BUILD_ID) return
 try {
@@ -115,6 +117,16 @@ fetchJson('/api/client-build')
 .then((payload) => {
 const server = payload && payload.build
 if (!server || server === BUILD_ID) return
+const registered = typeof payload.registered === 'string' ? payload.registered : ''
+const now = Date.now()
+if (reloadSeen.build !== server) {
+reloadSeen.build = server
+reloadSeen.at = now
+return
+}
+const registeredNow = registered === server
+const settled = now - reloadSeen.at >= RELOAD_SETTLE_FALLBACK_MS
+if (!registeredNow && !settled) return
 const key = `mdr.reload.${server}`
 try {
 if (window.sessionStorage.getItem(key)) return
@@ -7155,78 +7167,93 @@ const rootKey = currentProject && multi ? currentProject : ''
 const activeTabKey = activeTab
 ? `${activeTab.id}|${activeTab.content == null ? 'pending' : 'loaded'}|${activeTab.error || ''}`
 : ''
-const [fsOpen, setFsOpen] = React.useState(false)
-const [fsQuery, setFsQuery] = React.useState('')
-const [fsInfo, setFsInfo] = React.useState({ count: 0, index: -1, status: '' })
-const [fsOptions, setFsOptions] = React.useState({ cs: false, word: false, re: false })
-const fsQueryRef = React.useRef('')
-const fsAppliedRef = React.useRef('')
-const fsOptionsRef = React.useRef({ cs: false, word: false, re: false })
-const fsController = React.useCallback(
-() =>
-modalRequest
-? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal') ||
-fileSearchController(activeTab ? activeTab.id : '')
+const emptyFsBucket = () => ({
+open: false,
+query: '',
+applied: '',
+info: { count: 0, index: -1, status: '' },
+options: { cs: false, word: false, re: false },
+})
+const [fsBuckets, setFsBuckets] = React.useState(() => ({ tab: emptyFsBucket(), modal: emptyFsBucket() }))
+const fsScope = modalRequest ? 'modal' : 'tab'
+const fsBucketsRef = React.useRef(fsBuckets)
+fsBucketsRef.current = fsBuckets
+const fsScopeRef = React.useRef(fsScope)
+fsScopeRef.current = fsScope
+const patchFs = React.useCallback((scope, patch) => {
+setFsBuckets((prev) => ({ ...prev, [scope]: { ...prev[scope], ...patch } }))
+}, [])
+const fsControllerOf = React.useCallback(
+(scope) =>
+scope === 'modal'
+? fileSearchController(typeof MODAL_SEARCH_KEY === 'string' ? MODAL_SEARCH_KEY : '@modal')
 : fileSearchController(activeTab ? activeTab.id : ''),
-[activeTab, modalRequest],
+[activeTab],
 )
-const runFileSearch = React.useCallback(
-(query) => {
-const controller = fsController()
+const runFileSearchIn = React.useCallback(
+(scope, query) => {
+const bucket = fsBucketsRef.current[scope]
+const controller = fsControllerOf(scope)
 if (!controller) {
-fsAppliedRef.current = query
-setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+patchFs(scope, { applied: query, info: { count: 0, index: -1, status: '该视图不可搜索' } })
 return
 }
-const result = controller.search(query, fsOptionsRef.current)
-fsAppliedRef.current = query
-setFsInfo({
+const result = controller.search(query, bucket.options)
+patchFs(scope, {
+applied: query,
+info: {
 count: Number(result.count || 0),
 index: Number(result.index == null ? -1 : result.index),
 status: result.error || (result.count ? '' : '无匹配'),
+},
 })
 },
-[fsController],
+[fsControllerOf, patchFs],
 )
-const gotoFileSearch = React.useCallback(
-(delta) => {
-const controller = fsController()
+const gotoFileSearchIn = React.useCallback(
+(scope, delta) => {
+const bucket = fsBucketsRef.current[scope]
+const controller = fsControllerOf(scope)
 if (!controller) {
-setFsInfo({ count: 0, index: -1, status: '该视图不可搜索' })
+patchFs(scope, { info: { count: 0, index: -1, status: '该视图不可搜索' } })
 return
 }
-if (fsQueryRef.current !== fsAppliedRef.current) {
-runFileSearch(fsQueryRef.current)
+if (bucket.query !== bucket.applied) {
+runFileSearchIn(scope, bucket.query)
 return
 }
 const result = controller.goto(delta)
-setFsInfo({
+patchFs(scope, {
+info: {
 count: Number(result.count || 0),
 index: Number(result.index == null ? -1 : result.index),
 status: result.error || (result.count ? '' : '无匹配'),
+},
 })
 },
-[fsController, runFileSearch],
+[fsControllerOf, patchFs, runFileSearchIn],
 )
-const closeFileSearch = React.useCallback(() => {
-const controller = fsController()
+const closeFileSearchIn = React.useCallback(
+(scope) => {
+const controller = fsControllerOf(scope)
 if (controller) controller.clear()
-setFsOpen(false)
-setFsQuery('')
-fsQueryRef.current = ''
-fsAppliedRef.current = ''
-setFsInfo({ count: 0, index: -1, status: '' })
-}, [fsController])
-const openFileSearch = React.useCallback(() => {
-setFsOpen(true)
-}, [])
-const toggleFileSearchOption = React.useCallback((key) => {
-setFsOptions((prev) => {
-const next = { ...prev, [key]: !prev[key] }
-fsOptionsRef.current = next
-return next
+patchFs(scope, emptyFsBucket())
+},
+[fsControllerOf, patchFs],
+)
+const openFileSearch = React.useCallback(() => patchFs(fsScopeRef.current, { open: true }), [patchFs])
+const toggleFileSearchOptionIn = React.useCallback((scope, key) => {
+setFsBuckets((prev) => {
+const bucket = prev[scope]
+return { ...prev, [scope]: { ...bucket, options: { ...bucket.options, [key]: !bucket.options[key] } } }
 })
 }, [])
+React.useEffect(() => {
+if (modalRequest) return
+setFsBuckets((prev) =>
+prev.modal.open || prev.modal.query || prev.modal.applied ? { ...prev, modal: emptyFsBucket() } : prev,
+)
+}, [modalRequest])
 const saveActiveScroll = React.useCallback(() => {
 const scroller = contentRef.current
 if (!scroller) return
@@ -7942,30 +7969,30 @@ const treeLabel = currentProject
 ? `全部项目（${rootNames.length}）`
 : rootNames[0] || '项目'
 const treeTitle = meta ? meta.roots.map((root) => root.path).join('\n') : ''
-const fileSearchBar = fsOpen
-? h(FileSearchWidget, {
-query: fsQuery,
-onQuery: (value) => {
-fsQueryRef.current = value
-setFsQuery(value)
-},
-count: fsInfo.count,
-index: fsInfo.index,
-status: fsInfo.status,
-options: fsOptions,
-onToggleOption: toggleFileSearchOption,
-onSearch: runFileSearch,
-onNext: () => gotoFileSearch(1),
-onPrev: () => gotoFileSearch(-1),
-onClose: closeFileSearch,
-onGlobal: modalRequest
+const fileSearchBarFor = (scope) => {
+const bucket = fsBuckets[scope]
+if (!bucket.open) return null
+return h(FileSearchWidget, {
+query: bucket.query,
+onQuery: (value) => patchFs(scope, { query: value }),
+count: bucket.info.count,
+index: bucket.info.index,
+status: bucket.info.status,
+options: bucket.options,
+onToggleOption: (key) => toggleFileSearchOptionIn(scope, key),
+onSearch: () => runFileSearchIn(scope, bucket.query),
+onNext: () => gotoFileSearchIn(scope, 1),
+onPrev: () => gotoFileSearchIn(scope, -1),
+onClose: () => closeFileSearchIn(scope),
+onGlobal:
+scope === 'modal'
 ? null
 : () => {
-closeFileSearch()
+closeFileSearchIn(scope)
 setOverlay('search')
 },
 })
-: null
+}
 return h(
 React.Fragment,
 null,
@@ -8145,7 +8172,7 @@ onLocate: () => locateInTree(activeTab.path),
 ),
 ),
 ),
-!modalRequest ? fileSearchBar : null,
+!modalRequest ? fileSearchBarFor('tab') : null,
 error ? h('div', { className: 'mdr-err' }, error) : null,
 overlay === 'search'
 ? h(SearchPanel, { mode: 'search', onClose: () => setOverlay(null), onOpen: (rel, line) => openPath(rel, line, { jump: true }) })
@@ -8164,9 +8191,9 @@ closeModal()
 if (request) openPath(request.path, request.line, { branch: request.branch, commit: request.commit, jump: true })
 },
 onOpen: (rel, line) => openPath(rel, line, { jump: true }),
-searchBar: fileSearchBar,
-searchOpen: fsOpen,
-onCloseSearch: closeFileSearch,
+searchBar: fileSearchBarFor('modal'),
+searchOpen: fsBuckets.modal.open,
+onCloseSearch: () => closeFileSearchIn('modal'),
 })
 : null,
 typeof SyncPanel === 'function' && syncOpen ? h(SyncPanel, { onClose: closeSync }) : null,

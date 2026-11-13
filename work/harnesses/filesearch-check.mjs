@@ -74,13 +74,34 @@ const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
 // behind it and nothing was highlighted where the user was looking.
 check('the modal owns a search key', /MODAL_SEARCH_KEY/.test(searchSource))
 check('the modal registers its code body for search', /searchKey:\s*[^,\n]*MODAL_SEARCH_KEY/.test(modalSource))
-check('the App prefers the modal controller', /modalRequest\s*\?/.test(appSource) && /fileSearchController\([^)]*MODAL_SEARCH_KEY/.test(appSource))
-check('the bar is handed to the modal', /searchBar:\s*fileSearchBar/.test(appSource))
+check('the App routes Ctrl+F to the modal controller', /fileSearchController\([^)]*MODAL_SEARCH_KEY/.test(appSource))
+check('the bar is handed to the modal', /searchBar:\s*fileSearchBarFor\('modal'\)/.test(appSource))
 check('the modal renders the bar inside its card', /searchBar\s*\|\|\s*null/.test(modalSource))
-check('the bar is only rendered in the panel without a modal', /!modalRequest \? fileSearchBar : null/.test(appSource))
+check('the panel renders the tab bar only without a modal', /!modalRequest \? fileSearchBarFor\('tab'\) : null/.test(appSource))
 check('Esc closes the search before the popup', /onCloseSearch/.test(modalSource) && /searchOpen/.test(modalSource))
 check('the bar has an in-modal style', /\.mdr-cmodal-body \.mdr-fs/.test(searchSource))
-check('the global-search button is hidden inside the modal', /onGlobal:\s*modalRequest/.test(appSource))
+check('the global-search button is hidden inside the modal', /scope === 'modal'[\s\S]{0,80}\? null/.test(appSource))
+
+/* ------------------------------- 弹窗内外是两个独立的搜索会话 (2026-11-13) */
+
+console.log('\n[1c] the popup and the tabs keep SEPARATE search sessions')
+// User report: 「弹窗内外搜索是分开的，当前在弹窗内打开搜索后关闭弹窗，搜索会跟到
+// 标签页内」. One shared state made the popup's query follow into the tab.
+check(
+  'one bucket per scope',
+  /fsBuckets, setFsBuckets\] = React\.useState\(\(\) => \(\{ tab: emptyFsBucket\(\), modal: emptyFsBucket\(\) \}\)\)/.test(appSource),
+)
+check(
+  'a bucket carries its own query, marks and switches',
+  /query: '',\s*\n\s*applied: '',\s*\n\s*info: \{ count: 0, index: -1, status: '' \},\s*\n\s*options: \{ cs: false, word: false, re: false \}/.test(appSource),
+)
+check('the popup bar is built from the popup bucket', /fileSearchBarFor\('modal'\)/.test(appSource))
+check('the tab bar is built from the tab bucket', /fileSearchBarFor\('tab'\)/.test(appSource))
+check(
+  'closing the popup ends only its own session',
+  /if \(modalRequest\) return[\s\S]{0,200}prev\.modal\.open[\s\S]{0,120}\? \{ \.\.\.prev, modal: emptyFsBucket\(\) \}/.test(appSource),
+)
+check('search marks cannot leak: the controller is resolved per scope', /const fsControllerOf = React\.useCallback\(\s*\(scope\) =>/.test(appSource))
 
 /* ----------------------------------------------------------- DOM checks */
 
