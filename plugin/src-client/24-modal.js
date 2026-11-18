@@ -59,6 +59,8 @@ function CodeModalInner(props) {
   // the popup (its own git view key, so the tab underneath is untouched).
   const requestBranch = String((request && request.branch) || '')
   const requestCommit = String((request && request.commit) || '')
+  // 永久链接锚定的提交：按该提交打开（文档里的行号就是那个提交的行号）。
+  const requestRefCommit = String((request && request.refCommit) || '')
   const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
 
   const [view, setView] = React.useState(() => ({
@@ -234,10 +236,17 @@ function CodeModalInner(props) {
   // 缓存过的视图会沿用上次的分支，用户切过分支后重开就"没生效"。
   // 请求本身带 branch/commit 的是显式指令，优先。
   React.useEffect(() => {
-    if (requestBranch || requestCommit) return
+    if (requestBranch || requestCommit || requestRefCommit) return
     void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayPath, requestBranch, requestCommit, gitActions.refresh])
+  }, [displayPath, requestBranch, requestCommit, requestRefCommit, gitActions.refresh])
+
+  // 锚定到具体提交的链接：显示该提交下的这个文件（顶部仍可切分支回到分支视图）。
+  React.useEffect(() => {
+    if (!requestRefCommit) return
+    gitActions.applyTarget(null, requestRefCommit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayPath, requestRefCommit, gitActions.refresh])
   const workspaceContent = view && view.content != null ? view.content : ''
   const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   // Text + git version carried by a jump request: exactly what this modal renders

@@ -614,6 +614,8 @@ function App() {
                     line: line == null ? tab.line : targetLine,
                     branch: options.branch || tab.branch || '',
                     commit: options.commit || tab.commit || '',
+                    // A commit-pinned link keeps its pin across re-opens of that tab.
+                    refCommit: options.refCommit || tab.refCommit || '',
                     navFrom: options.jump ? true : !!tab.navFrom,
                     // undefined = leave the existing entry bar alone
                     ...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
@@ -631,6 +633,7 @@ function App() {
             line: targetLine,
             branch: options.branch || '',
             commit: options.commit || '',
+            refCommit: options.refCommit || '',
             htmlMode: 'render',
             navFrom: !!options.jump,
             defBar: options.defBar !== undefined ? options.defBar : null,
@@ -1217,10 +1220,12 @@ function App() {
     const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
     const branch = anchor.dataset.branch || ''
     const commit = anchor.dataset.commit || ''
+    // 永久链接锚定的提交（GitLab/GitHub 的 /-/blob/<sha>/）: 按该提交打开。
+    const refCommit = anchor.dataset.refCommit || ''
     const modifier = event.ctrlKey || event.metaKey
     if (kind === 'code') {
-      if (modifier) openPath(rel, line, { branch, commit, jump: true })
-      else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit })
+      if (modifier) openPath(rel, line, { branch, commit, refCommit, jump: true })
+      else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit, refCommit })
       return
     }
     openPath(rel, line, { branch, commit })

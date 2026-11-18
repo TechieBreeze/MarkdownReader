@@ -26,6 +26,7 @@ const SRC = path.join(ROOT, 'plugin', 'src-client')
 const gitSource = fs.readFileSync(path.join(SRC, '15-git.js'), 'utf8')
 const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
 const appSource = fs.readFileSync(path.join(SRC, '50-app.js'), 'utf8')
+const codeSource = fs.readFileSync(path.join(SRC, '20-code.js'), 'utf8')
 const bundle = fs.readFileSync(path.join(ROOT, 'plugin', 'client.js'), 'utf8')
 
 let failures = 0
@@ -167,12 +168,20 @@ const mdSource = fs.readFileSync(path.join(SRC, '10-markdown.js'), 'utf8')
 const linksSource = fs.readFileSync(path.join(ROOT, 'plugin', 'lib', 'gitlinks.js'), 'utf8')
 check('Host 区分 ref 类型', /async function refKind/.test(linksSource) && /refKind: kind/.test(linksSource))
 check('pinned commit 不写 data-branch', /refKind === 'branch'\) anchor\.dataset\.branch = hit\.ref/.test(mdSource))
+check('pinned commit 记到 data-refCommit', /anchor\.dataset\.refCommit = hit\.ref/.test(mdSource))
 check('sha 兜底判为 commit', /\^\[0-9a-f\]\{7,40\}/.test(mdSource))
 check(
   'applyGitTarget 不把非分支当分支',
   /looksLikeCommit = !!branch && !\(view\.branches \|\| \[\]\)\.includes\(branch\)/.test(gitSource),
 )
-check('构建产物包含 refKind 判断', bundle.includes('refKind') || bundle.includes('refKind'))
+check(
+  '弹窗按锚定提交打开（并跳过分支记忆）',
+  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit\) return/.test(modalSource) &&
+    /applyTarget\(null, requestRefCommit\)/.test(modalSource),
+)
+check('链接把 refCommit 带进请求', /refCommit\b/.test(appSource) && /refCommit: options\.refCommit \|\| ''/.test(appSource))
+check('标签页也会应用锚定提交', /tab\.commit \|\| tab\.refCommit/.test(codeSource))
+check('构建产物包含钉住提交的支持', bundle.includes('refCommit'))
 /* ------------------------------------------------------------- wiring */
 console.log('\n[3] 接线：打开即用、手动切换才记忆')
 check('打开文件时按优先级选分支', /view\.branch = pickOpenBranch\(meta\)/.test(gitSource))
@@ -191,7 +200,10 @@ check(
   '弹窗每次打开都重新决定分支（缓存视图不能沿用旧分支）',
   /React\.useEffect\(\(\) => \{[\s\S]{0,200}applyDefaultBranch\('modal:' \+ displayPath/.test(modalSource),
 )
-check('请求自带分支/提交时以请求为准', /if \(requestBranch \|\| requestCommit\) return[\s\S]{0,160}applyDefaultBranch/.test(modalSource))
+check(
+  '请求自带分支/提交时以请求为准',
+  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit\) return[\s\S]{0,200}applyDefaultBranch/.test(modalSource),
+)
 check(
   '每次普通打开都丢弃该路径的缓存视图（带分支的显式打开除外）',
   /if \(!options\.branch && !options\.commit[\s\S]{0,80}resetGitView\(value\)/.test(appSource),

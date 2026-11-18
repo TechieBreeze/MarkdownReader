@@ -1309,17 +1309,22 @@ function CodeView(props) {
     )
   }, [tab.id, tab.path, onOpen])
 
-  // git-adapted code link: tab.branch / tab.commit must be applied to this tab's
-  // git view on open (and when an already-open tab receives a new target view).
-  // A fresh tab (`content == null`) re-applies even for the same target, so
-  // closing and reopening the link shows the requested branch again.
+  // git-adapted code link: tab.branch / tab.commit / tab.refCommit must be applied
+  // to this tab's git view on open (and when an already-open tab receives a new
+  // target view). A fresh tab (`content == null`) re-applies even for the same
+  // target, so closing and reopening the link shows the requested view again.
   React.useEffect(() => {
-    if (!tab.branch && !tab.commit) return
-    const key = `${tab.branch || ''}\u0000${tab.commit || ''}`
+    if (!tab.branch && !tab.commit && !tab.refCommit) return
+    const key = `${tab.branch || ''}\u0000${tab.commit || ''}\u0000${tab.refCommit || ''}`
     if (gitTabViewApplied.get(tab.id) === key && tab.content != null) return
     gitTabViewApplied.set(tab.id, key)
-    void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
-  }, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
+    void applyGitTarget(
+      { id: tab.id, kind: 'code', path: tab.path },
+      tab.branch,
+      tab.commit || tab.refCommit,
+      actions.refresh,
+    )
+  }, [tab.id, tab.path, tab.branch, tab.commit, tab.refCommit, tab.content == null, actions.refresh])
 
   const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
     view.branchContent == null ? 'ws' : 'branch'

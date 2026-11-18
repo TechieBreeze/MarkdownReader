@@ -926,7 +926,12 @@ function testStaticWiring() {
   check('CodeView accepts onBack prop', code.includes('const { tab, onOpen, onBack, taskId } = props'))
   check('back button shown only when tab.navFrom', code.includes('typeof onBack === \'function\' && tab.navFrom'))
   check('back button label', code.includes("'← 返回'"))
-  check('git target applied on tab open', code.includes('applyGitTarget({ id: tab.id, kind: \'code\', path: tab.path }, tab.branch, tab.commit'))
+  check(
+    'git target applied on tab open',
+    /applyGitTarget\(\s*\{ id: tab\.id, kind: 'code', path: tab\.path \},\s*tab\.branch,\s*tab\.commit \|\| tab\.refCommit/.test(
+      code,
+    ),
+  )
   check('jump-hover gate on Java/Kotlin lang', code.includes('jumpHover: isJavaKtLang(lang)'))
   check('CodeBody applies jump-hover container class', code.includes("' jump-hover'"))
   check('modal applies request branch/commit', modal.includes('requestBranch') && modal.includes('requestCommit') && modal.includes('gitActions.applyTarget'))

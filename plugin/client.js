@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "7ac71c4485ca";
+    const BUILD_ID = "91cd2c0c3967";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1064,6 +1064,7 @@ appendLineBadge(anchor, hit.line)
 }
 const refKind = hit.refKind || (/^[0-9a-f]{7,40}$/i.test(String(hit.ref || '')) ? 'commit' : 'branch')
 if (hit.refExists && hit.ref && refKind === 'branch') anchor.dataset.branch = hit.ref
+if (hit.refExists && hit.ref && refKind !== 'branch') anchor.dataset.refCommit = hit.ref
 const refNote = hit.refExists && hit.ref && refKind === 'branch' ? `（${hit.ref} 版本）` : ''
 anchor.title =
 `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
@@ -3345,12 +3346,17 @@ onOpen(target, line, opts)
 )
 }, [tab.id, tab.path, onOpen])
 React.useEffect(() => {
-if (!tab.branch && !tab.commit) return
-const key = `${tab.branch || ''}\u0000${tab.commit || ''}`
+if (!tab.branch && !tab.commit && !tab.refCommit) return
+const key = `${tab.branch || ''}\u0000${tab.commit || ''}\u0000${tab.refCommit || ''}`
 if (gitTabViewApplied.get(tab.id) === key && tab.content != null) return
 gitTabViewApplied.set(tab.id, key)
-void applyGitTarget({ id: tab.id, kind: 'code', path: tab.path }, tab.branch, tab.commit, actions.refresh)
-}, [tab.id, tab.path, tab.branch, tab.commit, tab.content == null, actions.refresh])
+void applyGitTarget(
+{ id: tab.id, kind: 'code', path: tab.path },
+tab.branch,
+tab.commit || tab.refCommit,
+actions.refresh,
+)
+}, [tab.id, tab.path, tab.branch, tab.commit, tab.refCommit, tab.content == null, actions.refresh])
 const viewKey = `${tab.id}|${view.branch}|${view.commit || ''}|${diffMode ? 'diff' : 'base'}|${
 view.branchContent == null ? 'ws' : 'branch'
 }`
@@ -3660,6 +3666,7 @@ const requestPath = String((request && request.path) || '')
 const requestLine = Math.max(0, Number(request && request.line) || 0)
 const requestBranch = String((request && request.branch) || '')
 const requestCommit = String((request && request.commit) || '')
+const requestRefCommit = String((request && request.refCommit) || '')
 const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
 const [view, setView] = React.useState(() => ({
 path: requestPath,
@@ -3809,9 +3816,13 @@ gitKey: 'modal:' + displayPath,
 )
 const { view: gitView, actions: gitActions } = useGitView(gitTab)
 React.useEffect(() => {
-if (requestBranch || requestCommit) return
+if (requestBranch || requestCommit || requestRefCommit) return
 void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
-}, [displayPath, requestBranch, requestCommit, gitActions.refresh])
+}, [displayPath, requestBranch, requestCommit, requestRefCommit, gitActions.refresh])
+React.useEffect(() => {
+if (!requestRefCommit) return
+gitActions.applyTarget(null, requestRefCommit)
+}, [displayPath, requestRefCommit, gitActions.refresh])
 const workspaceContent = view && view.content != null ? view.content : ''
 const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
 const defText =
@@ -7606,6 +7617,7 @@ tab.id === id
 line: line == null ? tab.line : targetLine,
 branch: options.branch || tab.branch || '',
 commit: options.commit || tab.commit || '',
+refCommit: options.refCommit || tab.refCommit || '',
 navFrom: options.jump ? true : !!tab.navFrom,
 ...(options.defBar !== undefined ? { defBar: options.defBar } : {}),
 }
@@ -7622,6 +7634,7 @@ lang: kind === 'code' ? langForPath(value) : kind === 'html' ? 'xml' : '',
 line: targetLine,
 branch: options.branch || '',
 commit: options.commit || '',
+refCommit: options.refCommit || '',
 htmlMode: 'render',
 navFrom: !!options.jump,
 defBar: options.defBar !== undefined ? options.defBar : null,
@@ -8098,10 +8111,11 @@ const kind = anchor.dataset.kind || kindForPath(rel)
 const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
 const branch = anchor.dataset.branch || ''
 const commit = anchor.dataset.commit || ''
+const refCommit = anchor.dataset.refCommit || ''
 const modifier = event.ctrlKey || event.metaKey
 if (kind === 'code') {
-if (modifier) openPath(rel, line, { branch, commit, jump: true })
-else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit })
+if (modifier) openPath(rel, line, { branch, commit, refCommit, jump: true })
+else setModalRequest({ path: rel, line: line == null ? null : line, branch, commit, refCommit })
 return
 }
 openPath(rel, line, { branch, commit })
