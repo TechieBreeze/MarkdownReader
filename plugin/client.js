@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "91cd2c0c3967";
+    const BUILD_ID = "55f6b4243fab";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -6715,6 +6715,20 @@ setRetry((value) => value + 1)
 }
 // ---- 40-tabs.js ----
 const TAB_KIND_LABELS = { code: 'code', html: 'html', image: 'img' }
+function tabBarWheelScroll(el, event) {
+if (!el || !event) return false
+const max = (Number(el.scrollWidth) || 0) - (Number(el.clientWidth) || 0)
+if (max <= 0) return false // no overflow: leave the wheel alone
+const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? Number(el.clientHeight) || 400 : 1
+const dx = (Number(event.deltaX) || 0) * scale
+const dy = (Number(event.deltaY) || 0) * scale
+const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy
+if (!delta) return false
+const next = Math.max(0, Math.min(max, (Number(el.scrollLeft) || 0) + delta))
+if (next === (Number(el.scrollLeft) || 0)) return false // edge: let the page have it
+el.scrollLeft = next
+return true
+}
 function isTabCloseTarget(target) {
 if (!target) return false
 const cls = typeof target.className === 'string' ? target.className : ''
@@ -6725,6 +6739,16 @@ function TabBar(props) {
 const { tabs, activeId, onActivate, onClose, onReorder } = props
 const [draggingId, setDraggingId] = React.useState('')
 const dragRef = React.useRef('')
+const barRef = React.useRef(null)
+React.useEffect(() => {
+const el = barRef.current
+if (!el || typeof el.addEventListener !== 'function') return undefined
+const onWheel = (event) => {
+if (tabBarWheelScroll(el, event)) event.preventDefault()
+}
+el.addEventListener('wheel', onWheel, { passive: false })
+return () => el.removeEventListener('wheel', onWheel, { passive: false })
+}, [])
 const tabsEl = tabs.map((tab) =>
 h(
 'div',
@@ -6807,7 +6831,7 @@ h(Icons.close, { size: 14 }),
 )
 return h(
 'div',
-{ className: 'mdr-tabbar' },
+{ className: 'mdr-tabbar', ref: barRef },
 tabs.length === 0 ? h('div', { className: 'mdr-tip', style: { padding: '6px 4px' } }, '未打开文件') : null,
 tabsEl,
 )

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Temporary harness for the panels slice (27-sync.js + 28-gitgraph.js).
  *
  * Not part of the plugin and not committed (workspace tmp/ is gitignored).
@@ -265,7 +265,7 @@ const makeModule = new Function(
   `const React = require('react');
 const h = React.createElement;
 ${parts.join('\n')}
-return { SyncPanel, GitGraphModal, gitGraphLayout, gitGraphReachable, gitGraphResolveRepo, gitGraphResolveHead, gitGraphCopyText, TabBar };`,
+return { SyncPanel, GitGraphModal, gitGraphLayout, gitGraphReachable, gitGraphResolveRepo, gitGraphResolveHead, gitGraphCopyText, TabBar, tabBarWheelScroll };`,
 )
 
 const react = createReact()
@@ -928,6 +928,49 @@ async function testTabBarDrag() {
   check('dragging the close button is refused', prevented === true)
 }
 
+/**
+ * The tab strip: plain mouse wheel scrolls it horizontally once it overflows.
+ *
+ * The browser only maps a vertical wheel to horizontal scrolling with Shift
+ * held; the user asked for a plain wheel ("当前是shift+鼠标滚轮才能滚动，但是我
+ * 需要直接滚动鼠标滚轮也能滚动").
+ */
+function testTabBarWheel() {
+  console.log('\n[10] the tab bar: plain wheel scrolls the overflowing strip')
+  const wheel = mod.tabBarWheelScroll
+  const el = (over) => ({ scrollWidth: 900, clientWidth: 300, clientHeight: 30, scrollLeft: 0, ...over })
+
+  check('no overflow leaves the wheel alone', wheel(el({ scrollWidth: 300 }), { deltaY: 120 }) === false)
+  const down = el({ scrollLeft: 400 })
+  check('a wheel down scrolls right', wheel(down, { deltaY: 120 }) === true && down.scrollLeft === 520, down.scrollLeft)
+  const up = el({ scrollLeft: 400 })
+  check('a wheel up scrolls left', wheel(up, { deltaY: -120 }) === true && up.scrollLeft === 280, up.scrollLeft)
+  const clamped = el({ scrollLeft: 580 })
+  check('it clamps at the right edge', wheel(clamped, { deltaY: 400 }) === true && clamped.scrollLeft === 600, clamped.scrollLeft)
+  check('a wheel at the edge is NOT consumed', wheel(el({ scrollLeft: 600 }), { deltaY: 120 }) === false)
+  const lines = el({ scrollLeft: 100 })
+  check(
+    'line-mode deltas are converted to pixels',
+    wheel(lines, { deltaY: 3, deltaMode: 1 }) === true && lines.scrollLeft === 148,
+    lines.scrollLeft,
+  )
+  const horizontal = el({ scrollLeft: 100 })
+  check(
+    'a horizontal trackpad gesture wins over the vertical delta',
+    wheel(horizontal, { deltaX: 60, deltaY: 4 }) === true && horizontal.scrollLeft === 160,
+    horizontal.scrollLeft,
+  )
+  check('a zero delta does nothing', wheel(el({}), { deltaX: 0, deltaY: 0 }) === false)
+  check('a missing element does not throw', wheel(null, { deltaY: 1 }) === false)
+
+  // Wiring: the strip uses a NON-passive native listener (React's onWheel is
+  // passive, where preventDefault is ignored and the page scrolls instead).
+  const source = fs.readFileSync(path.join(SRC, '40-tabs.js'), 'utf8')
+  check('the strip attaches a native wheel listener with passive:false', /addEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
+  check('the listener consumes the event when it scrolled', /tabBarWheelScroll\(el, event\)\) event\.preventDefault\(\)/.test(source))
+  check('the listener is removed on unmount', /removeEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
+}
+
 async function main() {
   console.log('Markdown Reader panels harness')
   testLayout()
@@ -941,6 +984,7 @@ async function main() {
   await testGitGraphModal()
   await testGitGraphEmpty()
   await testTabBarDrag()
+  testTabBarWheel()
   console.log(`\n${checks - failures}/${checks} checks passed`)
   if (failures) process.exitCode = 1
 }
