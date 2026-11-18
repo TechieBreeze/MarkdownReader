@@ -219,6 +219,12 @@ async function apiClientPing(req, res, state) {
     // the bottom of the Harness window".
     last.dom = body.dom
   }
+  if (body.git) {
+    // Default-open-branch diagnostics: the remembered map plus the last
+    // decision/write made by the running page ("重开没按我切的分支" needs the
+    // facts from the browser, not from the sources).
+    last.git = body.git
+  }
   state.lastClientBuild = last
   return sendJson(res, 200, { ok: true, last: state.lastClientBuild })
 }
