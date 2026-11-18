@@ -67,6 +67,30 @@ function gitViewFor(key) {
  */
 const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
 
+/**
+ * Small diagnostic trail for the branch preference, reported to
+ * `/api/client-ping` (the only way to see what the RUNNING page did - "重开还是
+ * 没按我切的分支" cannot be judged from the sources).
+ */
+const gitBranchDebug = { lastPick: null, lastWrite: null }
+
+function reportGitBranchDebug() {
+  try {
+    if (typeof postJson !== 'function') return
+    void postJson('/api/client-ping', {
+      build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+      git: {
+        key: DEFAULT_BRANCH_KEY,
+        memory: readDefaultBranchMap(),
+        lastPick: gitBranchDebug.lastPick,
+        lastWrite: gitBranchDebug.lastWrite,
+      },
+    })
+  } catch {
+    // diagnostics must never break the reader
+  }
+}
+
 function readDefaultBranchMap() {
   try {
     const value = JSON.parse(localStorage.getItem(DEFAULT_BRANCH_KEY) || '{}')
@@ -92,6 +116,8 @@ function setDefaultBranch(repo, branch) {
     if (map[repo] === branch) return
     map[repo] = branch
     localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
+    gitBranchDebug.lastWrite = { repo, branch, at: Date.now() }
+    reportGitBranchDebug()
   } catch {
     // private mode / quota: the memory is a convenience, never a requirement
   }
@@ -110,13 +136,55 @@ function pickOpenBranch(meta) {
   const branches = Array.isArray(source.branches) ? source.branches : []
   const exists = (name) => !!name && branches.includes(name)
   const remembered = getDefaultBranch(source.repo)
-  if (exists(remembered)) return remembered
-  const current = source.currentBranch || source.branch || ''
-  if (exists(current)) return current
-  for (const fallback of ['main', 'master']) {
-    if (exists(fallback)) return fallback
+  const decide = (branch, why) => {
+    gitBranchDebug.lastPick = {
+      repo: source.repo || '',
+      branch,
+      why,
+      memory: remembered,
+      current: source.currentBranch || '',
+      branches: branches.length,
+      at: Date.now(),
+    }
+    reportGitBranchDebug()
+    return branch
   }
-  return current || source.branch || (branches.length ? branches[0] : '')
+  if (exists(remembered)) return decide(remembered, 'memory')
+  const current = source.currentBranch || source.branch || ''
+  if (exists(current)) return decide(current, 'current')
+  for (const fallback of ['main', 'master']) {
+    if (exists(fallback)) return decide(fallback, fallback)
+  }
+  return decide(current || source.branch || (branches.length ? branches[0] : ''), 'fallback')
+}
+
+/**
+ * Re-resolve the default branch for a FRESH open.
+ *
+ * The standalone reader decided the branch on every open; the plugin caches a
+ * view per path (so switching tabs keeps the user's selection), which also kept
+ * a STALE branch when the same file was opened again — 「关掉重开还是没有以我切
+ * 的分支打开」. The modal calls this on every open; a new tab drops its cached
+ * view instead (see openPath).
+ */
+async function applyDefaultBranch(key, path, refresh) {
+  const view = await ensureGitViewReady(key, path, refresh)
+  if (!view.git) return
+  const preferred = pickOpenBranch({
+    repo: view.repo,
+    branches: view.branches,
+    currentBranch: view.currentBranch,
+    branch: view.branch,
+  })
+  if (!preferred || preferred === view.branch) return
+  await selectGitBranch(key, path, preferred, refresh)
+}
+
+/** Forget the cached view of a path so its next open re-resolves the branch. */
+function resetGitView(path) {
+  const key = String(path || '')
+  if (!key) return
+  gitViewCache.delete(key)
 }
 
 /**

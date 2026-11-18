@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "239d70a9077f";
+    const BUILD_ID = "8d277c7fedb0";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1910,6 +1910,22 @@ gitViewCache.set(name, view)
 return view
 }
 const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
+const gitBranchDebug = { lastPick: null, lastWrite: null }
+function reportGitBranchDebug() {
+try {
+if (typeof postJson !== 'function') return
+void postJson('/api/client-ping', {
+build: typeof BUILD_ID === 'undefined' ? '' : BUILD_ID,
+git: {
+key: DEFAULT_BRANCH_KEY,
+memory: readDefaultBranchMap(),
+lastPick: gitBranchDebug.lastPick,
+lastWrite: gitBranchDebug.lastWrite,
+},
+})
+} catch {
+}
+}
 function readDefaultBranchMap() {
 try {
 const value = JSON.parse(localStorage.getItem(DEFAULT_BRANCH_KEY) || '{}')
@@ -1931,6 +1947,8 @@ const map = readDefaultBranchMap()
 if (map[repo] === branch) return
 map[repo] = branch
 localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
+gitBranchDebug.lastWrite = { repo, branch, at: Date.now() }
+reportGitBranchDebug()
 } catch {
 }
 }
@@ -1939,13 +1957,43 @@ const source = meta || {}
 const branches = Array.isArray(source.branches) ? source.branches : []
 const exists = (name) => !!name && branches.includes(name)
 const remembered = getDefaultBranch(source.repo)
-if (exists(remembered)) return remembered
-const current = source.currentBranch || source.branch || ''
-if (exists(current)) return current
-for (const fallback of ['main', 'master']) {
-if (exists(fallback)) return fallback
+const decide = (branch, why) => {
+gitBranchDebug.lastPick = {
+repo: source.repo || '',
+branch,
+why,
+memory: remembered,
+current: source.currentBranch || '',
+branches: branches.length,
+at: Date.now(),
 }
-return current || source.branch || (branches.length ? branches[0] : '')
+reportGitBranchDebug()
+return branch
+}
+if (exists(remembered)) return decide(remembered, 'memory')
+const current = source.currentBranch || source.branch || ''
+if (exists(current)) return decide(current, 'current')
+for (const fallback of ['main', 'master']) {
+if (exists(fallback)) return decide(fallback, fallback)
+}
+return decide(current || source.branch || (branches.length ? branches[0] : ''), 'fallback')
+}
+async function applyDefaultBranch(key, path, refresh) {
+const view = await ensureGitViewReady(key, path, refresh)
+if (!view.git) return
+const preferred = pickOpenBranch({
+repo: view.repo,
+branches: view.branches,
+currentBranch: view.currentBranch,
+branch: view.branch,
+})
+if (!preferred || preferred === view.branch) return
+await selectGitBranch(key, path, preferred, refresh)
+}
+function resetGitView(path) {
+const key = String(path || '')
+if (!key) return
+gitViewCache.delete(key)
 }
 function loadGitMeta(path) {
 const key = String(path || '')
@@ -3708,6 +3756,10 @@ gitKey: 'modal:' + displayPath,
 [displayPath, displayContent],
 )
 const { view: gitView, actions: gitActions } = useGitView(gitTab)
+React.useEffect(() => {
+if (requestBranch || requestCommit) return
+void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
+}, [displayPath, requestBranch, requestCommit, gitActions.refresh])
 const workspaceContent = view && view.content != null ? view.content : ''
 const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
 const defText =
@@ -7486,6 +7538,12 @@ if (!value) return
 const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
 const id = `${kind}:${value}`
 const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
+const wbNow = workbenchRef.current
+const taskNow = wbNow && wbNow.tasks ? wbNow.tasks.find((item) => item.id === wbNow.activeTaskId) : null
+const tabExists = !!(taskNow && taskNow.tabs && taskNow.tabs.some((item) => item.id === id))
+if (!tabExists && !options.branch && !options.commit && typeof resetGitView === 'function') {
+resetGitView(value)
+}
 saveActiveScroll()
 setWorkbench((prev) => {
 const tasks = prev.tasks.map((task) => {

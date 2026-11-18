@@ -24,6 +24,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(HERE, '..', '..')
 const SRC = path.join(ROOT, 'plugin', 'src-client')
 const gitSource = fs.readFileSync(path.join(SRC, '15-git.js'), 'utf8')
+const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
+const appSource = fs.readFileSync(path.join(SRC, '50-app.js'), 'utf8')
 
 let failures = 0
 let checks = 0
@@ -146,6 +148,15 @@ check(
     !/applyGitTarget[\s\S]{0,900}selectGitBranch\(key, path, branch, refresh, true\)/.test(gitSource),
 )
 check('弹窗与标签页共用同一套逻辑（同一个 useGitView）', /function useGitView/.test(gitSource))
+check(
+  '弹窗每次打开都重新决定分支（缓存视图不能沿用旧分支）',
+  /React\.useEffect\(\(\) => \{[\s\S]{0,200}applyDefaultBranch\('modal:' \+ displayPath/.test(modalSource),
+)
+check('请求自带分支/提交时以请求为准', /if \(requestBranch \|\| requestCommit\) return[\s\S]{0,160}applyDefaultBranch/.test(modalSource))
+check(
+  '新开的标签页丢弃该路径的缓存视图',
+  /resetGitView\(value\)/.test(appSource) && /!tabExists[\s\S]{0,80}resetGitView/.test(appSource),
+)
 check('构建产物包含记忆功能', bundle.includes('mdreader.defaultBranch.v1') && bundle.includes('pickOpenBranch'))
 
 console.log(failures ? `\n${failures} check(s) failed` : `\nall ${checks} branch memory checks passed`)

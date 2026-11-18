@@ -230,6 +230,14 @@ function CodeModalInner(props) {
     [displayPath, displayContent],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
+  // 弹窗每次打开都按「记忆分支 → 本地 → main/master」重新决定，和独立版一致：
+  // 缓存过的视图会沿用上次的分支，用户切过分支后重开就"没生效"。
+  // 请求本身带 branch/commit 的是显式指令，优先。
+  React.useEffect(() => {
+    if (requestBranch || requestCommit) return
+    void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [displayPath, requestBranch, requestCommit, gitActions.refresh])
   const workspaceContent = view && view.content != null ? view.content : ''
   const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
   // Text + git version carried by a jump request: exactly what this modal renders
