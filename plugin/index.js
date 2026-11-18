@@ -8,7 +8,7 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createState } from './lib/state.js'
-import { handleRequest } from './lib/api.js'
+import { handleRequest, noteActivatedBuild } from './lib/api.js'
 import { ROUTE } from './lib/constants.js'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -18,6 +18,10 @@ export { ROUTE }
 export const inject = ['webServer']
 
 export function apply(ctx, config = {}) {
+  // Activating the plugin is what re-registers the browser bundle, so this is
+  // the moment the "registered build" becomes the one on disk. The client waits
+  // for that before it reloads (see noteActivatedBuild in lib/api.js).
+  noteActivatedBuild(HERE)
   const state = createState({ ...config, packageDir: HERE })
   ctx.effect(
     () =>

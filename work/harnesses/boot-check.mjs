@@ -112,8 +112,12 @@ const expect = (name, condition) => {
   }
 }
 console.log('\n[reload guard]')
+const pluginEntry = fs.readFileSync(path.join(ROOT, 'plugin', 'index.js'), 'utf8')
 expect('/api/client-build reports the REGISTERED build', /registered:\s*ACTIVATION_BUILD/.test(apiSource))
-expect('the registered build is captured at activation', /const ACTIVATION_BUILD = /.test(apiSource))
+expect(
+  'the registered build is re-read on every activation',
+  /export function noteActivatedBuild/.test(apiSource) && /noteActivatedBuild\(HERE\)/.test(pluginEntry),
+)
 expect('the client waits for registered === served', /registeredNow\s*=\s*registered === server/.test(coreSource))
 expect('the client requires a second sighting', /reloadSeen\.build !== server/.test(coreSource))
 if (failures.length) {

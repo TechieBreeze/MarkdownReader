@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "81f9bce8dac2";
+    const BUILD_ID = "239d70a9077f";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1909,6 +1909,44 @@ gitViewCache.set(name, view)
 }
 return view
 }
+const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
+function readDefaultBranchMap() {
+try {
+const value = JSON.parse(localStorage.getItem(DEFAULT_BRANCH_KEY) || '{}')
+return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+} catch {
+return {}
+}
+}
+function getDefaultBranch(repo) {
+if (!repo) return null
+const map = readDefaultBranchMap()
+const branch = map[repo]
+return typeof branch === 'string' && branch ? branch : null
+}
+function setDefaultBranch(repo, branch) {
+if (!repo || typeof branch !== 'string' || !branch) return
+try {
+const map = readDefaultBranchMap()
+if (map[repo] === branch) return
+map[repo] = branch
+localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
+} catch {
+}
+}
+function pickOpenBranch(meta) {
+const source = meta || {}
+const branches = Array.isArray(source.branches) ? source.branches : []
+const exists = (name) => !!name && branches.includes(name)
+const remembered = getDefaultBranch(source.repo)
+if (exists(remembered)) return remembered
+const current = source.currentBranch || source.branch || ''
+if (exists(current)) return current
+for (const fallback of ['main', 'master']) {
+if (exists(fallback)) return fallback
+}
+return current || source.branch || (branches.length ? branches[0] : '')
+}
 function loadGitMeta(path) {
 const key = String(path || '')
 const cached = gitMetaCache.get(key)
@@ -1940,13 +1978,16 @@ view.git = false
 } else {
 view.git = true
 view.repo = meta.repo
-view.branch = meta.branch
 view.currentBranch = meta.currentBranch
 view.branches = meta.branches
+view.branch = pickOpenBranch(meta)
 view.commits = meta.commits
 }
 }
 refresh()
+if (view.git && view.branch && view.branch !== view.currentBranch) {
+void selectGitBranch(key, path, view.branch, refresh)
+}
 return view
 })
 }
@@ -1989,7 +2030,7 @@ else if (line.type === '-') stats.del += 1
 }
 return stats
 }
-async function selectGitBranch(key, path, branch, refresh) {
+async function selectGitBranch(key, path, branch, refresh, remember) {
 const view = gitViewFor(key)
 const seq = (view.seq += 1)
 view.branch = String(branch || '')
@@ -2009,6 +2050,7 @@ view.branches = Array.isArray(meta.branches) && meta.branches.length ? meta.bran
 view.currentBranch = meta.currentBranch || view.currentBranch
 view.commits = Array.isArray(meta.commits) ? meta.commits : []
 view.branch = effective
+if (remember && view.repo) setDefaultBranch(view.repo, effective)
 const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
 if (view.seq !== seq) return
 if (file && file.content != null) {
@@ -2102,7 +2144,7 @@ void applyGitTarget(tab, branch, commit, bump)
 },
 selectBranch(branch) {
 if (!view.git || !branch || branch === view.branch) return
-void selectGitBranch(key, path, branch, bump)
+void selectGitBranch(key, path, branch, bump, true)
 },
 selectCommit(commit) {
 const value = String(commit || '')

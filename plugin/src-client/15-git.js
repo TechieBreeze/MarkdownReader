@@ -55,7 +55,73 @@ function gitViewFor(key) {
   return view
 }
 
-/** Load /api/git/meta once per path (null = not inside a git repository). */
+/* ------------------------------------------- 默认打开分支（按仓库记忆） */
+
+/**
+ * `{repo: branch}` — the branch the user last picked MANUALLY in that repo.
+ *
+ * The standalone reader kept this (`mdreader.defaultBranch.v1`) and the plugin
+ * dropped it, so every new file opened on the local checkout again no matter
+ * what the user had switched to. The key is deliberately the STANDALONE key so
+ * an existing memory carries over.
+ */
+const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
+
+function readDefaultBranchMap() {
+  try {
+    const value = JSON.parse(localStorage.getItem(DEFAULT_BRANCH_KEY) || '{}')
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+/** Remembered branch of a repo, or null. */
+function getDefaultBranch(repo) {
+  if (!repo) return null
+  const map = readDefaultBranchMap()
+  const branch = map[repo]
+  return typeof branch === 'string' && branch ? branch : null
+}
+
+/** Remember a branch for a repo (called ONLY on a manual switch). */
+function setDefaultBranch(repo, branch) {
+  if (!repo || typeof branch !== 'string' || !branch) return
+  try {
+    const map = readDefaultBranchMap()
+    if (map[repo] === branch) return
+    map[repo] = branch
+    localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
+  } catch {
+    // private mode / quota: the memory is a convenience, never a requirement
+  }
+}
+
+/**
+ * Which branch to OPEN a file on, in the order the user asked for:
+ *   1. the branch last picked manually in this repo (memory),
+ *   2. the repo's local current branch,
+ *   3. `main`, then `master`.
+ * A branch that no longer exists is skipped, and the Host's own resolution is
+ * the last resort.
+ */
+function pickOpenBranch(meta) {
+  const source = meta || {}
+  const branches = Array.isArray(source.branches) ? source.branches : []
+  const exists = (name) => !!name && branches.includes(name)
+  const remembered = getDefaultBranch(source.repo)
+  if (exists(remembered)) return remembered
+  const current = source.currentBranch || source.branch || ''
+  if (exists(current)) return current
+  for (const fallback of ['main', 'master']) {
+    if (exists(fallback)) return fallback
+  }
+  return current || source.branch || (branches.length ? branches[0] : '')
+}
+
+/**
+ * Load /api/git/meta once per path (null = not inside a git repository).
+ */
 function loadGitMeta(path) {
   const key = String(path || '')
   const cached = gitMetaCache.get(key)
@@ -93,13 +159,20 @@ async function ensureGitViewReady(key, path, refresh) {
         } else {
           view.git = true
           view.repo = meta.repo
-          view.branch = meta.branch
           view.currentBranch = meta.currentBranch
           view.branches = meta.branches
+          // 默认打开分支：记忆分支 → 本地当前分支 → main/master.
+          view.branch = pickOpenBranch(meta)
           view.commits = meta.commits
         }
       }
       refresh()
+      if (view.git && view.branch && view.branch !== view.currentBranch) {
+        // The chosen branch is not the checkout: its HEAD file must be loaded,
+        // otherwise the view renders the workspace copy while the dropdown says
+        // another branch. `selectGitBranch` refreshes commits + branchContent.
+        void selectGitBranch(key, path, view.branch, refresh)
+      }
       return view
     })
   }
@@ -153,8 +226,12 @@ function countDiffStats(hunks) {
  * Switch branch: refetch that branch's commits AND its HEAD version of the file.
  * The meta endpoint resolves the requested branch against the real ref list, so
  * the applied view is what the dropdowns then show (`effective`), not a typo.
+ *
+ * `remember` is set for a MANUAL switch only (the dropdown): the plugin then
+ * opens the repo's other files on that branch too. Jump links that carry a
+ * branch must NOT rewrite the preference.
  */
-async function selectGitBranch(key, path, branch, refresh) {
+async function selectGitBranch(key, path, branch, refresh, remember) {
   const view = gitViewFor(key)
   const seq = (view.seq += 1)
   view.branch = String(branch || '')
@@ -174,6 +251,8 @@ async function selectGitBranch(key, path, branch, refresh) {
     view.currentBranch = meta.currentBranch || view.currentBranch
     view.commits = Array.isArray(meta.commits) ? meta.commits : []
     view.branch = effective
+    // 手动切换分支 → 记住这个仓库的偏好，之后打开同仓库的文件默认用它。
+    if (remember && view.repo) setDefaultBranch(view.repo, effective)
     // "git show <branch>:<file>" is the branch HEAD file — the first commit
     // option must render THIS branch's content, not the working tree.
     const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
@@ -286,7 +365,8 @@ function useGitView(tab) {
       },
       selectBranch(branch) {
         if (!view.git || !branch || branch === view.branch) return
-        void selectGitBranch(key, path, branch, bump)
+        // A dropdown pick is the user's manual choice → remember it per repo.
+        void selectGitBranch(key, path, branch, bump, true)
       },
       selectCommit(commit) {
         const value = String(commit || '')
