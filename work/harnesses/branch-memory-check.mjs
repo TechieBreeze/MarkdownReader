@@ -132,8 +132,36 @@ console.log('\n[2] 打开文件时的分支优先级：记忆 > 本地 > main/ma
   check('分支列表为空时不崩', typeof api.pickOpenBranch({ repo: 'repo-a', branches: [] }) === 'string')
 }
 
-/* ------------------------------------------------------------- wiring */
+console.log('\n[2b] 跨模块继承：同一项目下每个模块是独立 git 仓库')
+{
+  // 微服务 workspace: gits/customer, gits/order, gits/promotion are separate
+  // repositories; the user thinks of them as one project, so a switch in one
+  // must apply to the others (the branch list decides whether it is valid).
+  const storage = makeStorage()
+  const api = factory(storage)
+  api.setDefaultBranch('20260917-微服务/gits/customer', 'test2.0_merge20240312')
+  check('本仓库直接命中', api.getDefaultBranch('20260917-微服务/gits/customer') === 'test2.0_merge20240312')
+  check(
+    '兄弟模块继承',
+    api.getDefaultBranch('20260917-微服务/gits/order') === 'test2.0_merge20240312',
+    api.getDefaultBranch('20260917-微服务/gits/order'),
+  )
+  check('不相干的仓库不受影响', api.getDefaultBranch('20261020-jjy/gits/jjy-o2o') === null)
+  check(
+    '组键同时写入（换页面后仍能继承）',
+    JSON.parse(storage.store.get('mdreader.defaultBranch.v1'))['@20260917-微服务/gits'] === 'test2.0_merge20240312',
+    storage.store.get('mdreader.defaultBranch.v1'),
+  )
+  const meta = (repo) => ({ repo, branches: ['ck-dev-1020', 'test2.0_merge20240312'], currentBranch: 'ck-dev-1020' })
+  check('兄弟模块打开时用继承来的分支', api.pickOpenBranch(meta('20260917-微服务/gits/order')) === 'test2.0_merge20240312')
+  check(
+    '继承来的分支不存在时回退本地',
+    api.pickOpenBranch({ repo: '20260917-微服务/gits/order', branches: ['ck-dev-1020'], currentBranch: 'ck-dev-1020' }) ===
+      'ck-dev-1020',
+  )
+}
 
+/* ------------------------------------------------------------- wiring */
 console.log('\n[3] 接线：打开即用、手动切换才记忆')
 const bundle = fs.readFileSync(path.join(ROOT, 'plugin', 'client.js'), 'utf8')
 check('打开文件时按优先级选分支', /view\.branch = pickOpenBranch\(meta\)/.test(gitSource))
@@ -154,8 +182,8 @@ check(
 )
 check('请求自带分支/提交时以请求为准', /if \(requestBranch \|\| requestCommit\) return[\s\S]{0,160}applyDefaultBranch/.test(modalSource))
 check(
-  '新开的标签页丢弃该路径的缓存视图',
-  /resetGitView\(value\)/.test(appSource) && /!tabExists[\s\S]{0,80}resetGitView/.test(appSource),
+  '每次普通打开都丢弃该路径的缓存视图（带分支的显式打开除外）',
+  /if \(!options\.branch && !options\.commit[\s\S]{0,80}resetGitView\(value\)/.test(appSource),
 )
 check('构建产物包含记忆功能', bundle.includes('mdreader.defaultBranch.v1') && bundle.includes('pickOpenBranch'))
 
