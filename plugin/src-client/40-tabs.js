@@ -11,6 +11,34 @@
 
 const TAB_KIND_LABELS = { code: 'code', html: 'html', image: 'img' }
 
+/**
+ * Translate a WHEEL event over an overflowing tab strip into horizontal scroll.
+ *
+ * The strip is `overflow-x:auto`, and the browser only maps a vertical wheel to
+ * horizontal scrolling while Shift is held - the user asked for a plain wheel
+ * to scroll the tabs ("当前是shift+鼠标滚轮才能滚动，但是我需要直接滚动鼠标滚轮也能滚动").
+ *
+ * @returns {boolean} true when the event was consumed (the caller must
+ *   preventDefault, which is why this runs on a NON-passive native listener:
+ *   React attaches `wheel` passively, where preventDefault is ignored).
+ */
+function tabBarWheelScroll(el, event) {
+  if (!el || !event) return false
+  const max = (Number(el.scrollWidth) || 0) - (Number(el.clientWidth) || 0)
+  if (max <= 0) return false // no overflow: leave the wheel alone
+  // deltaMode: 0 = pixels, 1 = lines, 2 = pages. Trackpads report pixels.
+  const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? Number(el.clientHeight) || 400 : 1
+  const dx = (Number(event.deltaX) || 0) * scale
+  const dy = (Number(event.deltaY) || 0) * scale
+  // A horizontal trackpad gesture wins; a vertical wheel is remapped.
+  const delta = Math.abs(dx) > Math.abs(dy) ? dx : dy
+  if (!delta) return false
+  const next = Math.max(0, Math.min(max, (Number(el.scrollLeft) || 0) + delta))
+  if (next === (Number(el.scrollLeft) || 0)) return false // edge: let the page have it
+  el.scrollLeft = next
+  return true
+}
+
 /** Is this event target the tab's close button? (A drag must not start there.) */
 function isTabCloseTarget(target) {
   if (!target) return false
@@ -23,6 +51,20 @@ function TabBar(props) {
   const { tabs, activeId, onActivate, onClose, onReorder } = props
   const [draggingId, setDraggingId] = React.useState('')
   const dragRef = React.useRef('')
+  const barRef = React.useRef(null)
+
+  // Plain mouse wheel scrolls the strip horizontally once the tabs overflow.
+  // A native listener is required: React's onWheel is passive, so preventDefault
+  // there would be ignored and the page would scroll instead.
+  React.useEffect(() => {
+    const el = barRef.current
+    if (!el || typeof el.addEventListener !== 'function') return undefined
+    const onWheel = (event) => {
+      if (tabBarWheelScroll(el, event)) event.preventDefault()
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel, { passive: false })
+  }, [])
 
   const tabsEl = tabs.map((tab) =>
     h(
@@ -110,7 +152,7 @@ function TabBar(props) {
 
   return h(
     'div',
-    { className: 'mdr-tabbar' },
+    { className: 'mdr-tabbar', ref: barRef },
     tabs.length === 0 ? h('div', { className: 'mdr-tip', style: { padding: '6px 4px' } }, '未打开文件') : null,
     tabsEl,
   )
