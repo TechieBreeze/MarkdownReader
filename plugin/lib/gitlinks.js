@@ -75,18 +75,43 @@ async function filesByBase(repo) {
 }
 
 async function refExists(repo, ref) {
-  if (!ref) return false
+  return (await refKind(repo, ref)) !== ''
+}
+
+/**
+ * What KIND of ref a repository URL points at.
+ *
+ * GitLab/GitHub permalinks pin a COMMIT (`.../-/blob/53a4bf0d…/path`), and the
+ * reader used to send that hash to the client as a BRANCH NAME: the branch
+ * lookup failed, the Host fell back to the local branch, and opening a
+ * commit-pinned link always showed the checkout instead of the branch the user
+ * picked (`我切test分支…打开还是给我开的ck分支`). A ref only counts as a branch
+ * when it really is one.
+ *
+ * @returns {'branch'|'tag'|'commit'|''} '' when the ref does not resolve.
+ */
+async function refKind(repo, ref) {
+  if (!ref) return ''
   const key = `${repo}\u0000${ref}`
   if (refCache.has(key)) return refCache.get(key)
+  let resolved = ''
   for (const name of [ref, `origin/${ref}`]) {
     const out = await gitQuiet(repo, ['rev-parse', '--verify', '--quiet', `${name}^{commit}`])
     if (out) {
-      refCache.set(key, true)
-      return true
+      resolved = name
+      break
     }
   }
-  refCache.set(key, false)
-  return false
+  let kind = ''
+  if (resolved) {
+    const branches = (await gitQuiet(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])).split(/\r?\n/)
+    const tags = (await gitQuiet(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/tags/'])).split(/\r?\n/)
+    if (branches.includes(ref) || (resolved !== ref && branches.includes(resolved))) kind = 'branch'
+    else if (tags.includes(ref)) kind = 'tag'
+    else kind = 'commit'
+  }
+  refCache.set(key, kind)
+  return kind
 }
 
 function projectCandidates(state, project, preferRootName) {
@@ -153,13 +178,16 @@ export async function resolveRepoUrl(state, url, preferRootName) {
         if (relN !== suffix && !relN.endsWith('/' + suffix)) continue
         const abs = path.join(repo, ...relN.split('/'))
         const ref = segs.slice(0, k).join('/')
+        const kind = await refKind(repo, ref)
         return {
           path: state.relOf(abs),
           line,
           repo: project,
           repoDir: state.relOf(repo),
           ref,
-          refExists: await refExists(repo, ref),
+          refExists: kind !== '',
+          // `commit` / `tag` must NOT be treated as a branch name by the client.
+          refKind: kind,
         }
       }
     }

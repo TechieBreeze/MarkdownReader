@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "617e92419195";
+    const BUILD_ID = "7ac71c4485ca";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1062,10 +1062,13 @@ if (hit.line) {
 anchor.dataset.line = String(hit.line)
 appendLineBadge(anchor, hit.line)
 }
-if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
+const refKind = hit.refKind || (/^[0-9a-f]{7,40}$/i.test(String(hit.ref || '')) ? 'commit' : 'branch')
+if (hit.refExists && hit.ref && refKind === 'branch') anchor.dataset.branch = hit.ref
+const refNote = hit.refExists && hit.ref && refKind === 'branch' ? `（${hit.ref} 版本）` : ''
 anchor.title =
 `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
-(hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
+refNote +
+(hit.refExists && hit.ref && refKind !== 'branch' ? `（链接锁定提交 ${String(hit.ref).slice(0, 7)}）` : '') +
 '（Shift+点击 / 右键打开仓库原链接）'
 }
 })
@@ -2213,11 +2216,14 @@ const key = gitViewKey(tab)
 const path = tab.path
 const view = await ensureGitViewReady(key, path, refresh)
 if (!view.git) return
-if (commit) {
-if (branch && branch !== view.branch) await selectGitBranch(key, path, branch, refresh)
-if (view.commit !== commit) await selectGitCommit(key, path, commit, refresh)
-} else if (branch && branch !== view.branch) {
-await selectGitBranch(key, path, branch, refresh)
+const looksLikeCommit = !!branch && !(view.branches || []).includes(branch) && /^[0-9a-f]{7,40}$/i.test(branch)
+const effectiveBranch = branch && !looksLikeCommit ? branch : ''
+const effectiveCommit = commit || (looksLikeCommit ? String(branch) : '')
+if (effectiveCommit) {
+if (effectiveBranch && effectiveBranch !== view.branch) await selectGitBranch(key, path, effectiveBranch, refresh)
+if (view.commit !== effectiveCommit) await selectGitCommit(key, path, effectiveCommit, refresh)
+} else if (effectiveBranch && effectiveBranch !== view.branch) {
+await selectGitBranch(key, path, effectiveBranch, refresh)
 }
 }
 function useGitView(tab) {
