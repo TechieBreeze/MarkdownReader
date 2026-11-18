@@ -24,26 +24,36 @@ import { resolveRepoUrls } from './gitlinks.js'
 const execFileAsync = promisify(execFile)
 
 /**
- * The client build id this Host MODULE INSTANCE was activated with.
+ * The client build id the Harness has REGISTERED right now.
  *
- * Enabling the plugin re-imports this module, so the value is the bundle the
- * Harness has REGISTERED - which is not the same as the bundle on disk while a
- * rebuild is still being registered. The page reloads itself when it detects a
- * newer bundle, and a reload that happens between `build.mjs` and the plugin
- * being re-enabled boots the OLD registered bundle URL while the file on disk
- * is already the new one: the import fails and the app shows
- * 「应用无法启动或已意外停止」. Exposing this lets the client wait until the
- * registered bundle matches the file before it reloads.
+ * The ESM module cache keeps this module alive across disable/enable cycles, so
+ * reading it once at import time is NOT enough: the value would stay at the
+ * build that was current when the process started, and after a rebuild the
+ * client would wait forever for it to catch up. `apply()` (index.js) runs on
+ * every activation and calls `noteActivatedBuild()` to re-read the file.
+ *
+ * Why the client needs it at all: the page reloads itself when it detects a
+ * newer bundle, and a reload between `build.mjs` and the plugin being
+ * re-enabled boots the OLD registered bundle URL while the file on disk is
+ * already the new one - the import fails and the app shows
+ * 「应用无法启动或已意外停止」.
  */
-const ACTIVATION_BUILD = (() => {
+let ACTIVATION_BUILD = ''
+
+/** Re-read the build the Harness is about to serve (called from plugin apply()). */
+export function noteActivatedBuild(packageDir) {
   try {
-    const file = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'client.build.json')
-    const meta = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return meta && typeof meta.build === 'string' ? meta.build : ''
+    const dir = packageDir || path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
+    const meta = JSON.parse(fs.readFileSync(path.join(dir, 'client.build.json'), 'utf8'))
+    ACTIVATION_BUILD = meta && typeof meta.build === 'string' ? meta.build : ''
   } catch {
-    return ''
+    ACTIVATION_BUILD = ''
   }
-})()
+  return ACTIVATION_BUILD
+}
+
+// Best effort at import time; apply() refreshes it on every activation.
+noteActivatedBuild()
 
 const VENDOR_WHITELIST = new Set([
   'marked.min.js',
