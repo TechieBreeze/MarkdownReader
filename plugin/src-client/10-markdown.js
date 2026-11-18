@@ -185,12 +185,14 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             anchor.dataset.line = String(hit.line)
             appendLineBadge(anchor, hit.line)
           }
-          // ONLY a real BRANCH becomes a branch view. GitLab/GitHub permalinks
-          // pin a commit (`/-/blob/<sha>/...`); sending that hash as a branch
-          // made the Host fall back to the local branch, so the link always
-          // opened on `ck-*` no matter which branch the user had picked.
+          // GitLab/GitHub permalinks pin a COMMIT (`/-/blob/<sha>/.../File.java#L98`).
+          // Such a link means "this file AT that commit" - the docs' line numbers
+          // are that commit's numbers - so it opens as a pinned version instead
+          // of being sent as a branch name (which used to fall back to the local
+          // branch, i.e. 「打开还是 ck」).
           const refKind = hit.refKind || (/^[0-9a-f]{7,40}$/i.test(String(hit.ref || '')) ? 'commit' : 'branch')
           if (hit.refExists && hit.ref && refKind === 'branch') anchor.dataset.branch = hit.ref
+          if (hit.refExists && hit.ref && refKind !== 'branch') anchor.dataset.refCommit = hit.ref
           // Keep href so Shift+click / right-click / copy-link still reach the
           // repository page; plain click is routed in-app by 50-app.js.
           const refNote = hit.refExists && hit.ref && refKind === 'branch' ? `（${hit.ref} 版本）` : ''
