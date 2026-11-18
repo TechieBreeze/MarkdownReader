@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "8d277c7fedb0";
+    const BUILD_ID = "617e92419195";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1910,7 +1910,7 @@ gitViewCache.set(name, view)
 return view
 }
 const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
-const gitBranchDebug = { lastPick: null, lastWrite: null }
+const gitBranchDebug = { lastPick: null, lastWrite: null, lastOpen: null, lastApply: null, lastSwitch: null }
 function reportGitBranchDebug() {
 try {
 if (typeof postJson !== 'function') return
@@ -1921,6 +1921,10 @@ key: DEFAULT_BRANCH_KEY,
 memory: readDefaultBranchMap(),
 lastPick: gitBranchDebug.lastPick,
 lastWrite: gitBranchDebug.lastWrite,
+lastOpen: gitBranchDebug.lastOpen,
+lastApply: gitBranchDebug.lastApply,
+lastSwitch: gitBranchDebug.lastSwitch,
+cachedViews: typeof gitViewCache !== 'undefined' && gitViewCache ? gitViewCache.size : -1,
 },
 })
 } catch {
@@ -1934,20 +1938,31 @@ return value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 return {}
 }
 }
+function branchGroupKey(repo) {
+const value = String(repo || '').replace(/\\/g, '/')
+const cut = value.lastIndexOf('/')
+if (cut <= 0) return ''
+return `@${value.slice(0, cut)}`
+}
 function getDefaultBranch(repo) {
 if (!repo) return null
 const map = readDefaultBranchMap()
-const branch = map[repo]
-return typeof branch === 'string' && branch ? branch : null
+const direct = map[repo]
+if (typeof direct === 'string' && direct) return direct
+const group = branchGroupKey(repo)
+const inherited = group ? map[group] : null
+return typeof inherited === 'string' && inherited ? inherited : null
 }
 function setDefaultBranch(repo, branch) {
 if (!repo || typeof branch !== 'string' || !branch) return
 try {
 const map = readDefaultBranchMap()
-if (map[repo] === branch) return
+const group = branchGroupKey(repo)
+if (map[repo] === branch && (!group || map[group] === branch)) return
 map[repo] = branch
+if (group) map[group] = branch
 localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
-gitBranchDebug.lastWrite = { repo, branch, at: Date.now() }
+gitBranchDebug.lastWrite = { repo, branch, group, at: Date.now() }
 reportGitBranchDebug()
 } catch {
 }
@@ -1988,6 +2003,8 @@ currentBranch: view.currentBranch,
 branch: view.branch,
 })
 if (!preferred || preferred === view.branch) return
+gitBranchDebug.lastApply = { key, from: view.branch, to: preferred, at: Date.now() }
+reportGitBranchDebug()
 await selectGitBranch(key, path, preferred, refresh)
 }
 function resetGitView(path) {
@@ -2030,6 +2047,15 @@ view.currentBranch = meta.currentBranch
 view.branches = meta.branches
 view.branch = pickOpenBranch(meta)
 view.commits = meta.commits
+gitBranchDebug.lastOpen = {
+key,
+path,
+repo: meta.repo || '',
+branch: view.branch || '',
+current: view.currentBranch || '',
+at: Date.now(),
+}
+reportGitBranchDebug()
 }
 }
 refresh()
@@ -2099,6 +2125,16 @@ view.currentBranch = meta.currentBranch || view.currentBranch
 view.commits = Array.isArray(meta.commits) ? meta.commits : []
 view.branch = effective
 if (remember && view.repo) setDefaultBranch(view.repo, effective)
+gitBranchDebug.lastSwitch = {
+key,
+requested: String(branch || ''),
+effective,
+remember: !!remember,
+repo: view.repo || '',
+ok: true,
+at: Date.now(),
+}
+reportGitBranchDebug()
 const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
 if (view.seq !== seq) return
 if (file && file.content != null) {
@@ -2111,6 +2147,16 @@ view.hint = `⚠ 分支 ${effective} 不存在此文件`
 if (view.seq !== seq) return
 view.branchContent = null
 view.hint = `切换分支失败: ${(error && error.message) || error}`
+gitBranchDebug.lastSwitch = {
+key,
+requested: String(branch || ''),
+remember: !!remember,
+repo: view.repo || '',
+ok: false,
+error: String((error && error.message) || error),
+at: Date.now(),
+}
+reportGitBranchDebug()
 }
 view.loading = false
 refresh()
@@ -7538,10 +7584,7 @@ if (!value) return
 const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
 const id = `${kind}:${value}`
 const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
-const wbNow = workbenchRef.current
-const taskNow = wbNow && wbNow.tasks ? wbNow.tasks.find((item) => item.id === wbNow.activeTaskId) : null
-const tabExists = !!(taskNow && taskNow.tabs && taskNow.tabs.some((item) => item.id === id))
-if (!tabExists && !options.branch && !options.commit && typeof resetGitView === 'function') {
+if (!options.branch && !options.commit && typeof resetGitView === 'function') {
 resetGitView(value)
 }
 saveActiveScroll()

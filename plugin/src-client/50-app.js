@@ -593,14 +593,12 @@ function App() {
       const kind = options.kind === 'code' || options.kind === 'md' ? options.kind : kindForPath(value)
       const id = `${kind}:${value}`
       const targetLine = line == null ? 0 : Math.max(0, Number(line) || 0)
-      // A FRESH open must not inherit the branch a previous session left in the
-      // cached git view for this path: drop it so 记忆分支 → 本地 → main/master is
-      // resolved again (the standalone reader re-resolved on every open). An
-      // already-open tab keeps its own selection.
-      const wbNow = workbenchRef.current
-      const taskNow = wbNow && wbNow.tasks ? wbNow.tasks.find((item) => item.id === wbNow.activeTaskId) : null
-      const tabExists = !!(taskNow && taskNow.tabs && taskNow.tabs.some((item) => item.id === id))
-      if (!tabExists && !options.branch && !options.commit && typeof resetGitView === 'function') {
+      // Every plain OPEN re-resolves the default branch: the cached git view of
+      // this path may still carry the branch it had when it was first shown.
+      // 记忆分支 → 本地 → main/master (the standalone reader did the same on
+      // every open). A branch/commit carried by a link or a jump is an explicit
+      // instruction and is left alone.
+      if (!options.branch && !options.commit && typeof resetGitView === 'function') {
         resetGitView(value)
       }
       saveActiveScroll()

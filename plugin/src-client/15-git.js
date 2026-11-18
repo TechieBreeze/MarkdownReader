@@ -72,7 +72,7 @@ const DEFAULT_BRANCH_KEY = 'mdreader.defaultBranch.v1'
  * `/api/client-ping` (the only way to see what the RUNNING page did - "重开还是
  * 没按我切的分支" cannot be judged from the sources).
  */
-const gitBranchDebug = { lastPick: null, lastWrite: null }
+const gitBranchDebug = { lastPick: null, lastWrite: null, lastOpen: null, lastApply: null, lastSwitch: null }
 
 function reportGitBranchDebug() {
   try {
@@ -84,6 +84,10 @@ function reportGitBranchDebug() {
         memory: readDefaultBranchMap(),
         lastPick: gitBranchDebug.lastPick,
         lastWrite: gitBranchDebug.lastWrite,
+        lastOpen: gitBranchDebug.lastOpen,
+        lastApply: gitBranchDebug.lastApply,
+        lastSwitch: gitBranchDebug.lastSwitch,
+        cachedViews: typeof gitViewCache !== 'undefined' && gitViewCache ? gitViewCache.size : -1,
       },
     })
   } catch {
@@ -100,12 +104,33 @@ function readDefaultBranchMap() {
   }
 }
 
+/**
+ * The branch group of a repo: the sibling modules of the same project.
+ *
+ * A workspace like 微服务 keeps EVERY module as its own git repository
+ * (`gits/customer`, `gits/order`, `gits/promotion`), and a multi-module repo
+ * does the same (`xls-platform/jar/<module>`). The user thinks of them as "the
+ * same repository" (they are the same project), so the preference must apply
+ * across the group: switching in `customer` and opening a file in `order`
+ * should also land on the switched branch. Keyed with a leading `@` so it can
+ * never collide with a real repo path.
+ */
+function branchGroupKey(repo) {
+  const value = String(repo || '').replace(/\\/g, '/')
+  const cut = value.lastIndexOf('/')
+  if (cut <= 0) return ''
+  return `@${value.slice(0, cut)}`
+}
+
 /** Remembered branch of a repo, or null. */
 function getDefaultBranch(repo) {
   if (!repo) return null
   const map = readDefaultBranchMap()
-  const branch = map[repo]
-  return typeof branch === 'string' && branch ? branch : null
+  const direct = map[repo]
+  if (typeof direct === 'string' && direct) return direct
+  const group = branchGroupKey(repo)
+  const inherited = group ? map[group] : null
+  return typeof inherited === 'string' && inherited ? inherited : null
 }
 
 /** Remember a branch for a repo (called ONLY on a manual switch). */
@@ -113,10 +138,14 @@ function setDefaultBranch(repo, branch) {
   if (!repo || typeof branch !== 'string' || !branch) return
   try {
     const map = readDefaultBranchMap()
-    if (map[repo] === branch) return
+    const group = branchGroupKey(repo)
+    if (map[repo] === branch && (!group || map[group] === branch)) return
     map[repo] = branch
+    // The project-wide default too: the next file opened may live in a SIBLING
+    // module repository, and it must not silently fall back to the checkout.
+    if (group) map[group] = branch
     localStorage.setItem(DEFAULT_BRANCH_KEY, JSON.stringify(map))
-    gitBranchDebug.lastWrite = { repo, branch, at: Date.now() }
+    gitBranchDebug.lastWrite = { repo, branch, group, at: Date.now() }
     reportGitBranchDebug()
   } catch {
     // private mode / quota: the memory is a convenience, never a requirement
@@ -177,6 +206,8 @@ async function applyDefaultBranch(key, path, refresh) {
     branch: view.branch,
   })
   if (!preferred || preferred === view.branch) return
+  gitBranchDebug.lastApply = { key, from: view.branch, to: preferred, at: Date.now() }
+  reportGitBranchDebug()
   await selectGitBranch(key, path, preferred, refresh)
 }
 
@@ -232,6 +263,15 @@ async function ensureGitViewReady(key, path, refresh) {
           // 默认打开分支：记忆分支 → 本地当前分支 → main/master.
           view.branch = pickOpenBranch(meta)
           view.commits = meta.commits
+          gitBranchDebug.lastOpen = {
+            key,
+            path,
+            repo: meta.repo || '',
+            branch: view.branch || '',
+            current: view.currentBranch || '',
+            at: Date.now(),
+          }
+          reportGitBranchDebug()
         }
       }
       refresh()
@@ -321,6 +361,16 @@ async function selectGitBranch(key, path, branch, refresh, remember) {
     view.branch = effective
     // 手动切换分支 → 记住这个仓库的偏好，之后打开同仓库的文件默认用它。
     if (remember && view.repo) setDefaultBranch(view.repo, effective)
+    gitBranchDebug.lastSwitch = {
+      key,
+      requested: String(branch || ''),
+      effective,
+      remember: !!remember,
+      repo: view.repo || '',
+      ok: true,
+      at: Date.now(),
+    }
+    reportGitBranchDebug()
     // "git show <branch>:<file>" is the branch HEAD file — the first commit
     // option must render THIS branch's content, not the working tree.
     const file = await fetchJson('/api/git/file', { path, commit: effective }).catch(() => null)
@@ -335,6 +385,16 @@ async function selectGitBranch(key, path, branch, refresh, remember) {
     if (view.seq !== seq) return
     view.branchContent = null
     view.hint = `切换分支失败: ${(error && error.message) || error}`
+    gitBranchDebug.lastSwitch = {
+      key,
+      requested: String(branch || ''),
+      remember: !!remember,
+      repo: view.repo || '',
+      ok: false,
+      error: String((error && error.message) || error),
+      at: Date.now(),
+    }
+    reportGitBranchDebug()
   }
   view.loading = false
   refresh()
