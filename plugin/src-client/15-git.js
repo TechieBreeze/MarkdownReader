@@ -462,11 +462,18 @@ async function applyGitTarget(tab, branch, commit, refresh) {
   const path = tab.path
   const view = await ensureGitViewReady(key, path, refresh)
   if (!view.git) return
-  if (commit) {
-    if (branch && branch !== view.branch) await selectGitBranch(key, path, branch, refresh)
-    if (view.commit !== commit) await selectGitCommit(key, path, commit, refresh)
-  } else if (branch && branch !== view.branch) {
-    await selectGitBranch(key, path, branch, refresh)
+  // A pinned commit can arrive as `branch` (GitLab permalinks do that): a HASH
+  // is not a branch, and asking for it as one makes the Host fall back to the
+  // local branch - the "link always opens on ck-*" bug. Any other unknown
+  // value keeps the old behaviour (fall back + hint).
+  const looksLikeCommit = !!branch && !(view.branches || []).includes(branch) && /^[0-9a-f]{7,40}$/i.test(branch)
+  const effectiveBranch = branch && !looksLikeCommit ? branch : ''
+  const effectiveCommit = commit || (looksLikeCommit ? String(branch) : '')
+  if (effectiveCommit) {
+    if (effectiveBranch && effectiveBranch !== view.branch) await selectGitBranch(key, path, effectiveBranch, refresh)
+    if (view.commit !== effectiveCommit) await selectGitCommit(key, path, effectiveCommit, refresh)
+  } else if (effectiveBranch && effectiveBranch !== view.branch) {
+    await selectGitBranch(key, path, effectiveBranch, refresh)
   }
 }
 

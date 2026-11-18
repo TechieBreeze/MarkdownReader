@@ -26,6 +26,7 @@ const SRC = path.join(ROOT, 'plugin', 'src-client')
 const gitSource = fs.readFileSync(path.join(SRC, '15-git.js'), 'utf8')
 const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
 const appSource = fs.readFileSync(path.join(SRC, '50-app.js'), 'utf8')
+const bundle = fs.readFileSync(path.join(ROOT, 'plugin', 'client.js'), 'utf8')
 
 let failures = 0
 let checks = 0
@@ -161,9 +162,19 @@ console.log('\n[2b] 跨模块继承：同一项目下每个模块是独立 git �
   )
 }
 
+console.log('\n[4] 固化链接（pin 到 commit）不能当成分支')
+const mdSource = fs.readFileSync(path.join(SRC, '10-markdown.js'), 'utf8')
+const linksSource = fs.readFileSync(path.join(ROOT, 'plugin', 'lib', 'gitlinks.js'), 'utf8')
+check('Host 区分 ref 类型', /async function refKind/.test(linksSource) && /refKind: kind/.test(linksSource))
+check('pinned commit 不写 data-branch', /refKind === 'branch'\) anchor\.dataset\.branch = hit\.ref/.test(mdSource))
+check('sha 兜底判为 commit', /\^\[0-9a-f\]\{7,40\}/.test(mdSource))
+check(
+  'applyGitTarget 不把非分支当分支',
+  /looksLikeCommit = !!branch && !\(view\.branches \|\| \[\]\)\.includes\(branch\)/.test(gitSource),
+)
+check('构建产物包含 refKind 判断', bundle.includes('refKind') || bundle.includes('refKind'))
 /* ------------------------------------------------------------- wiring */
 console.log('\n[3] 接线：打开即用、手动切换才记忆')
-const bundle = fs.readFileSync(path.join(ROOT, 'plugin', 'client.js'), 'utf8')
 check('打开文件时按优先级选分支', /view\.branch = pickOpenBranch\(meta\)/.test(gitSource))
 check(
   '选中的不是本地分支时要加载该分支内容',
@@ -172,8 +183,8 @@ check(
 check('手动切换分支会写入记忆', /selectGitBranch\(key, path, branch, bump, true\)/.test(gitSource))
 check(
   '跳转链接带的分支不覆盖记忆',
-  /applyGitTarget[\s\S]{0,900}selectGitBranch\(key, path, branch, refresh\)/.test(gitSource) &&
-    !/applyGitTarget[\s\S]{0,900}selectGitBranch\(key, path, branch, refresh, true\)/.test(gitSource),
+  /async function applyGitTarget[\s\S]{0,1400}selectGitBranch\(key, path, effectiveBranch, refresh\)/.test(gitSource) &&
+    !/async function applyGitTarget[\s\S]{0,1400}selectGitBranch\([^)]*true\)/.test(gitSource),
 )
 check('弹窗与标签页共用同一套逻辑（同一个 useGitView）', /function useGitView/.test(gitSource))
 check(

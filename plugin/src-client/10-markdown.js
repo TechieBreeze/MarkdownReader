@@ -185,12 +185,19 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
             anchor.dataset.line = String(hit.line)
             appendLineBadge(anchor, hit.line)
           }
-          if (hit.refExists && hit.ref) anchor.dataset.branch = hit.ref
+          // ONLY a real BRANCH becomes a branch view. GitLab/GitHub permalinks
+          // pin a commit (`/-/blob/<sha>/...`); sending that hash as a branch
+          // made the Host fall back to the local branch, so the link always
+          // opened on `ck-*` no matter which branch the user had picked.
+          const refKind = hit.refKind || (/^[0-9a-f]{7,40}$/i.test(String(hit.ref || '')) ? 'commit' : 'branch')
+          if (hit.refExists && hit.ref && refKind === 'branch') anchor.dataset.branch = hit.ref
           // Keep href so Shift+click / right-click / copy-link still reach the
           // repository page; plain click is routed in-app by 50-app.js.
+          const refNote = hit.refExists && hit.ref && refKind === 'branch' ? `（${hit.ref} 版本）` : ''
           anchor.title =
             `打开本地代码: ${hit.path}${hit.line ? ' :' + hit.line : ''}` +
-            (hit.refExists && hit.ref ? `（${hit.ref} 版本）` : '') +
+            refNote +
+            (hit.refExists && hit.ref && refKind !== 'branch' ? `（链接锁定提交 ${String(hit.ref).slice(0, 7)}）` : '') +
             '（Shift+点击 / 右键打开仓库原链接）'
         }
       })
