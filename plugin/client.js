@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "b56af8cef427";
+    const BUILD_ID = "0086b6c397d6";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1052,7 +1052,16 @@ fetchJson('/api/git/resolve', { url: unique, path: mdPath })
 const map = (payload && payload.resolved) || {}
 for (const item of repoLinks) {
 const hit = map[item.url]
-if (!hit || !hit.path) continue
+if (!hit || !hit.path) {
+item.anchor.dataset.remote = item.url
+const lineMatch = /#L(\d+)/.exec(item.url)
+if (lineMatch) {
+item.anchor.dataset.line = lineMatch[1]
+appendLineBadge(item.anchor, Number(lineMatch[1]))
+}
+item.anchor.title = '打开线上代码（本地没有这个文件，将从仓库取）'
+continue
+}
 const anchor = item.anchor
 anchor.classList.add('mdr-jump')
 anchor.classList.remove('mdr-repo-link')
@@ -3712,7 +3721,8 @@ const requestLine = Math.max(0, Number(request && request.line) || 0)
 const requestBranch = String((request && request.branch) || '')
 const requestCommit = String((request && request.commit) || '')
 const requestRefCommit = String((request && request.refCommit) || '')
-const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
+const requestRemote = String((request && request.remoteUrl) || '')
+const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRemote}`
 const [view, setView] = React.useState(() => ({
 path: requestPath,
 line: requestLine,
@@ -3734,9 +3744,54 @@ const pendingNavViewRef = React.useRef(null)
 const currentGitRef = React.useRef(null)
 const currentRef = React.useRef({ path: requestPath, line: requestLine })
 const maskDownRef = React.useRef(false)
-const loadFile = React.useCallback((path, line, gitView) => {
+const loadFile = React.useCallback((path, line, gitView, remoteUrl) => {
 const seq = (seqRef.current += 1)
 const targetLine = Math.max(0, Number(line) || 0)
+const remote = String(remoteUrl || '')
+setView({
+path,
+line: targetLine,
+content: null,
+lang: langForPath(path),
+lineCount: 0,
+loading: true,
+error: '',
+remote: remote ? { url: remote, repo: '', ref: '' } : null,
+})
+if (remote) {
+fetchJson('/api/git/remote-file', { url: remote })
+.then((payload) => {
+if (seqRef.current !== seq) return
+if (!payload || !payload.ok) {
+throw new Error(String((payload && payload.error) || '取线上文件失败'))
+}
+const realPath = String(payload.path || path || '')
+setView({
+path: realPath,
+line: targetLine,
+content: String(payload.content == null ? '' : payload.content),
+lang: langForPath(realPath) || langForPath(path),
+lineCount: Number(payload.lineCount) || 0,
+loading: false,
+error: '',
+remote: { url: remote, repo: String(payload.repo || ''), ref: String(payload.ref || '') },
+})
+})
+.catch((err) => {
+if (seqRef.current !== seq) return
+setView({
+path,
+line: targetLine,
+content: null,
+lang: langForPath(path),
+lineCount: 0,
+loading: false,
+error: String((err && err.message) || err),
+remote: { url: remote, repo: '', ref: '' },
+})
+})
+return
+}
 setView({
 path,
 line: targetLine,
@@ -3804,8 +3859,9 @@ loadFile(
 requestPath,
 requestLine,
 requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
+requestRemote,
 )
-}, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
+}, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRemote, loadFile])
 if (view) currentRef.current = { path: view.path, line: view.line }
 const navigateInPlace = React.useCallback(
 (path, line, gitView) => {
@@ -3849,21 +3905,22 @@ loadFile(snapshot.path, snapshot.line, snapshot.view)
 }, [history, loadFile])
 const displayPath = view ? view.path : requestPath
 const displayContent = view && view.content != null ? view.content : null
+const gitPath = requestRemote ? 'remote:' + displayPath : displayPath
 const gitTab = React.useMemo(
 () => ({
 id: 'modal:' + displayPath,
 kind: 'code',
-path: displayPath,
+path: gitPath,
 content: displayContent,
 gitKey: 'modal:' + displayPath,
 }),
-[displayPath, displayContent],
+[displayPath, displayContent, gitPath],
 )
 const { view: gitView, actions: gitActions } = useGitView(gitTab)
 React.useEffect(() => {
-if (requestBranch || requestCommit || requestRefCommit) return
+if (requestBranch || requestCommit || requestRefCommit || requestRemote) return
 void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
-}, [displayPath, requestBranch, requestCommit, requestRefCommit, gitActions.refresh])
+}, [displayPath, requestBranch, requestCommit, requestRefCommit, requestRemote, gitActions.refresh])
 React.useEffect(() => {
 if (!requestRefCommit) return
 gitActions.applyTarget(null, requestRefCommit)
@@ -3949,8 +4006,9 @@ const viewKey = `modal|${displayPath}|${gitView.branch}|${gitView.commit || ''}|
 gitView.branchContent == null ? 'ws' : 'branch'
 }`
 const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
+const isRemote = !!(view && view.remote)
 const openAsTab = () => {
-if (!view || !view.path) return
+if (!view || !view.path || isRemote) return
 if (typeof onOpenTab === 'function') {
 const target = { path: view.path, line: view.line }
 if (gitView.git) {
@@ -3966,9 +4024,15 @@ if (!view || typeof onOpen !== 'function') return
 onOpen(view.path, view.line)
 if (typeof onClose === 'function') onClose()
 }
+const remoteLabel = isRemote
+? `${view.remote.repo || '仓库'}${view.remote.ref ? ' @ ' + String(view.remote.ref).slice(0, 10) : ''}`
+: ''
 const headChildren = [
 h(Icons.code, { key: 'icon', size: 14 }),
 h('span', { key: 'path', className: 'mdr-cmodal-path', title: displayPath }, displayPath),
+remoteLabel
+? h('span', { key: 'remote', className: 'mdr-cmodal-badge', title: '线上仓库文件（本地没有副本）' }, remoteLabel)
+: null,
 view && view.line > 0
 ? h('span', { key: 'line', className: 'mdr-cmodal-badge' }, `跳转行 ${view.line}`)
 : null,
@@ -3984,7 +4048,14 @@ history.length
 : null,
 h(
 'button',
-{ key: 'tab', type: 'button', className: 'mdr-cmodal-btn', title: '把这一个文件按当前行开成标签页', onClick: openAsTab },
+{
+key: 'tab',
+type: 'button',
+className: 'mdr-cmodal-btn',
+title: isRemote ? '线上文件没有本地路径，不能开成标签页' : '把这一个文件按当前行开成标签页',
+onClick: openAsTab,
+disabled: isRemote,
+},
 '开成标签页',
 ),
 h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
@@ -3997,7 +4068,20 @@ body = h(
 'div',
 { className: 'mdr-cmodal-state' },
 h('div', { className: 'mdr-cmodal-note', style: { border: 'none', background: 'transparent', padding: 0 } }, `打开失败：${(view && view.error) || '未知错误'}`),
-h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
+isRemote
+? h(
+'button',
+{
+type: 'button',
+className: 'mdr-cmodal-btn',
+onClick: () => {
+const url = (view && view.remote && view.remote.url) || requestRemote
+if (url) window.open(url, '_blank', 'noopener,noreferrer')
+},
+},
+'在浏览器打开',
+)
+: h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
 )
 } else {
 body = h(
@@ -4063,7 +4147,7 @@ h('style', { dangerouslySetInnerHTML: { __html: GIT_CSS + CMODAL_CSS } }),
 }
 function CodeModal(props) {
 const { request } = props || {}
-if (!request || !request.path) return null
+if (!request || (!request.path && !request.remoteUrl)) return null
 return h(CodeModalInner, props)
 }
 // ---- 25-search.js ----
@@ -8170,8 +8254,16 @@ cancelled = true
 }, [])
 const onContentClick = (event) => {
 const target = event.target
-const anchor = target && target.closest ? target.closest('a[data-path]') : null
+const anchor = target && target.closest ? target.closest('a[data-path], a[data-remote]') : null
 if (!anchor) return
+const remote = (anchor.dataset.remote || '').trim()
+if (remote) {
+if (event.shiftKey && anchor.hasAttribute('href')) return
+event.preventDefault()
+const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
+setModalRequest({ path: '', line: line == null ? null : line, remoteUrl: remote })
+return
+}
 const rel = (anchor.dataset.path || '').trim()
 if (!rel) return
 if (event.shiftKey && anchor.hasAttribute('href')) return

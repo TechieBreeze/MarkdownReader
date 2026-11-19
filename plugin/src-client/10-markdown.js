@@ -175,7 +175,19 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
         const map = (payload && payload.resolved) || {}
         for (const item of repoLinks) {
           const hit = map[item.url]
-          if (!hit || !hit.path) continue
+          if (!hit || !hit.path) {
+            // 没有本地副本：点击时从线上取代码再开弹窗，而不是退化成
+            // 「打开网页」——那是 Shift+点击 才该有的行为。
+            item.anchor.dataset.remote = item.url
+            // The line of the link (`#L98`) is still the line to jump to.
+            const lineMatch = /#L(\d+)/.exec(item.url)
+            if (lineMatch) {
+              item.anchor.dataset.line = lineMatch[1]
+              appendLineBadge(item.anchor, Number(lineMatch[1]))
+            }
+            item.anchor.title = '打开线上代码（本地没有这个文件，将从仓库取）'
+            continue
+          }
           const anchor = item.anchor
           anchor.classList.add('mdr-jump')
           anchor.classList.remove('mdr-repo-link')

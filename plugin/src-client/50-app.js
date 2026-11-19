@@ -1205,13 +1205,23 @@ function App() {
    * Markdown link routing (attributes written by 10-markdown.js):
    *   data-path / data-kind / data-line / data-branch / data-commit.
    * code + plain click → modal; code + Ctrl/Cmd → tab; md/html/image → tab.
-   * Resolved repository links keep their href: Shift+click / right-click stay
+   * A repository link WITHOUT a local file (data-remote) → the code is fetched
+   * from the repository and shown in the popup; Shift+click / right-click stay
    * native so the remote repo page is still reachable.
    */
   const onContentClick = (event) => {
     const target = event.target
-    const anchor = target && target.closest ? target.closest('a[data-path]') : null
+    const anchor = target && target.closest ? target.closest('a[data-path], a[data-remote]') : null
     if (!anchor) return
+    const remote = (anchor.dataset.remote || '').trim()
+    if (remote) {
+      // Shift+点击 / 右键 → 打开仓库原网页（保留原生行为）。
+      if (event.shiftKey && anchor.hasAttribute('href')) return
+      event.preventDefault()
+      const line = anchor.dataset.line ? Number(anchor.dataset.line) : null
+      setModalRequest({ path: '', line: line == null ? null : line, remoteUrl: remote })
+      return
+    }
     const rel = (anchor.dataset.path || '').trim()
     if (!rel) return
     if (event.shiftKey && anchor.hasAttribute('href')) return

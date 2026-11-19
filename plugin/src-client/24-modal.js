@@ -61,7 +61,9 @@ function CodeModalInner(props) {
   const requestCommit = String((request && request.commit) || '')
   // 永久链接锚定的提交：按该提交打开（文档里的行号就是那个提交的行号）。
   const requestRefCommit = String((request && request.refCommit) || '')
-  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}`
+  // 线上仓库链接（本地没有这个文件）：代码从仓库取回来再显示。
+  const requestRemote = String((request && request.remoteUrl) || '')
+  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRemote}`
 
   const [view, setView] = React.useState(() => ({
     path: requestPath,
@@ -85,9 +87,56 @@ function CodeModalInner(props) {
   const currentRef = React.useRef({ path: requestPath, line: requestLine })
   const maskDownRef = React.useRef(false)
 
-  const loadFile = React.useCallback((path, line, gitView) => {
+  const loadFile = React.useCallback((path, line, gitView, remoteUrl) => {
     const seq = (seqRef.current += 1)
     const targetLine = Math.max(0, Number(line) || 0)
+    const remote = String(remoteUrl || '')
+    setView({
+      path,
+      line: targetLine,
+      content: null,
+      lang: langForPath(path),
+      lineCount: 0,
+      loading: true,
+      error: '',
+      remote: remote ? { url: remote, repo: '', ref: '' } : null,
+    })
+    // A repository link without a local file: the code is fetched from the
+    // repository (through git) and shown here, like any other file.
+    if (remote) {
+      fetchJson('/api/git/remote-file', { url: remote })
+        .then((payload) => {
+          if (seqRef.current !== seq) return
+          if (!payload || !payload.ok) {
+            throw new Error(String((payload && payload.error) || '取线上文件失败'))
+          }
+          const realPath = String(payload.path || path || '')
+          setView({
+            path: realPath,
+            line: targetLine,
+            content: String(payload.content == null ? '' : payload.content),
+            lang: langForPath(realPath) || langForPath(path),
+            lineCount: Number(payload.lineCount) || 0,
+            loading: false,
+            error: '',
+            remote: { url: remote, repo: String(payload.repo || ''), ref: String(payload.ref || '') },
+          })
+        })
+        .catch((err) => {
+          if (seqRef.current !== seq) return
+          setView({
+            path,
+            line: targetLine,
+            content: null,
+            lang: langForPath(path),
+            lineCount: 0,
+            loading: false,
+            error: String((err && err.message) || err),
+            remote: { url: remote, repo: '', ref: '' },
+          })
+        })
+      return
+    }
     setView({
       path,
       line: targetLine,
@@ -162,8 +211,9 @@ function CodeModalInner(props) {
       requestPath,
       requestLine,
       requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
+      requestRemote,
     )
-  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, loadFile])
+  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRemote, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
@@ -219,27 +269,31 @@ function CodeModalInner(props) {
   // navigates IN PLACE (the ← 返回 stack keeps the previous position).
   const displayPath = view ? view.path : requestPath
   const displayContent = view && view.content != null ? view.content : null
+  // A file that only exists in the repository has NO local git view: the
+  // relative path could resolve to a DIFFERENT local file, and its branch
+  // content would replace the code that was just fetched.
+  const gitPath = requestRemote ? 'remote:' + displayPath : displayPath
   const gitTab = React.useMemo(
     () => ({
       id: 'modal:' + displayPath,
       kind: 'code',
-      path: displayPath,
+      path: gitPath,
       content: displayContent,
       // The modal keeps its own branch/commit view: it must not mutate the
       // selection of the code tab showing the same file underneath.
       gitKey: 'modal:' + displayPath,
     }),
-    [displayPath, displayContent],
+    [displayPath, displayContent, gitPath],
   )
   const { view: gitView, actions: gitActions } = useGitView(gitTab)
   // 弹窗每次打开都按「记忆分支 → 本地 → main/master」重新决定，和独立版一致：
   // 缓存过的视图会沿用上次的分支，用户切过分支后重开就"没生效"。
   // 请求本身带 branch/commit 的是显式指令，优先。
   React.useEffect(() => {
-    if (requestBranch || requestCommit || requestRefCommit) return
+    if (requestBranch || requestCommit || requestRefCommit || requestRemote) return
     void applyDefaultBranch('modal:' + displayPath, displayPath, gitActions.refresh)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [displayPath, requestBranch, requestCommit, requestRefCommit, gitActions.refresh])
+  }, [displayPath, requestBranch, requestCommit, requestRefCommit, requestRemote, gitActions.refresh])
 
   // 锚定到具体提交的链接：显示该提交下的这个文件（顶部仍可切分支回到分支视图）。
   React.useEffect(() => {
@@ -344,8 +398,11 @@ function CodeModalInner(props) {
     gitView.branchContent == null ? 'ws' : 'branch'
   }`
   const showInfo = !!gitView.commit || !!gitView.hint || !!gitView.loading
+  // A file that only exists in the repository has no local path, so it cannot
+  // become a tab - the popup shows it.
+  const isRemote = !!(view && view.remote)
   const openAsTab = () => {
-    if (!view || !view.path) return
+    if (!view || !view.path || isRemote) return
     if (typeof onOpenTab === 'function') {
       // Carry the branch/commit view that is actually rendered so the new tab
       // shows the same version of the file.
@@ -364,9 +421,16 @@ function CodeModalInner(props) {
     if (typeof onClose === 'function') onClose()
   }
 
+  const remoteLabel = isRemote
+    ? `${view.remote.repo || '仓库'}${view.remote.ref ? ' @ ' + String(view.remote.ref).slice(0, 10) : ''}`
+    : ''
+
   const headChildren = [
     h(Icons.code, { key: 'icon', size: 14 }),
     h('span', { key: 'path', className: 'mdr-cmodal-path', title: displayPath }, displayPath),
+    remoteLabel
+      ? h('span', { key: 'remote', className: 'mdr-cmodal-badge', title: '线上仓库文件（本地没有副本）' }, remoteLabel)
+      : null,
     view && view.line > 0
       ? h('span', { key: 'line', className: 'mdr-cmodal-badge' }, `跳转行 ${view.line}`)
       : null,
@@ -382,7 +446,14 @@ function CodeModalInner(props) {
       : null,
     h(
       'button',
-      { key: 'tab', type: 'button', className: 'mdr-cmodal-btn', title: '把这一个文件按当前行开成标签页', onClick: openAsTab },
+      {
+        key: 'tab',
+        type: 'button',
+        className: 'mdr-cmodal-btn',
+        title: isRemote ? '线上文件没有本地路径，不能开成标签页' : '把这一个文件按当前行开成标签页',
+        onClick: openAsTab,
+        disabled: isRemote,
+      },
       '开成标签页',
     ),
     h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: '关闭 (Esc)', onClick: onClose }, '✕'),
@@ -396,7 +467,20 @@ function CodeModalInner(props) {
       'div',
       { className: 'mdr-cmodal-state' },
       h('div', { className: 'mdr-cmodal-note', style: { border: 'none', background: 'transparent', padding: 0 } }, `打开失败：${(view && view.error) || '未知错误'}`),
-      h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
+      isRemote
+        ? h(
+            'button',
+            {
+              type: 'button',
+              className: 'mdr-cmodal-btn',
+              onClick: () => {
+                const url = (view && view.remote && view.remote.url) || requestRemote
+                if (url) window.open(url, '_blank', 'noopener,noreferrer')
+              },
+            },
+            '在浏览器打开',
+          )
+        : h('button', { type: 'button', className: 'mdr-cmodal-btn', onClick: openFallbackTab }, '在标签页打开'),
     )
   } else {
     body = h(
@@ -468,6 +552,7 @@ function CodeModalInner(props) {
 
 function CodeModal(props) {
   const { request } = props || {}
-  if (!request || !request.path) return null
+  // A remote-only file has no local path - the URL is enough.
+  if (!request || (!request.path && !request.remoteUrl)) return null
   return h(CodeModalInner, props)
 }
