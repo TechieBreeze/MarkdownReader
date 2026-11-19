@@ -170,7 +170,11 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
   // 2b) resolve remote repo-view links to local workspace files
   if (repoLinks.length) {
     const unique = [...new Set(repoLinks.map((item) => item.url))]
-    fetchJson('/api/git/resolve', { url: unique, path: mdPath })
+    // The URL list goes into the BODY: a link-heavy document has a hundred
+    // repository links, and they do NOT fit into a request line (16 KB of
+    // headers → 431 → the whole batch fails → every link of the document stays
+    // a plain web link).
+    postJson('/api/git/resolve', { urls: unique, path: mdPath })
       .then((payload) => {
         const map = (payload && payload.resolved) || {}
         for (const item of repoLinks) {

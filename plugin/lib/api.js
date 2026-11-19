@@ -20,7 +20,7 @@ import { syncStatus, syncPull } from './sync.js'
 import { gitGraph, listRepos } from './gitgraph.js'
 import { renderHtmlPreview } from './htmlpreview.js'
 import { resolveRepoUrls } from './gitlinks.js'
-import { fetchRemoteFile } from './remote.js'
+import { fetchRemoteFile, readRemoteFile, readRemotePatch } from './remote.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -148,6 +148,12 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/git/graph' && req.method === 'GET') return sendJson(res, 200, await gitGraph(state, url))
     if (pathname === '/api/git/resolve' && req.method === 'GET')
       return sendJson(res, 200, { ok: true, resolved: await resolveRepoUrls(state, url.searchParams.getAll('url'), url.searchParams.get('path') || '') })
+    // The same, with the URL list in the BODY: a document with a hundred
+    // repository links does not fit into a request line (16 KB of headers ->
+    // 431 Request Header Fields Too Large, and then NOT ONE link of the
+    // document was resolved).
+    if (pathname === '/api/git/resolve' && req.method === 'POST')
+      return sendJson(res, 200, await apiGitResolvePost(req, res, state))
     if (pathname === '/api/git/repos' && req.method === 'GET')
       return sendJson(res, 200, { ok: true, repos: listRepos(state, projectRoots(state, url.searchParams.get('project'))) })
     if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
@@ -790,23 +796,36 @@ async function apiGitMeta(res, state, url) {
   const branchText = await git(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])
   const branches = branchText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
   if (currentBranch && !branches.includes(currentBranch)) branches.unshift(currentBranch)
-  const branch = branchParam && (branches.includes(branchParam) || branchParam === currentBranch) ? branchParam : currentBranch
-  const logText = await git(repo, [
-    'log',
-    '--pretty=format:%H|%an|%ad|%s',
-    '--date=format:%Y-%m-%d %H:%M',
-    '-20',
-    branch,
-    '--',
-    relInRepo,
-  ])
-  const commits = logText
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const [hash, author, date, ...subject] = line.split('|')
-      return { hash, short: hash.slice(0, 7), author, date, subject: subject.join('|') }
-    })
+  // The REQUESTED branch wins - even when the local clone does not have it
+  // (it may exist on the remote, and the link's ref is authoritative). It used
+  // to be silently replaced by the local branch, so a link to another branch
+  // showed the checkout's content.
+  const branch = branchParam || currentBranch
+  const remote = !!(branchParam && !branches.includes(branchParam))
+  if (remote) branches.push(branchParam)
+  let commits = []
+  try {
+    const logText = await git(repo, [
+      'log',
+      '--pretty=format:%H|%an|%ad|%s',
+      '--date=format:%Y-%m-%d %H:%M',
+      '-20',
+      branch,
+      '--',
+      relInRepo,
+    ])
+    commits = logText
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, author, date, ...subject] = line.split('|')
+        return { hash, short: hash.slice(0, 7), author, date, subject: subject.join('|') }
+      })
+  } catch {
+    // The branch is not in the local object store (a remote-only branch): the
+    // file itself is fetched from the remote, the commit list stays empty.
+    commits = []
+  }
   return sendJson(res, 200, {
     ok: true,
     path: state.relOf(abs),
@@ -815,6 +834,8 @@ async function apiGitMeta(res, state, url) {
     currentBranch,
     branches,
     commits,
+    // The branch is not in the local clone (it exists on the remote only).
+    remote,
   })
 }
 
@@ -824,10 +845,37 @@ async function apiGitFile(res, state, url) {
   if (!commit) throw new Error('缺少 commit')
   try {
     const content = await git(repo, ['show', `${commit}:${relInRepo}`])
-    return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, content })
+    return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, content, source: 'local' })
   } catch {
+    // The ref is not in the local object store (a branch or a commit that only
+    // exists on the remote): the LINK's remote is authoritative, so the file is
+    // read from the remote - without touching the local clone (a `--depth 1`
+    // fetch into it would turn the clone into a shallow repository).
+    const remote = await readRemoteFile(repo, commit, relInRepo)
+    if (remote != null) {
+      return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, content: remote, source: 'remote' })
+    }
     return sendJson(res, 404, { ok: false, error: '该提交中不存在此文件', path: state.relOf(abs), commit })
   }
+}
+
+/**
+ * Resolve a batch of repository links whose URL list comes in the body.
+ *
+ * The URL list of a link-heavy document does not fit into a request line
+ * (the server answers 431 when the headers get too big), and then the whole
+ * batch fails: every link of the document stays a plain web link.
+ */
+async function apiGitResolvePost(req, res, state) {
+  let body = {}
+  try {
+    body = JSON.parse((await readBody(req)) || '{}')
+  } catch {
+    return { ok: false, error: 'invalid body', resolved: {} }
+  }
+  const urls = Array.isArray(body.urls) ? body.urls.map((item) => String(item || '')).filter(Boolean) : []
+  const resolved = await resolveRepoUrls(state, urls, String(body.path || ''))
+  return { ok: true, resolved }
 }
 
 /**
@@ -867,9 +915,20 @@ async function apiGitDiff(res, state, url) {
   try {
     patch = await git(repo, ['show', '--format=', '--patch', '--unified=3', commit, '--', relInRepo])
   } catch (error) {
+    // The commit is not in the local object store: read the patch from the
+    // remote (the link's remote is authoritative).
+    const remotePatch = await remotePatchOf(repo, commit, relInRepo)
+    if (remotePatch != null) {
+      return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: parseDiff(remotePatch), source: 'remote' })
+    }
     return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: [], error: String(error.message || error) })
   }
-  return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: parseDiff(patch) })
+  return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, hunks: parseDiff(patch), source: 'local' })
+}
+
+/** The patch of a commit that the local repository does not have. */
+async function remotePatchOf(repo, commit, relInRepo) {
+  return readRemotePatch(repo, commit, relInRepo)
 }
 
 /**

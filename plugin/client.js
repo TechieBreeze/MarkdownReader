@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "0086b6c397d6";
+    const BUILD_ID = "223c9668af72";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1047,7 +1047,7 @@ applyLocalLink(anchor, resolved, line, extra.branch, extra.commit)
 }
 if (repoLinks.length) {
 const unique = [...new Set(repoLinks.map((item) => item.url))]
-fetchJson('/api/git/resolve', { url: unique, path: mdPath })
+postJson('/api/git/resolve', { urls: unique, path: mdPath })
 .then((payload) => {
 const map = (payload && payload.resolved) || {}
 for (const item of repoLinks) {
@@ -2197,6 +2197,7 @@ const file = await fetchJson('/api/git/file', { path, commit: effective }).catch
 if (view.seq !== seq) return
 if (file && file.content != null) {
 view.branchContent = String(file.content)
+if (file.source === 'remote') view.hint = `ℹ 分支 ${effective} 来自远程仓库`
 } else {
 view.branchContent = null
 view.hint = `⚠ 分支 ${effective} 不存在此文件`
@@ -2251,7 +2252,10 @@ if (view.seq !== seq) return
 view.hunks = Array.isArray(diff.hunks) ? diff.hunks : []
 view.fileLines = file && file.content != null ? String(file.content).split('\n') : null
 if (view.hunks.length === 0) {
-view.hint = '⚠ 此提交未修改该文件'
+view.hint =
+diff && diff.source === 'remote'
+? '⚠ 该提交来自远程仓库，未取回父提交，不显示改动'
+: '⚠ 此提交未修改该文件'
 } else {
 view.stats = countDiffStats(view.hunks)
 }
