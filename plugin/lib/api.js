@@ -20,6 +20,7 @@ import { syncStatus, syncPull } from './sync.js'
 import { gitGraph, listRepos } from './gitgraph.js'
 import { renderHtmlPreview } from './htmlpreview.js'
 import { resolveRepoUrls } from './gitlinks.js'
+import { fetchRemoteFile } from './remote.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -152,6 +153,11 @@ export async function handleRequest(req, res, state) {
     if (pathname === '/api/git/meta' && req.method === 'GET') return await apiGitMeta(res, state, url)
     if (pathname === '/api/git/file' && req.method === 'GET') return await apiGitFile(res, state, url)
     if (pathname === '/api/git/diff' && req.method === 'GET') return await apiGitDiff(res, state, url)
+    // A repository link whose project is not in the workspace: fetch the file
+    // from the remote (through git - the web endpoints do not accept the
+    // account password the remotes carry) and show it in the code popup.
+    if (pathname === '/api/git/remote-file' && req.method === 'GET')
+      return sendJson(res, 200, await apiGitRemoteFile(state, url))
 
     return sendError(res, 404, `unknown endpoint: ${pathname}`)
   } catch (error) {
@@ -821,6 +827,35 @@ async function apiGitFile(res, state, url) {
     return sendJson(res, 200, { ok: true, path: state.relOf(abs), commit, content })
   } catch {
     return sendJson(res, 404, { ok: false, error: '该提交中不存在此文件', path: state.relOf(abs), commit })
+  }
+}
+
+/**
+ * Fetch a file from a REMOTE repository.
+ *
+ * The link points at a project that is not in the workspace (or at a file the
+ * workspace does not have): the code is fetched through git and shown in the
+ * code popup instead of opening the web page.
+ */
+async function apiGitRemoteFile(state, url) {
+  const target = String(url.searchParams.get('url') || '').trim()
+  if (!target) return { ok: false, error: '缺少 url' }
+  if (!/^https?:\/\//i.test(target)) return { ok: false, error: '只支持 http(s) 链接' }
+  try {
+    const result = await fetchRemoteFile(state, target)
+    if (!result.ok) return result
+    return {
+      ok: true,
+      path: result.path,
+      ref: result.ref,
+      repo: result.repo,
+      line: result.line || 0,
+      source: result.source,
+      content: result.content,
+      lineCount: String(result.content || '').split('\n').length,
+    }
+  } catch (error) {
+    return { ok: false, error: String((error && error.message) || error) }
   }
 }
 

@@ -176,7 +176,7 @@ check(
 )
 check(
   '弹窗按锚定提交打开（并跳过分支记忆）',
-  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit\) return/.test(modalSource) &&
+  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit[^)]*\) return/.test(modalSource) &&
     /applyTarget\(null, requestRefCommit\)/.test(modalSource),
 )
 check('链接把 refCommit 带进请求', /refCommit\b/.test(appSource) && /refCommit: options\.refCommit \|\| ''/.test(appSource))
@@ -202,7 +202,7 @@ check(
 )
 check(
   '请求自带分支/提交时以请求为准',
-  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit\) return[\s\S]{0,200}applyDefaultBranch/.test(modalSource),
+  /if \(requestBranch \|\| requestCommit \|\| requestRefCommit[^)]*\) return[\s\S]{0,200}applyDefaultBranch/.test(modalSource),
 )
 check(
   '每次普通打开都丢弃该路径的缓存视图（带分支的显式打开除外）',

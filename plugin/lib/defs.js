@@ -379,7 +379,14 @@ function discoverGitRepos(rootAbs) {
   return found
 }
 
-function allGitRepos(state, preferRoot) {
+/**
+ * Every git repository of the workspace (cached).
+ *
+ * Exported for the remote-file fetch: it needs the repositories (and their
+ * `origin` URLs) to find the credentials of a host, and it must not walk the
+ * tree again - the discovery above is already cached.
+ */
+export function allGitRepos(state, preferRoot) {
   const key = state.roots().map((root) => root.path).join('|')
   let hit = cache.repos.get('__all__' + key)
   if (!hit || now() - hit.at >= REPO_TTL) {
