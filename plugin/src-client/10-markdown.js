@@ -379,6 +379,10 @@ function enhanceMarkdown(container, mdPath, multi, rootNames) {
  * Restore a saved markdown scroll offset, re-applying it while lazy content
  * (mermaid diagrams, images) grows the document. Stops the moment the user
  * scrolls/wheels/keys by themselves.
+ *
+ * DRAGGING THE SCROLLBAR counts as user movement: a scrollbar drag fires
+ * neither `wheel` nor `touchstart` nor `keydown`, so the restore kept yanking
+ * the view back to the saved offset for ~2.8 s ("拉到最底下页面会上下抖动").
  */
 function restoreMarkdownScroll(scroller, target) {
   if (!scroller || !target) return () => {}
@@ -395,6 +399,9 @@ function restoreMarkdownScroll(scroller, target) {
   scroller.addEventListener('wheel', markUser, { passive: true })
   scroller.addEventListener('touchstart', markUser, { passive: true })
   scroller.addEventListener('keydown', markUser)
+  // A scrollbar drag starts with a pointer press on the container.
+  scroller.addEventListener('pointerdown', markUser, { passive: true })
+  scroller.addEventListener('mousedown', markUser, { passive: true })
   apply()
   const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
   return () => {
@@ -403,6 +410,8 @@ function restoreMarkdownScroll(scroller, target) {
     scroller.removeEventListener('wheel', markUser)
     scroller.removeEventListener('touchstart', markUser)
     scroller.removeEventListener('keydown', markUser)
+    scroller.removeEventListener('pointerdown', markUser)
+    scroller.removeEventListener('mousedown', markUser)
   }
 }
 

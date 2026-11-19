@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "55f6b4243fab";
+    const BUILD_ID = "b56af8cef427";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1220,6 +1220,8 @@ scroller.scrollTop = Math.min(target, max)
 scroller.addEventListener('wheel', markUser, { passive: true })
 scroller.addEventListener('touchstart', markUser, { passive: true })
 scroller.addEventListener('keydown', markUser)
+scroller.addEventListener('pointerdown', markUser, { passive: true })
+scroller.addEventListener('mousedown', markUser, { passive: true })
 apply()
 const timers = [200, 500, 900, 1400, 2000, 2800].map((ms) => setTimeout(apply, ms))
 return () => {
@@ -1228,6 +1230,8 @@ timers.forEach((timer) => clearTimeout(timer))
 scroller.removeEventListener('wheel', markUser)
 scroller.removeEventListener('touchstart', markUser)
 scroller.removeEventListener('keydown', markUser)
+scroller.removeEventListener('pointerdown', markUser)
+scroller.removeEventListener('mousedown', markUser)
 }
 }
 function MarkdownView(props) {
@@ -1721,7 +1725,8 @@ if (window.console && console.warn) console.warn('[markdown-reader] mermaid:', e
 // ---- 14-diffflazy.js ----
 const LAZY_FENCE_MARGIN = '900px'
 const LAZY_KEEP_MARGIN = '300% 0px'
-const LAZY_LINE_HEIGHT = 19
+const LAZY_CODE_LINE_HEIGHT = 19.375
+const LAZY_DIFF_ROW_HEIGHT = 20
 const LAZY_CODE_MIN_LINES = 30
 const lazyFenceRecs = new Map()
 const lazyFencePending = new Map()
@@ -1734,19 +1739,55 @@ if (rec.observer) rec.observer.disconnect()
 lazyFenceRecs.delete(rec.container)
 rec.left = 0
 }
+function lazyFenceChrome(el) {
+try {
+const style = window.getComputedStyle(el)
+return (
+(parseFloat(style.paddingTop) || 0) +
+(parseFloat(style.paddingBottom) || 0) +
+(parseFloat(style.borderTopWidth) || 0) +
+(parseFloat(style.borderBottomWidth) || 0)
+)
+} catch {
+return 0
+}
+}
+function lazyFenceKeepBottom(el, apply) {
+const scroller = el && el.closest ? el.closest('.mdr-content') : null
+if (!scroller) {
+apply()
+return
+}
+const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+const atBottom = max - scroller.scrollTop <= 2
+apply()
+if (!atBottom) return
+const after = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+if (Math.abs(scroller.scrollTop - after) > 0.5) scroller.scrollTop = after
+}
 function lazyFenceRelease(entry) {
 const el = entry && entry.el
 if (!el || !el.isConnected) return
 if (!el.classList.contains('mdr-md-diff-pending') && !el.classList.contains('mdr-md-code-pending')) {
 let height = entry.height || 0
+const chrome = lazyFenceChrome(el)
 try {
-height = el.offsetHeight || height
+height = el.getBoundingClientRect().height || height
 } catch {
 }
 entry.height = height
+lazyFenceKeepBottom(el, () => {
 el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
 el.innerHTML = ''
-if (height) el.style.height = `${height}px`
+const note = document.createElement('span')
+note.className = entry.kind === 'diff' ? 'mdr-md-diff-note' : 'mdr-md-code-note'
+note.textContent =
+entry.kind === 'diff' ? '▦ diff 块 · 滚动到可见时渲染' : '▦ 代码块 · 滚动到可见时渲染'
+el.appendChild(note)
+el.style.minHeight = ''
+const content = height ? Math.max(0, height - chrome) : 0
+if (content) el.style.height = `${content}px`
+})
 }
 }
 function lazyFenceRender(entry) {
@@ -1782,12 +1823,15 @@ if (typeof console !== 'undefined' && console && typeof console.warn === 'functi
 console.warn('[markdown-reader] fence render failed:', error)
 }
 }
+el.style.minHeight = ''
+el.style.height = ''
+lazyFenceKeepBottom(el, () => {
 el.classList.remove('mdr-md-diff-pending')
 el.classList.remove('mdr-md-code-pending')
 el.innerHTML = html
+})
 try {
-entry.height = el.offsetHeight || entry.height || 0
-if (entry.height) el.style.height = ''
+entry.height = el.getBoundingClientRect().height || entry.height || 0
 } catch {
 }
 }
@@ -1796,7 +1840,8 @@ const el = document.createElement('div')
 const isDiff = kind === 'diff'
 el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
 const rows = String(source || '').split('\n').length
-const height = Math.max(60, rows * LAZY_LINE_HEIGHT + 24)
+const line = isDiff ? LAZY_DIFF_ROW_HEIGHT : LAZY_CODE_LINE_HEIGHT
+const height = Math.max(60, rows * line)
 el.style.minHeight = `${height}px`
 const note = document.createElement('span')
 note.className = isDiff ? 'mdr-md-diff-note' : 'mdr-md-code-note'
