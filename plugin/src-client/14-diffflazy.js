@@ -29,8 +29,19 @@ const LAZY_FENCE_MARGIN = '900px'
  * restored from the cache (instantly) when it comes back.
  */
 const LAZY_KEEP_MARGIN = '300% 0px'
-/** One code line is about this tall. */
-const LAZY_LINE_HEIGHT = 19
+/**
+ * The rendered height of ONE line, per kind.
+ *
+ * The placeholder reserves the height of the block it stands in for, so the
+ * estimate has to match the RENDERED height exactly - otherwise the document
+ * height changes when the block renders, and at the bottom of the document
+ * that moves the page (the scroll position is clamped there).
+ *
+ * - code: `.mdr-md-code` is font-size 12.5px with line-height 1.55 → 19.375px
+ * - diff: every row is a `.mdr-cl` with min-height/line-height 20px → 20px
+ */
+const LAZY_CODE_LINE_HEIGHT = 19.375
+const LAZY_DIFF_ROW_HEIGHT = 20
 /** A code block with more lines than this is rendered lazily. */
 const LAZY_CODE_MIN_LINES = 30
 
@@ -51,7 +62,57 @@ function lazyFenceStop(rec) {
 }
 
 /**
- * Release a rendered block: back to the placeholder, keeping the exact height
+ * The box "chrome" of a fence block: padding + border.
+ *
+ * `getBoundingClientRect().height` and `offsetHeight` are BORDER-box heights,
+ * while `style.height` (and `style.min-height`) are CONTENT-box heights for
+ * these blocks. Writing a border-box number back as a content-box height
+ * makes the released placeholder TALLER than the rendered block by exactly
+ * its padding (+ border) - 24 px for a code block.
+ *
+ * That 24 px is the whole bug behind 「拉到最底下页面会上下抖动，看起来像有
+ * 东西反复加载卸载」: every release/render cycle changed the document height,
+ * so the scroll position (clamped at the bottom) moved, and the block was
+ * pushed across the observer's keep band, which released it again - release,
+ * render, release, render ...
+ */
+function lazyFenceChrome(el) {
+  try {
+    const style = window.getComputedStyle(el)
+    return (
+      (parseFloat(style.paddingTop) || 0) +
+      (parseFloat(style.paddingBottom) || 0) +
+      (parseFloat(style.borderTopWidth) || 0) +
+      (parseFloat(style.borderBottomWidth) || 0)
+    )
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Keep the view stable when a lazy block changes its height.
+ *
+ * At the bottom of a document the scroll position is CLAMPED to the document
+ * height, so any height change - even below the viewport - moves the whole
+ * page. While the user sits at the bottom, the bottom stays at the bottom.
+ */
+function lazyFenceKeepBottom(el, apply) {
+  const scroller = el && el.closest ? el.closest('.mdr-content') : null
+  if (!scroller) {
+    apply()
+    return
+  }
+  const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  const atBottom = max - scroller.scrollTop <= 2
+  apply()
+  if (!atBottom) return
+  const after = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  if (Math.abs(scroller.scrollTop - after) > 0.5) scroller.scrollTop = after
+}
+
+/**
+ * Release a rendered block: back to the placeholder, keeping the EXACT height
  * so the scroll position does not jump.
  */
 function lazyFenceRelease(entry) {
@@ -60,15 +121,31 @@ function lazyFenceRelease(entry) {
   if (!el.classList.contains('mdr-md-diff-pending') && !el.classList.contains('mdr-md-code-pending')) {
     // It is rendered: remember its height and empty it.
     let height = entry.height || 0
+    const chrome = lazyFenceChrome(el)
     try {
-      height = el.offsetHeight || height
+      height = el.getBoundingClientRect().height || height
     } catch {
       /* ignore */
     }
     entry.height = height
-    el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
-    el.innerHTML = ''
-    if (height) el.style.height = `${height}px`
+    lazyFenceKeepBottom(el, () => {
+      el.classList.add(entry.kind === 'diff' ? 'mdr-md-diff-pending' : 'mdr-md-code-pending')
+      el.innerHTML = ''
+      // Keep the note: a released block that is an empty hole reads as a
+      // rendering glitch, the note reads as "it is still loading".
+      const note = document.createElement('span')
+      note.className = entry.kind === 'diff' ? 'mdr-md-diff-note' : 'mdr-md-code-note'
+      note.textContent =
+        entry.kind === 'diff' ? '▦ diff 块 · 滚动到可见时渲染' : '▦ 代码块 · 滚动到可见时渲染'
+      el.appendChild(note)
+      // The first placeholder reserved an ESTIMATED height (min-height); drop
+      // it, otherwise it would win over the exact height written here.
+      el.style.minHeight = ''
+      // Border-box measured -> content-box written, so the placeholder ends
+      // up exactly as tall as the block it replaces.
+      const content = height ? Math.max(0, height - chrome) : 0
+      if (content) el.style.height = `${content}px`
+    })
   }
 }
 
@@ -107,12 +184,19 @@ function lazyFenceRender(entry) {
       console.warn('[markdown-reader] fence render failed:', error)
     }
   }
-  el.classList.remove('mdr-md-diff-pending')
-  el.classList.remove('mdr-md-code-pending')
-  el.innerHTML = html
+  // Drop the reserved placeholder height first: the real content decides the
+  // height now, and the exact height is measured afterwards.
+  el.style.minHeight = ''
+  el.style.height = ''
+  // The whole visual swap (class + content) happens inside the pinned
+  // section, so the document height never changes under the user's feet.
+  lazyFenceKeepBottom(el, () => {
+    el.classList.remove('mdr-md-diff-pending')
+    el.classList.remove('mdr-md-code-pending')
+    el.innerHTML = html
+  })
   try {
-    entry.height = el.offsetHeight || entry.height || 0
-    if (entry.height) el.style.height = ''
+    entry.height = el.getBoundingClientRect().height || entry.height || 0
   } catch {
     /* ignore */
   }
@@ -121,13 +205,18 @@ function lazyFenceRender(entry) {
 /**
  * The placeholder for a fenced block: the note plus a reserved height, so the
  * document height (and therefore the scrollbar) is already correct.
+ *
+ * The reserved height is the CONTENT height (min-height is a content-box
+ * length): the block's own padding and border are added on top of it, exactly
+ * as they are on the rendered block.
  */
 function lazyFencePlaceholder(source, kind) {
   const el = document.createElement('div')
   const isDiff = kind === 'diff'
   el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
   const rows = String(source || '').split('\n').length
-  const height = Math.max(60, rows * LAZY_LINE_HEIGHT + 24)
+  const line = isDiff ? LAZY_DIFF_ROW_HEIGHT : LAZY_CODE_LINE_HEIGHT
+  const height = Math.max(60, rows * line)
   el.style.minHeight = `${height}px`
   const note = document.createElement('span')
   note.className = isDiff ? 'mdr-md-diff-note' : 'mdr-md-code-note'
