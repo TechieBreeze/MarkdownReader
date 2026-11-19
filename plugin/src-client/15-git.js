@@ -377,6 +377,8 @@ async function selectGitBranch(key, path, branch, refresh, remember) {
     if (view.seq !== seq) return
     if (file && file.content != null) {
       view.branchContent = String(file.content)
+      // The branch is not in the local clone: the file came from the remote.
+      if (file.source === 'remote') view.hint = `ℹ 分支 ${effective} 来自远程仓库`
     } else {
       view.branchContent = null
       view.hint = `⚠ 分支 ${effective} 不存在此文件`
@@ -435,7 +437,12 @@ async function selectGitCommit(key, path, commit, refresh) {
     view.hunks = Array.isArray(diff.hunks) ? diff.hunks : []
     view.fileLines = file && file.content != null ? String(file.content).split('\n') : null
     if (view.hunks.length === 0) {
-      view.hint = '⚠ 此提交未修改该文件'
+      // A commit that came from the remote has no parent here, so its patch is
+      // empty - that is NOT "this commit did not touch the file".
+      view.hint =
+        diff && diff.source === 'remote'
+          ? '⚠ 该提交来自远程仓库，未取回父提交，不显示改动'
+          : '⚠ 此提交未修改该文件'
     } else {
       view.stats = countDiffStats(view.hunks)
     }

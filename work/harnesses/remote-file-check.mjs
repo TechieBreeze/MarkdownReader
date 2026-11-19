@@ -176,7 +176,9 @@ console.log('\n[3] the wiring (source level)')
 const mdSource = fs.readFileSync(path.join(SRC, '10-markdown.js'), 'utf8')
 const appSource = fs.readFileSync(path.join(SRC, '50-app.js'), 'utf8')
 const modalSource = fs.readFileSync(path.join(SRC, '24-modal.js'), 'utf8')
+const gitSource = fs.readFileSync(path.join(SRC, '15-git.js'), 'utf8')
 const apiSource = fs.readFileSync(path.join(ROOT, 'plugin', 'lib', 'api.js'), 'utf8')
+const linksSource = fs.readFileSync(path.join(ROOT, 'plugin', 'lib', 'gitlinks.js'), 'utf8')
 check('the markdown view marks unresolved links', /item\.anchor\.dataset\.remote = item\.url/.test(mdSource))
 check('the click handler knows the remote links', /a\[data-path\], a\[data-remote\]/.test(appSource))
 check('the click opens the popup with the remote URL', /setModalRequest\(\{ path: '', line: .*remoteUrl: remote \}\)/.test(appSource))
@@ -185,6 +187,22 @@ check('the popup loads the remote file', /fetchJson\('\/api\/git\/remote-file', 
 check('a remote file never borrows a local branch view', /requestRemote \? 'remote:' \+ displayPath : displayPath/.test(modalSource))
 check('a remote file cannot become a tab', /if \(!view \|\| !view\.path \|\| isRemote\) return/.test(modalSource))
 check('the Host serves the endpoint', /\/api\/git\/remote-file/.test(apiSource))
+
+console.log('\n[4] a link-heavy document: the URL list goes into the BODY')
+check('the client posts the URL list', /postJson\('\/api\/git\/resolve', \{ urls: unique, path: mdPath \}\)/.test(mdSource))
+check('the Host accepts the POST', /\/api\/git\/resolve' && req\.method === 'POST'/.test(apiSource))
+check(
+  'the POST reads the URLs from the body',
+  /Array\.isArray\(body\.urls\)/.test(apiSource),
+)
+
+console.log('\n[5] the remote is authoritative')
+check('a ref that the clone lacks is looked up on the remote', /remoteRefKind/.test(linksSource))
+check('a pinned hash is always a commit', /\^\[0-9a-f\]\{7,40\}\$\/i\.test\(ref\)/.test(linksSource))
+check('the git file endpoint falls back to the remote', /readRemoteFile\(repo, commit, relInRepo\)/.test(apiSource))
+check('the git diff endpoint falls back to the remote', /readRemotePatch/.test(apiSource))
+check('the requested branch is not replaced by the local one', /const branch = branchParam \|\| currentBranch/.test(apiSource))
+check('the UI says when the file came from the remote', /来自远程仓库/.test(gitSource))
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nall remote file checks passed')
 if (failures) process.exitCode = 1

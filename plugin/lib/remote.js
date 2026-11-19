@@ -291,6 +291,82 @@ async function readFileAtRef(repo, ref, file) {
 }
 
 /**
+ * Fetch a ref into the cached bare repository and return its sha.
+ *
+ * The cached repository is a scratch clone: a `--depth 1` fetch there is fine
+ * (it is what makes the fetch cheap) and the USER's clone is never touched.
+ */
+async function fetchIntoCache(dir, ref) {
+  const known = await gitQuiet(dir, ['cat-file', '-e', `${ref}^{commit}`], 10000)
+  if (known) {
+    const sha = await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], 10000)
+    if (sha) return sha
+  }
+  try {
+    await git(dir, ['fetch', '--depth', '1', '--quiet', 'origin', ref], 120000)
+  } catch {
+    return null
+  }
+  return (await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', 'FETCH_HEAD'], 10000)) || null
+}
+
+/**
+ * The cached bare repository of a local repository's project, with the ref
+ * fetched into it.
+ *
+ * @returns {Promise<{dir:string, sha:string}|null>}
+ */
+export async function remoteRepoDir(repoDir, ref) {
+  if (!repoDir) return null
+  const origin = await originOf(repoDir)
+  const parts = originParts(origin)
+  if (!parts) return null
+  const dir = await ensureCacheRepo(parts.host, parts.projectPath, origin)
+  if (!dir) return null
+  if (!ref) return { dir, sha: '' }
+  const sha = await fetchIntoCache(dir, ref)
+  if (!sha) return null
+  return { dir, sha }
+}
+
+/**
+ * Read a file at a ref that the local repository does NOT have - from the
+ * REMOTE, without touching the local repository.
+ *
+ * The local clone is left alone on purpose: `git fetch --depth 1` into it would
+ * write `.git/shallow` and turn the user's clone into a SHALLOW repository.
+ * The file is read from the cached bare repository of the project instead.
+ *
+ * @returns {Promise<string|null>} the file content, null when it is not there.
+ */
+export async function readRemoteFile(repoDir, ref, file) {
+  if (!repoDir || !ref || !file) return null
+  const remote = await remoteRepoDir(repoDir, ref)
+  if (!remote) return null
+  try {
+    return await git(remote.dir, ['show', `${remote.sha}:${file}`], 30000)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The patch of a commit that the local repository does not have.
+ *
+ * @returns {Promise<string|null>}
+ */
+export async function readRemotePatch(repoDir, ref, file) {
+  if (!repoDir || !ref) return null
+  const remote = await remoteRepoDir(repoDir, ref)
+  if (!remote) return null
+  try {
+    return await git(remote.dir, ['show', '--format=', '--patch', '--unified=3', remote.sha, '--', file], 60000)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Fetch a file from a remote repository.
  *
  * @returns {Promise<{ok:boolean, error?:string, content?:string, path?:string,

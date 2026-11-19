@@ -88,7 +88,13 @@ async function refExists(repo, ref) {
  * picked (`我切test分支…打开还是给我开的ck分支`). A ref only counts as a branch
  * when it really is one.
  *
- * @returns {'branch'|'tag'|'commit'|''} '' when the ref does not resolve.
+ * THE REMOTE IS AUTHORITATIVE (user: 「尽可能以链接指向的远程仓库为准」): a ref
+ * that the local clone does not have may still exist on the remote, and a
+ * pinned commit is not a ref at all - `ls-remote` cannot list it, so a hash is
+ * always treated as a commit and the file is fetched from the remote when the
+ * local object store does not have it.
+ *
+ * @returns {'branch'|'tag'|'commit'|''} '' when the ref cannot be used at all.
  */
 async function refKind(repo, ref) {
   if (!ref) return ''
@@ -109,9 +115,25 @@ async function refKind(repo, ref) {
     if (branches.includes(ref) || (resolved !== ref && branches.includes(resolved))) kind = 'branch'
     else if (tags.includes(ref)) kind = 'tag'
     else kind = 'commit'
+  } else if (/^[0-9a-f]{7,40}$/i.test(ref)) {
+    // A pinned commit that the clone does not have: it is still a commit, and
+    // the file is fetched from the remote when it is needed.
+    kind = 'commit'
+  } else {
+    // A branch the clone does not have may exist on the remote.
+    kind = await remoteRefKind(repo, ref)
   }
   refCache.set(key, kind)
   return kind
+}
+
+/** Is this ref a branch or a tag ON THE REMOTE? */
+async function remoteRefKind(repo, ref) {
+  const heads = await gitQuiet(repo, ['ls-remote', '--heads', 'origin', ref], 20000)
+  if (heads) return 'branch'
+  const tags = await gitQuiet(repo, ['ls-remote', '--tags', 'origin', ref], 20000)
+  if (tags) return 'tag'
+  return ''
 }
 
 function projectCandidates(state, project, preferRootName) {
