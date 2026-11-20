@@ -136,7 +136,17 @@ async function remoteRefKind(repo, ref) {
   return ''
 }
 
-function projectCandidates(state, project, preferRootName) {
+/**
+ * The directories that may hold the repository of a remote project.
+ *
+ * The usual layouts first (`<root>/gits/<project>`, `<root>/<project>`); only
+ * when they have nothing, the tree is walked for a nested repository (bounded
+ * - the walk is the expensive part).
+ *
+ * Exported for the remote-file read: it needs the same repository, and it
+ * must NOT walk the whole workspace to find it.
+ */
+export function projectCandidates(state, project, preferRootName) {
   const candidates = []
   const add = (dir) => {
     try {

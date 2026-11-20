@@ -125,7 +125,16 @@ for (const dir of targets) {
         return
       }
       // nothing of the patch may fall out of the hunk into a header row
-      const stray = rows.filter((row) => row.kind === 'meta' && !/^(diff --git |--- |\+\+\+ |index )/.test(row.text))
+      // The header lines of a git diff are more than `---`/`+++`: the extended
+      // headers (`new file mode`, `rename from`, `similarity index`, ...) are
+      // headers too - a body line is one that is none of them.
+      const stray = rows.filter(
+        (row) =>
+          row.kind === 'meta' &&
+          !/^(diff --git |--- |\+\+\+ |old mode |new mode |new file mode |deleted file mode |copy from |copy to |rename from |rename to |similarity index |dissimilarity index |index |Binary files )/.test(
+            row.text,
+          ),
+      )
       if (stray.length) errors.push(`${label}: ${stray.length} body line(s) turned into header rows`)
       // the declared counts are a hint: a wrong count is worth reporting
       for (const header of source.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm)) {
