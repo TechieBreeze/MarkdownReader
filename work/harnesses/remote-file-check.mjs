@@ -183,7 +183,7 @@ check('the markdown view marks unresolved links', /item\.anchor\.dataset\.remote
 check('the click handler knows the remote links', /a\[data-path\], a\[data-remote\]/.test(appSource))
 check('the click opens the popup with the remote URL', /setModalRequest\(\{ path: '', line: .*remoteUrl: remote \}\)/.test(appSource))
 check('the popup accepts a remote request', /!request\.path && !request\.remoteUrl/.test(modalSource))
-check('the popup loads the remote file', /fetchJson\('\/api\/git\/remote-file', \{ url: remote \}\)/.test(modalSource))
+check('the popup loads the remote file', /fetchJsonWithTimeout\('\/api\/git\/remote-file', \{ url: remote \}/.test(modalSource))
 check('a remote file never borrows a local branch view', /requestRemote \? 'remote:' \+ displayPath : displayPath/.test(modalSource))
 check('a remote file cannot become a tab', /if \(!view \|\| !view\.path \|\| isRemote\) return/.test(modalSource))
 check('the Host serves the endpoint', /\/api\/git\/remote-file/.test(apiSource))

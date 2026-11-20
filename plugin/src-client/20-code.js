@@ -1202,16 +1202,16 @@ function CodeGitInfo(props) {
   const meta = view.commitMeta
   const parts = []
   if (view.commit) {
-    parts.push(h('span', { className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
+    parts.push(h('span', { key: 'hash', className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
     if (meta) {
-      parts.push(h('span', { className: 'mdr-git-author' }, meta.author))
-      parts.push(h('span', { className: 'mdr-git-date' }, meta.date))
-      parts.push(h('span', { className: 'mdr-git-subject', title: meta.subject }, meta.subject))
+      parts.push(h('span', { key: 'author', className: 'mdr-git-author' }, meta.author))
+      parts.push(h('span', { key: 'date', className: 'mdr-git-date' }, meta.date))
+      parts.push(h('span', { key: 'subject', className: 'mdr-git-subject', title: meta.subject }, meta.subject))
     }
   }
-  if (view.loading) parts.push(h('span', { className: 'mdr-git-stat' }, '加载中…'))
-  else if (view.hint) parts.push(h('span', { className: 'mdr-git-stat mdr-git-note' }, view.hint))
-  else if (view.commit) parts.push(h('span', { className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
+  if (view.loading) parts.push(h('span', { key: 'loading', className: 'mdr-git-stat' }, '加载中…'))
+  else if (view.hint) parts.push(h('span', { key: 'hint', className: 'mdr-git-stat mdr-git-note' }, view.hint))
+  else if (view.commit) parts.push(h('span', { key: 'stat', className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
   return h('div', { className: 'mdr-git-info' }, parts)
 }
 

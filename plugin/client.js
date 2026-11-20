@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "223c9668af72";
+    const BUILD_ID = "c816b80eb0cf";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -3320,16 +3320,16 @@ const { view } = props
 const meta = view.commitMeta
 const parts = []
 if (view.commit) {
-parts.push(h('span', { className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
+parts.push(h('span', { key: 'hash', className: 'mdr-git-hash' }, meta ? meta.short : String(view.commit).slice(0, 7)))
 if (meta) {
-parts.push(h('span', { className: 'mdr-git-author' }, meta.author))
-parts.push(h('span', { className: 'mdr-git-date' }, meta.date))
-parts.push(h('span', { className: 'mdr-git-subject', title: meta.subject }, meta.subject))
+parts.push(h('span', { key: 'author', className: 'mdr-git-author' }, meta.author))
+parts.push(h('span', { key: 'date', className: 'mdr-git-date' }, meta.date))
+parts.push(h('span', { key: 'subject', className: 'mdr-git-subject', title: meta.subject }, meta.subject))
 }
 }
-if (view.loading) parts.push(h('span', { className: 'mdr-git-stat' }, '加载中…'))
-else if (view.hint) parts.push(h('span', { className: 'mdr-git-stat mdr-git-note' }, view.hint))
-else if (view.commit) parts.push(h('span', { className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
+if (view.loading) parts.push(h('span', { key: 'loading', className: 'mdr-git-stat' }, '加载中…'))
+else if (view.hint) parts.push(h('span', { key: 'hint', className: 'mdr-git-stat mdr-git-note' }, view.hint))
+else if (view.commit) parts.push(h('span', { key: 'stat', className: 'mdr-git-stat' }, `+${view.stats.add} −${view.stats.del} 行`))
 return h('div', { className: 'mdr-git-info' }, parts)
 }
 const gitTabViewApplied = new Map()
@@ -3718,6 +3718,14 @@ function readModalScroll(card) {
 const body = card && card.querySelector ? card.querySelector('.mdr-code-body') : null
 return body ? body.scrollTop : 0
 }
+const REMOTE_READ_TIMEOUT_MS = 45000
+function fetchJsonWithTimeout(endpoint, params, timeoutMs) {
+let timer = 0
+const timeout = new Promise((_resolve, reject) => {
+timer = setTimeout(() => reject(new Error(`取线上文件超时（${Math.round(timeoutMs / 1000)} 秒）`)), timeoutMs)
+})
+return Promise.race([fetchJson(endpoint, params), timeout]).finally(() => clearTimeout(timer))
+}
 function CodeModalInner(props) {
 const { request, onClose, onOpenTab, onOpen, searchBar, searchOpen, onCloseSearch } = props
 const requestPath = String((request && request.path) || '')
@@ -3726,7 +3734,7 @@ const requestBranch = String((request && request.branch) || '')
 const requestCommit = String((request && request.commit) || '')
 const requestRefCommit = String((request && request.refCommit) || '')
 const requestRemote = String((request && request.remoteUrl) || '')
-const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRemote}`
+const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRefCommit}\u0000${requestRemote}`
 const [view, setView] = React.useState(() => ({
 path: requestPath,
 line: requestLine,
@@ -3763,7 +3771,7 @@ error: '',
 remote: remote ? { url: remote, repo: '', ref: '' } : null,
 })
 if (remote) {
-fetchJson('/api/git/remote-file', { url: remote })
+fetchJsonWithTimeout('/api/git/remote-file', { url: remote }, REMOTE_READ_TIMEOUT_MS)
 .then((payload) => {
 if (seqRef.current !== seq) return
 if (!payload || !payload.ok) {
@@ -3859,13 +3867,11 @@ setNote('')
 setDefBar(null)
 pendingGitRef.current = ''
 pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
-loadFile(
-requestPath,
-requestLine,
-requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
-requestRemote,
-)
-}, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRemote, loadFile])
+const requestedView = requestBranch || requestCommit || requestRefCommit
+? { branch: requestBranch || '', commit: requestCommit || requestRefCommit || '' }
+: null
+loadFile(requestPath, requestLine, requestedView, requestRemote)
+}, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRefCommit, requestRemote, loadFile])
 if (view) currentRef.current = { path: view.path, line: view.line }
 const navigateInPlace = React.useCallback(
 (path, line, gitView) => {
@@ -4066,7 +4072,11 @@ h('button', { key: 'close', type: 'button', className: 'mdr-cmodal-btn', title: 
 ]
 let body = null
 if (view && view.loading) {
-body = h('div', { className: 'mdr-cmodal-state' }, '加载中…')
+body = h(
+'div',
+{ className: 'mdr-cmodal-state' },
+isRemote ? '正在从线上仓库取这个文件…（本地没有副本，稍等片刻）' : '加载中…',
+)
 } else if (!view || view.error) {
 body = h(
 'div',

@@ -48,6 +48,24 @@ function readModalScroll(card) {
 }
 
 /**
+ * The remote read must never leave the popup spinning forever.
+ *
+ * The Host reads the file through git, and a remote that is slow or
+ * unreachable can take a while - but the user has to see an END state (an
+ * error with a way out), not an endless 「加载中…」.
+ */
+const REMOTE_READ_TIMEOUT_MS = 45000
+
+/** fetchJson with a deadline: the promise rejects when the time is up. */
+function fetchJsonWithTimeout(endpoint, params, timeoutMs) {
+  let timer = 0
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`取线上文件超时（${Math.round(timeoutMs / 1000)} 秒）`)), timeoutMs)
+  })
+  return Promise.race([fetchJson(endpoint, params), timeout]).finally(() => clearTimeout(timer))
+}
+
+/**
  * Inner modal: mounted only while a request exists (the outer CodeModal returns
  * null otherwise), so every mount is a fresh session with an empty back stack.
  */
@@ -63,7 +81,7 @@ function CodeModalInner(props) {
   const requestRefCommit = String((request && request.refCommit) || '')
   // 线上仓库链接（本地没有这个文件）：代码从仓库取回来再显示。
   const requestRemote = String((request && request.remoteUrl) || '')
-  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRemote}`
+  const reqKey = `${requestPath}\u0000${requestLine}\u0000${requestBranch}\u0000${requestCommit}\u0000${requestRefCommit}\u0000${requestRemote}`
 
   const [view, setView] = React.useState(() => ({
     path: requestPath,
@@ -104,7 +122,7 @@ function CodeModalInner(props) {
     // A repository link without a local file: the code is fetched from the
     // repository (through git) and shown here, like any other file.
     if (remote) {
-      fetchJson('/api/git/remote-file', { url: remote })
+      fetchJsonWithTimeout('/api/git/remote-file', { url: remote }, REMOTE_READ_TIMEOUT_MS)
         .then((payload) => {
           if (seqRef.current !== seq) return
           if (!payload || !payload.ok) {
@@ -207,13 +225,14 @@ function CodeModalInner(props) {
     // The git-adapted request view is applied once, when THIS request's file
     // text is in. In-place Ctrl+click navigation later must not re-apply it.
     pendingGitRef.current = requestBranch || requestCommit ? reqKey : ''
-    loadFile(
-      requestPath,
-      requestLine,
-      requestBranch || requestCommit ? { branch: requestBranch || '', commit: requestCommit || '' } : null,
-      requestRemote,
-    )
-  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRemote, loadFile])
+    // A link that pins a COMMIT (`/-/blob/<sha>/…`) names a version the
+    // working tree may not have: the fallback read must ask for THAT commit,
+    // otherwise the popup ends in 「该文件不在工作区内」.
+    const requestedView = requestBranch || requestCommit || requestRefCommit
+      ? { branch: requestBranch || '', commit: requestCommit || requestRefCommit || '' }
+      : null
+    loadFile(requestPath, requestLine, requestedView, requestRemote)
+  }, [reqKey, requestPath, requestLine, requestBranch, requestCommit, requestRefCommit, requestRemote, loadFile])
 
   if (view) currentRef.current = { path: view.path, line: view.line }
 
@@ -461,7 +480,13 @@ function CodeModalInner(props) {
 
   let body = null
   if (view && view.loading) {
-    body = h('div', { className: 'mdr-cmodal-state' }, '加载中…')
+    body = h(
+      'div',
+      { className: 'mdr-cmodal-state' },
+      // A remote read really goes to the server (git), so say so: a silent
+      // spinner reads as "it is stuck".
+      isRemote ? '正在从线上仓库取这个文件…（本地没有副本，稍等片刻）' : '加载中…',
+    )
   } else if (!view || view.error) {
     body = h(
       'div',

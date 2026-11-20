@@ -104,3 +104,5 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | 提交 diff 视图（hunk 解析 + 行序列，行号/内容必须对得上） | `work/harnesses/git-diff-check.mjs` |
 | markdown ```diff 代码块（行模型/分段/转义/无幻影行/无行号列） | `work/harnesses/diff-fence-check.mjs` |
 | markdown ```diff 真实渲染（headless Chrome：无行号列 + 有语法高亮） | `work/harnesses/diff-fence-render-check.mjs` |
+| 线上文件读取（**不改用户的 clone**：不产生 `.git/shallow`、不 fetch） | `work/harnesses/remote-read-check.mjs` |
+| 线上代码弹窗端到端（headless Chrome + 真 React：真的打开代码、跳到那一行） | `work/harnesses/popup-remote-check.mjs`（需要 `work/tmp-react`：`cd work && pnpm add react@18 react-dom@18`） |

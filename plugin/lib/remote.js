@@ -32,6 +32,7 @@ import path from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { allGitRepos } from './defs.js'
+import { projectCandidates } from './gitlinks.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -161,6 +162,85 @@ async function workspaceRepos(state) {
   return repos
 }
 
+/** Is this directory a git repository? */
+function isGitRepo(dir) {
+  try {
+    return fs.existsSync(path.join(dir, '.git'))
+  } catch {
+    return false
+  }
+}
+
+/** The directories of a root, or an empty list. */
+function readDirs(dir) {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(dir, entry.name))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The URL of a project WITH the credentials of a repository of that host.
+ *
+ * @returns {Promise<string|null>} null when the origin carries no credentials.
+ */
+function authenticatedUrlFor(origin, host, projectPath) {
+  const cred = credentialsOf(origin)
+  if (!cred) return null
+  return `https://${encodeURIComponent(cred.user)}:${encodeURIComponent(cred.pass)}@${host}/${projectPath}.git`
+}
+
+/**
+ * The local clone of a project, and the credentials of its host.
+ *
+ * CHEAP ON PURPOSE: the usual layouts (`<root>/gits/<project>`,
+ * `<root>/<project>`) are tried first. The full workspace discovery walks the
+ * whole tree and takes ~20 seconds on a big workspace - the popup would spin
+ * for that long on the first click (and every five minutes, when the
+ * discovery cache expires). That walk is the last resort only.
+ *
+ * @returns {Promise<{local:{dir:string,origin:string}|null, authUrl:string|null,
+ *   hostKnown:boolean}>}
+ */
+async function findLocalProject(state, project, projectPath, host) {
+  let local = null
+  let authUrl = null
+  let hostKnown = false
+  for (const dir of projectCandidates(state, project, '')) {
+    if (!isGitRepo(dir)) continue
+    const origin = await originOf(dir)
+    const parts = originParts(origin)
+    if (!parts || parts.host !== host) continue
+    hostKnown = true
+    if (!authUrl) authUrl = authenticatedUrlFor(origin, host, projectPath)
+    if (parts.projectPath === projectPath || parts.projectPath.split('/').pop() === project) {
+      local = { dir, origin }
+      break
+    }
+  }
+  if (local || authUrl) return { local, authUrl, hostKnown }
+  // The project itself is not in the workspace: another repository of the
+  // same host carries the credentials. The shallow layouts are tried first.
+  for (const root of state.roots()) {
+    for (const sub of ['gits', '']) {
+      for (const dir of readDirs(path.join(root.path, sub))) {
+        if (!isGitRepo(dir)) continue
+        const origin = await originOf(dir)
+        const parts = originParts(origin)
+        if (!parts || parts.host !== host) continue
+        hostKnown = true
+        authUrl = authenticatedUrlFor(origin, host, projectPath)
+        if (authUrl) return { local: null, authUrl, hostKnown }
+      }
+    }
+  }
+  return { local: null, authUrl: null, hostKnown }
+}
+
 /**
  * The branch/tag names of a repository.
  *
@@ -204,16 +284,19 @@ async function remoteRefs(repo) {
  *
  * A ref may contain slashes (`feature/x`), so the LONGEST prefix that is a
  * known branch/tag wins. A pinned commit is a hash in the first segment.
+ *
+ * A KNOWN ref wins over a hash-shaped first segment: a branch may be named
+ * like a short sha (`a1b2c3d`), and that branch is not a commit.
  */
 export function splitRefAndFile(tail, refs) {
   const segs = String(tail || '').split('/').filter(Boolean)
   if (segs.length < 2) return null
-  if (/^[0-9a-f]{7,40}$/i.test(segs[0])) return { ref: segs[0], file: segs.slice(1).join('/') }
   const known = refs instanceof Set ? refs : new Set(refs || [])
   for (let k = Math.min(segs.length - 1, 8); k >= 1; k -= 1) {
     const ref = segs.slice(0, k).join('/')
     if (known.has(ref)) return { ref, file: segs.slice(k).join('/') }
   }
+  if (/^[0-9a-f]{7,40}$/i.test(segs[0])) return { ref: segs[0], file: segs.slice(1).join('/') }
   return null
 }
 
@@ -232,9 +315,8 @@ async function authenticatedUrl(repos, host, projectPath) {
   for (const repo of repos) {
     const parts = originParts(repo.origin)
     if (!parts || parts.host !== host) continue
-    const cred = credentialsOf(repo.origin)
-    if (!cred) continue
-    return `https://${encodeURIComponent(cred.user)}:${encodeURIComponent(cred.pass)}@${host}/${projectPath}.git`
+    const url = authenticatedUrlFor(repo.origin, host, projectPath)
+    if (url) return url
   }
   return null
 }
@@ -266,24 +348,51 @@ async function ensureCacheRepo(host, projectPath, authUrl) {
   return dir
 }
 
-/** Read a file out of a git repository at a ref. */
-async function readFileAtRef(repo, ref, file) {
-  if (!repo) return null
+/**
+ * Read a file out of a git repository at a ref - WITHOUT any network access.
+ *
+ * @returns {Promise<string|null>} the file content, null when it is not there.
+ */
+async function showAtRef(repo, ref, file) {
+  if (!repo || !ref || !file) return null
+  try {
+    return await git(repo, ['show', `${ref}:${file}`], 30000)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Read a file out of a git repository at a ref.
+ *
+ * ONLY EVER CALLED WITH A CACHE REPOSITORY. The user's clone must not be
+ * fetched into: `git fetch --depth 1` writes `.git/shallow` and turns the
+ * clone into a shallow repository (its history is then truncated for every
+ * git command the user runs), and the fetch itself takes seconds on a
+ * corporate link - the popup then spins for minutes.
+ *
+ * The order is therefore: read what is already there, and only fetch into the
+ * scratch repository when the object is really missing.
+ */
+async function readFileAtRef(dir, ref, file) {
+  if (!dir) return null
+  const local = await showAtRef(dir, ref, file)
+  if (local != null) return local
   // The object may already be there (the branch was fetched before).
-  const known = await gitQuiet(repo, ['cat-file', '-e', `${ref}^{commit}`], 10000)
+  const known = await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], 10000)
   if (!known) {
     try {
-      await git(repo, ['fetch', '--depth', '1', '--quiet', 'origin', ref], 120000)
+      await git(dir, ['fetch', '--depth', '1', '--quiet', 'origin', ref], 120000)
     } catch {
       return null
     }
   }
   try {
-    return await git(repo, ['show', `${ref}:${file}`], 30000)
+    return await git(dir, ['show', `${ref}:${file}`], 30000)
   } catch {
     // The ref was just fetched: FETCH_HEAD holds it.
     try {
-      return await git(repo, ['show', `FETCH_HEAD:${file}`], 30000)
+      return await git(dir, ['show', `FETCH_HEAD:${file}`], 30000)
     } catch {
       return null
     }
@@ -297,15 +406,24 @@ async function readFileAtRef(repo, ref, file) {
  * (it is what makes the fetch cheap) and the USER's clone is never touched.
  */
 async function fetchIntoCache(dir, ref) {
-  const known = await gitQuiet(dir, ['cat-file', '-e', `${ref}^{commit}`], 10000)
-  if (known) {
-    const sha = await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], 10000)
-    if (sha) return sha
-  }
+  // `git cat-file -e` prints NOTHING when the object is there, so it cannot be
+  // used as an existence check (the old code always fetched - a network round
+  // trip on every read, and a `.git/shallow` in the user's clone).
+  const known = await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], 10000)
+  if (known) return known
   try {
     await git(dir, ['fetch', '--depth', '1', '--quiet', 'origin', ref], 120000)
   } catch {
-    return null
+    // A server that does not allow fetching an arbitrary SHA cannot serve a
+    // pinned commit this way: fetch the branch tips instead and look for it.
+    if (!/^[0-9a-f]{7,40}$/i.test(String(ref || ''))) return null
+    try {
+      await git(dir, ['fetch', '--depth', '1', '--quiet', 'origin', '+refs/heads/*:refs/heads/*'], 180000)
+    } catch {
+      return null
+    }
+    const found = await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], 10000)
+    return found || null
   }
   return (await gitQuiet(dir, ['rev-parse', '--verify', '--quiet', 'FETCH_HEAD'], 10000)) || null
 }
@@ -330,8 +448,8 @@ export async function remoteRepoDir(repoDir, ref) {
 }
 
 /**
- * Read a file at a ref that the local repository does NOT have - from the
- * REMOTE, without touching the local repository.
+ * Read a file at a ref - from the local object store when it has it, from the
+ * REMOTE otherwise, and NEVER by fetching into the local clone.
  *
  * The local clone is left alone on purpose: `git fetch --depth 1` into it would
  * write `.git/shallow` and turn the user's clone into a SHALLOW repository.
@@ -341,6 +459,10 @@ export async function remoteRepoDir(repoDir, ref) {
  */
 export async function readRemoteFile(repoDir, ref, file) {
   if (!repoDir || !ref || !file) return null
+  // The clone often HAS the object (a pinned commit of a branch the user has):
+  // read it there first - no network, no fetch, no mutation.
+  const known = await showAtRef(repoDir, ref, file)
+  if (known != null) return known
   const remote = await remoteRepoDir(repoDir, ref)
   if (!remote) return null
   try {
@@ -357,6 +479,13 @@ export async function readRemoteFile(repoDir, ref, file) {
  */
 export async function readRemotePatch(repoDir, ref, file) {
   if (!repoDir || !ref) return null
+  // The clone may have the commit already - then the patch is local too.
+  try {
+    const local = await git(repoDir, ['show', '--format=', '--patch', '--unified=3', ref, '--', file], 60000)
+    if (local && local.trim()) return local
+  } catch {
+    /* not in the local object store */
+  }
   const remote = await remoteRepoDir(repoDir, ref)
   if (!remote) return null
   try {
@@ -376,62 +505,65 @@ export async function fetchRemoteFile(state, url) {
   const parsed = parseRemoteBlobUrl(url)
   if (!parsed) return { ok: false, error: '无法识别的仓库链接' }
   const { host, projectPath, project, tail, line } = parsed
-  const repos = await workspaceRepos(state)
-  // The local repository of the same project, if the workspace has one, and
-  // the credentials of that host (the local repo may be another project).
-  let local = null
-  let hostKnown = false
-  for (const repo of repos) {
-    const parts = originParts(repo.origin)
-    if (!parts || parts.host !== host) continue
-    hostKnown = true
-    if (parts.projectPath === projectPath || parts.projectPath.split('/').pop() === project) {
-      local = repo
-      break
+  // The local clone of that project and the credentials of its host - found
+  // through the usual layouts, WITHOUT walking the whole workspace.
+  const found = await findLocalProject(state, project, projectPath, host)
+  let local = found.local
+  let authUrl = found.authUrl
+  if (!found.hostKnown) {
+    // Last resort: the full discovery (slow, cached) may still know a
+    // repository of that host.
+    const repos = await workspaceRepos(state)
+    for (const repo of repos) {
+      const parts = originParts(repo.origin)
+      if (!parts || parts.host !== host) continue
+      authUrl = authUrl || (await authenticatedUrl(repos, host, projectPath))
+      if (parts.projectPath === projectPath || parts.projectPath.split('/').pop() === project) {
+        local = { dir: repo.dir, origin: repo.origin }
+        break
+      }
     }
+    if (!authUrl && !local) return { ok: false, error: `工作区里没有 ${host} 的仓库，无法取线上文件` }
   }
-  if (!hostKnown) return { ok: false, error: `工作区里没有 ${host} 的仓库，无法取线上文件` }
 
   let cacheDir = null
+  // The ref of the link. The LOCAL branch list is free; the remote list (a
+  // network round trip) is only consulted when the local one does not know
+  // the ref. A pinned COMMIT needs no list at all.
   let refs = new Set()
+  let split = null
   if (local) {
-    // The LOCAL branches are free; the remote list is the fallback for a ref
-    // the clone does not have (a branch that was created after the clone).
     refs = await localRefs(local.dir)
-    const localSplit = splitRefAndFile(tail, refs)
-    if (!localSplit) {
+    split = splitRefAndFile(tail, refs)
+    if (!split) {
       refs = await remoteRefs(local.dir)
+      split = splitRefAndFile(tail, refs)
     }
   } else {
-    const authUrl = await authenticatedUrl(repos, host, projectPath)
     if (!authUrl) return { ok: false, error: `工作区里没有 ${host} 的凭据，无法取线上文件` }
     cacheDir = await ensureCacheRepo(host, projectPath, authUrl)
     if (!cacheDir) return { ok: false, error: '无法创建线上文件缓存' }
     refs = await remoteRefs(cacheDir)
+    split = splitRefAndFile(tail, refs)
   }
-  const split = splitRefAndFile(tail, refs)
   if (!split) return { ok: false, error: '无法识别链接里的版本（ref）' }
   const { ref, file } = split
 
-  let content = null
-  let source = ''
+  // The LOCAL clone first, and WITHOUT any network: the clone often has the
+  // object already (a pinned commit of a branch the user has). A fetch here
+  // would be wrong twice over - it writes `.git/shallow` into the user's
+  // repository, and it costs seconds the popup has to wait for.
   if (local) {
-    source = 'local'
-    content = await readFileAtRef(local.dir, ref, file)
+    const content = await showAtRef(local.dir, ref, file)
+    if (content != null) {
+      return { ok: true, content, path: file, ref, repo: projectPath, line: line || 0, source: 'local' }
+    }
   }
-  if (content == null && cacheDir) {
-    source = 'remote'
-    content = await readFileAtRef(cacheDir, ref, file)
-  }
-  if (content == null) {
-    // No local repository of that project: fetch it into the cache.
-    const authUrl = await authenticatedUrl(repos, host, projectPath)
-    if (!authUrl) return { ok: false, error: `工作区里没有 ${host} 的凭据，无法取线上文件` }
-    cacheDir = cacheDir || (await ensureCacheRepo(host, projectPath, authUrl))
-    if (!cacheDir) return { ok: false, error: '无法创建线上文件缓存' }
-    source = 'remote'
-    content = await readFileAtRef(cacheDir, ref, file)
-  }
+  // Not in the clone: fetch it into the SCRATCH repository of the project.
+  if (!authUrl) return { ok: false, error: `工作区里没有 ${host} 的凭据，无法取线上文件` }
+  cacheDir = cacheDir || (await ensureCacheRepo(host, projectPath, authUrl))
+  if (!cacheDir) return { ok: false, error: '无法创建线上文件缓存' }
+  const content = await readFileAtRef(cacheDir, ref, file)
   if (content == null) return { ok: false, error: `线上仓库里没有 ${ref}:${file}` }
-  return { ok: true, content, path: file, ref, repo: projectPath, line: line || 0, source }
+  return { ok: true, content, path: file, ref, repo: projectPath, line: line || 0, source: 'remote' }
 }
