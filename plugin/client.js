@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "c816b80eb0cf";
+    const BUILD_ID = "0c0ab9844e32";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1832,9 +1832,9 @@ if (typeof console !== 'undefined' && console && typeof console.warn === 'functi
 console.warn('[markdown-reader] fence render failed:', error)
 }
 }
+lazyFenceKeepBottom(el, () => {
 el.style.minHeight = ''
 el.style.height = ''
-lazyFenceKeepBottom(el, () => {
 el.classList.remove('mdr-md-diff-pending')
 el.classList.remove('mdr-md-code-pending')
 el.innerHTML = html
@@ -1844,11 +1844,25 @@ entry.height = el.getBoundingClientRect().height || entry.height || 0
 } catch {
 }
 }
+function lazyFenceRowCount(source, kind) {
+const text = String(source == null ? '' : source)
+if (kind === 'diff') {
+if (typeof parseDiffFenceRows === 'function') {
+try {
+return parseDiffFenceRows(text).length
+} catch {
+}
+}
+}
+if (!text) return 1
+const lines = text.split('\n')
+return lines[lines.length - 1] === '' ? lines.length - 1 : lines.length
+}
 function lazyFencePlaceholder(source, kind) {
 const el = document.createElement('div')
 const isDiff = kind === 'diff'
 el.className = isDiff ? 'mdr-md-diff mdr-md-diff-pending' : 'mdr-md-code mdr-md-code-pending'
-const rows = String(source || '').split('\n').length
+const rows = lazyFenceRowCount(source, kind)
 const line = isDiff ? LAZY_DIFF_ROW_HEIGHT : LAZY_CODE_LINE_HEIGHT
 const height = Math.max(60, rows * line)
 el.style.minHeight = `${height}px`
@@ -2777,7 +2791,7 @@ const FENCE_CSS = `
 .mdr-md pre code .hljs-params.hljs-variable{color:#9cdcfe}
 .mdr-md pre code .hljs-params.hljs-keyword{color:#569cd6}
 .mdr-md pre code .hljs-params.hljs-constant{color:#b5cea8}
-.mdr-md .mdr-md-diff{margin:1em 0;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:#1e1e1e;overflow:auto}
+.mdr-md .mdr-md-diff{margin:1em 0;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:#1e1e1e;overflow:auto;box-sizing:content-box}
 .mdr-md .mdr-md-diff .mdr-cl{font-size:12.5px}
 .mdr-md .mdr-md-diff .mdr-cl-code{flex:1;padding-left:10px;color:#d4d4d4;white-space:pre;tab-size:4}
 .mdr-md .mdr-md-diff .mdr-diff-sign{display:inline-block;width:14px;margin-right:6px;color:#6e7681;user-select:none}
@@ -2789,11 +2803,11 @@ const FENCE_CSS = `
 .mdr-md .mdr-md-diff .mdr-cl.mdr-git-ctx{background:rgba(139,148,158,.06)}
 .mdr-md .mdr-md-diff .mdr-diff-meta .mdr-cl-code{color:#6e7681}
 .mdr-md .mdr-md-diff .mdr-diff-hunk .mdr-cl-code{color:#79c0ff}
-.mdr-md .mdr-md-diff.mdr-md-diff-pending{display:flex;align-items:center;justify-content:center;background:rgba(139,148,158,.06);color:#6e7681;font-size:12px}
-.mdr-md .mdr-md-diff-note{opacity:.85;letter-spacing:.02em}
-.mdr-md .mdr-md-code{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;color:#d4d4d4}
-.mdr-md .mdr-md-code.mdr-md-code-pending{display:flex;align-items:center;justify-content:center;white-space:normal;color:#6e7681;font-size:12px}
-.mdr-md .mdr-md-code-note{opacity:.85;letter-spacing:.02em}
+.mdr-md .mdr-md-diff.mdr-md-diff-pending{display:flex;align-items:center;justify-content:center;background:rgba(139,148,158,.06);color:#6e7681}
+.mdr-md .mdr-md-diff-note{opacity:.85;letter-spacing:.02em;font-size:12px}
+.mdr-md .mdr-md-code{margin:1em 0;padding:12px 14px;border-radius:8px;background:#1e1e1e;overflow:auto;font-family:"Cascadia Code",Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.55;white-space:pre;tab-size:4;color:#d4d4d4;box-sizing:content-box}
+.mdr-md .mdr-md-code.mdr-md-code-pending{display:flex;align-items:center;justify-content:center;white-space:normal;color:#6e7681}
+.mdr-md .mdr-md-code-note{opacity:.85;letter-spacing:.02em;font-size:12px}
 .mdr-md .mdr-md-diff .hljs-keyword,.mdr-md .mdr-md-diff .hljs-doctag,.mdr-md .mdr-md-diff .hljs-template-tag,.mdr-md .mdr-md-diff .hljs-tag,.mdr-md .mdr-md-diff .hljs-name,.mdr-md .mdr-md-diff .hljs-attr,.mdr-md .mdr-md-diff .hljs-selector-tag,.mdr-md .mdr-md-diff .hljs-meta,.mdr-md .mdr-md-diff .hljs-section,.mdr-md .mdr-md-diff .hljs-link,.mdr-md .mdr-md-diff .hljs-variable.language_{color:#569cd6}
 .mdr-md .mdr-md-diff .hljs-string,.mdr-md .mdr-md-diff .hljs-meta .hljs-string,.mdr-md .mdr-md-diff .hljs-code,.mdr-md .mdr-md-diff .hljs-formula{color:#ce9178}
 .mdr-md .mdr-md-diff .hljs-comment,.mdr-md .mdr-md-diff .hljs-quote{color:#6a9955}
