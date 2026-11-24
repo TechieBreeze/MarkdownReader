@@ -108,9 +108,33 @@ function mmdCacheSet(key, source, svg) {
   return entry
 }
 
+/**
+ * Make the SVG a WELL-FORMED XML document.
+ *
+ * An SVG used as an image (`<img src="data:image/svg+xml,...">`) is parsed as
+ * XML, and mermaid's HTML labels put a bare `<br>` into the foreignObject
+ * (`<span class="nodeLabel">line1<br>line2</span>`). XML has no void
+ * elements, so the parser hits the `<br>` and the WHOLE image fails: the
+ * reader showed 「mermaid 图片加载失败」 and the diagram never appeared (user:
+ * 「有个mermaid图加载不出来」, 2026-11-24 - every diagram with a multi-line
+ * label was affected, not just that one).
+ *
+ * Only the HTML void elements can break it, and self-closing them is exactly
+ * what the XML parser expects. The tags inside a `<style>`/`<text>` are
+ * escaped by mermaid, so they are not touched.
+ */
+function mmdSvgWellFormed(svg) {
+  const text = String(svg || '')
+  if (!text) return text
+  return text.replace(
+    /<(br|hr|img|input|col|area|base|embed|link|meta|param|source|track|wbr)\b([^>]*?)\/?>/gi,
+    (match, tag, rest) => `<${tag}${String(rest || '').replace(/\/\s*$/, '')}/>`,
+  )
+}
+
 /** UTF-8 safe base64 data URL. Plain btoa() throws on non-Latin1 diagram labels. */
 function mmdSvgDataUrl(svg) {
-  const text = String(svg || '')
+  const text = mmdSvgWellFormed(svg)
   if (!text) return ''
   try {
     let base64 = ''

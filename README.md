@@ -105,5 +105,6 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | markdown ```diff 代码块（行模型/分段/转义/无幻影行/无行号列） | `work/harnesses/diff-fence-check.mjs` |
 | markdown ```diff 真实渲染（headless Chrome：无行号列 + 有语法高亮） | `work/harnesses/diff-fence-render-check.mjs` |
 | 懒加载代码块不会把读者「弹」回底部（向上滚动时位置绝不回头） | `work/harnesses/lazy-fence-bounce-check.mjs`（真实 IntersectionObserver，需 CDP 会话） |
+| mermaid 图真的画出来（SVG 必须是合法 XML，否则 `<img>` 加载失败） | `work/harnesses/mermaid-svg-check.mjs` |
 | 线上文件读取（**不改用户的 clone**：不产生 `.git/shallow`、不 fetch） | `work/harnesses/remote-read-check.mjs` |
 | 线上代码弹窗端到端（headless Chrome + 真 React：真的打开代码、跳到那一行） | `work/harnesses/popup-remote-check.mjs`（需要 `work/tmp-react`：`cd work && pnpm add react@18 react-dom@18`） |

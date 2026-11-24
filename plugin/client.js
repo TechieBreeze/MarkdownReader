@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "0c0ab9844e32";
+    const BUILD_ID = "b97f8633a542";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -1407,8 +1407,16 @@ if (dropped) mmdCacheChars -= dropped.chars
 if (mmdCacheChars < 0) mmdCacheChars = 0
 return entry
 }
-function mmdSvgDataUrl(svg) {
+function mmdSvgWellFormed(svg) {
 const text = String(svg || '')
+if (!text) return text
+return text.replace(
+/<(br|hr|img|input|col|area|base|embed|link|meta|param|source|track|wbr)\b([^>]*?)\/?>/gi,
+(match, tag, rest) => `<${tag}${String(rest || '').replace(/\/\s*$/, '')}/>`,
+)
+}
+function mmdSvgDataUrl(svg) {
+const text = mmdSvgWellFormed(svg)
 if (!text) return ''
 try {
 let base64 = ''
