@@ -326,7 +326,7 @@ function CodeModalInner(props) {
   // (commit version while viewing a commit's diff, branch version in a branch view,
   // workspace content otherwise).
   const defText =
-    diffMode && Array.isArray(gitView.fileLines)
+    gitView.commit && Array.isArray(gitView.fileLines)
       ? gitView.fileLines.join('\n')
       : gitView.branchContent != null
         ? String(gitView.branchContent)

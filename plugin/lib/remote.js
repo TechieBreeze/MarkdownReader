@@ -480,8 +480,9 @@ export async function readRemoteFile(repoDir, ref, file) {
 export async function readRemotePatch(repoDir, ref, file) {
   if (!repoDir || !ref) return null
   // The clone may have the commit already - then the patch is local too.
+  // `--first-parent`: a merge commit has no diff by default.
   try {
-    const local = await git(repoDir, ['show', '--format=', '--patch', '--unified=3', ref, '--', file], 60000)
+    const local = await git(repoDir, ['show', '--first-parent', '--format=', '--patch', '--unified=3', ref, '--', file], 60000)
     if (local && local.trim()) return local
   } catch {
     /* not in the local object store */
@@ -489,7 +490,7 @@ export async function readRemotePatch(repoDir, ref, file) {
   const remote = await remoteRepoDir(repoDir, ref)
   if (!remote) return null
   try {
-    return await git(remote.dir, ['show', '--format=', '--patch', '--unified=3', remote.sha, '--', file], 60000)
+    return await git(remote.dir, ['show', '--first-parent', '--format=', '--patch', '--unified=3', remote.sha, '--', file], 60000)
   } catch {
     return null
   }

@@ -458,6 +458,57 @@ async function selectGitCommit(key, path, commit, refresh) {
 }
 
 /**
+ * The branch of a pinned commit.
+ *
+ * A link that pins a commit belongs to a branch, and the popup has to show
+ * THAT branch: a document with a CK and a TH link pins commits on two
+ * different branches, and the local checkout's branch was shown for both
+ * (user: 「打开ck和th两个环境的代码链接，显示的分支都是同一个，但是实际上代码
+ * 不在同一个分支」, 2026-11-25).
+ *
+ * The Host answers with the branches that CONTAIN the commit (the
+ * remote-tracking ones too - a branch that only exists on the remote is still
+ * the branch the commit belongs to).
+ */
+async function applyCommitBranch(key, path, commit, refresh) {
+  const view = gitViewFor(key)
+  let contains = []
+  try {
+    const meta = await fetchJson('/api/git/meta', { path, commit })
+    contains = Array.isArray(meta.contains) ? meta.contains : []
+  } catch {
+    contains = []
+  }
+  if (!contains.length) return
+  // The dropdown must be able to SHOW the branch (it may only exist on the
+  // remote, so it is not in the local branch list).
+  const missing = contains.filter((name) => !view.branches.includes(name))
+  if (missing.length) view.branches = view.branches.concat(missing)
+  if (!contains.includes(view.branch)) {
+    view.branch = contains[0]
+    // The branch's own file is loaded in the BACKGROUND: a branch that only
+    // exists on the remote costs seconds (the file comes from the
+    // repository), and the COMMIT view is what the popup shows meanwhile.
+    view.branchContent = null
+    void loadBranchContent(view, path, view.branch, refresh)
+  }
+  refresh()
+}
+
+/** The file of a branch, loaded without touching the commit view. */
+async function loadBranchContent(view, path, branch, refresh) {
+  try {
+    const file = await fetchJson('/api/git/file', { path, commit: branch })
+    if (!file || file.content == null) return
+    if (view.branch !== branch) return // the user switched meanwhile
+    view.branchContent = String(file.content)
+    refresh()
+  } catch {
+    /* the branch file stays unavailable - the commit view is shown instead */
+  }
+}
+
+/**
  * Apply a git-adapted link (`tab.branch` / `tab.commit`, modal request
  * `{path,line,branch,commit}`): a commit view wins, otherwise the requested
  * branch's HEAD file is loaded. Switching branch refetches that branch's commit
@@ -478,6 +529,8 @@ async function applyGitTarget(tab, branch, commit, refresh) {
   const effectiveCommit = commit || (looksLikeCommit ? String(branch) : '')
   if (effectiveCommit) {
     if (effectiveBranch && effectiveBranch !== view.branch) await selectGitBranch(key, path, effectiveBranch, refresh)
+    // A pinned commit decides the branch: show a branch that CONTAINS it.
+    if (!effectiveBranch) await applyCommitBranch(key, path, effectiveCommit, refresh)
     if (view.commit !== effectiveCommit) await selectGitCommit(key, path, effectiveCommit, refresh)
   } else if (effectiveBranch && effectiveBranch !== view.branch) {
     await selectGitBranch(key, path, effectiveBranch, refresh)

@@ -18,7 +18,7 @@
     'use strict';
     const React = require('react');
     const h = React.createElement;
-    const BUILD_ID = "b97f8633a542";
+    const BUILD_ID = "b4c9fee861fd";
     let __slots = null;
     // A broken slice must degrade the READER, not the application, so the
     // slices run inside a guarded IIFE and the module still loads.
@@ -2291,6 +2291,35 @@ view.hint = `加载提交改动失败: ${(error && error.message) || error}`
 view.loading = false
 refresh()
 }
+async function applyCommitBranch(key, path, commit, refresh) {
+const view = gitViewFor(key)
+let contains = []
+try {
+const meta = await fetchJson('/api/git/meta', { path, commit })
+contains = Array.isArray(meta.contains) ? meta.contains : []
+} catch {
+contains = []
+}
+if (!contains.length) return
+const missing = contains.filter((name) => !view.branches.includes(name))
+if (missing.length) view.branches = view.branches.concat(missing)
+if (!contains.includes(view.branch)) {
+view.branch = contains[0]
+view.branchContent = null
+void loadBranchContent(view, path, view.branch, refresh)
+}
+refresh()
+}
+async function loadBranchContent(view, path, branch, refresh) {
+try {
+const file = await fetchJson('/api/git/file', { path, commit: branch })
+if (!file || file.content == null) return
+if (view.branch !== branch) return // the user switched meanwhile
+view.branchContent = String(file.content)
+refresh()
+} catch {
+}
+}
 async function applyGitTarget(tab, branch, commit, refresh) {
 if (!tab || (!branch && !commit)) return
 const key = gitViewKey(tab)
@@ -2302,6 +2331,7 @@ const effectiveBranch = branch && !looksLikeCommit ? branch : ''
 const effectiveCommit = commit || (looksLikeCommit ? String(branch) : '')
 if (effectiveCommit) {
 if (effectiveBranch && effectiveBranch !== view.branch) await selectGitBranch(key, path, effectiveBranch, refresh)
+if (!effectiveBranch) await applyCommitBranch(key, path, effectiveCommit, refresh)
 if (view.commit !== effectiveCommit) await selectGitCommit(key, path, effectiveCommit, refresh)
 } else if (effectiveBranch && effectiveBranch !== view.branch) {
 await selectGitBranch(key, path, effectiveBranch, refresh)
@@ -3106,10 +3136,13 @@ const diffRows = React.useMemo(
 )
 const rows = React.useMemo(() => {
 if (diffRows) return diffRows
+if (view.commit && Array.isArray(view.fileLines)) {
+return view.fileLines.map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+}
 return String(baseContent == null ? '' : baseContent)
 .split('\n')
 .map((text, index) => ({ no: index + 1, kind: 'plain', text }))
-}, [diffRows, baseContent])
+}, [diffRows, baseContent, view.commit, view.fileLines])
 return { rows, diffMode: !!diffRows, baseContent }
 }
 function CodeBody(props) {
@@ -3960,7 +3993,7 @@ gitActions.applyTarget(null, requestRefCommit)
 const workspaceContent = view && view.content != null ? view.content : ''
 const { rows, diffMode } = useCodeRows(gitView, workspaceContent)
 const defText =
-diffMode && Array.isArray(gitView.fileLines)
+gitView.commit && Array.isArray(gitView.fileLines)
 ? gitView.fileLines.join('\n')
 : gitView.branchContent != null
 ? String(gitView.branchContent)

@@ -905,10 +905,19 @@ function useCodeRows(view, workspaceContent) {
   )
   const rows = React.useMemo(() => {
     if (diffRows) return diffRows
+    // A COMMIT view shows the file AT that commit - even when the commit has
+    // no diff for it (a merge commit has none by default). The line numbers of
+    // a pinned link are that commit's, so the workspace copy would highlight
+    // the WRONG line (user: 「打开ck和th两个环境的代码链接…」, 2026-11-25: the
+    // TH link's line 118 is `@Override` at that commit and `@Resource` in the
+    // checkout).
+    if (view.commit && Array.isArray(view.fileLines)) {
+      return view.fileLines.map((text, index) => ({ no: index + 1, kind: 'plain', text }))
+    }
     return String(baseContent == null ? '' : baseContent)
       .split('\n')
       .map((text, index) => ({ no: index + 1, kind: 'plain', text }))
-  }, [diffRows, baseContent])
+  }, [diffRows, baseContent, view.commit, view.fileLines])
   return { rows, diffMode: !!diffRows, baseContent }
 }
 

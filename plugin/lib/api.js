@@ -789,9 +789,52 @@ function gitTarget(state, url) {
   return { abs, repo, relInRepo }
 }
 
+/**
+ * The branches that CONTAIN a commit.
+ *
+ * A link that pins a commit (GitLab permalink `.../-/blob/<sha>/…`) belongs to
+ * a branch, and the popup has to show THAT branch: a document with a CK and a
+ * TH link pins commits on two different branches, and showing the local
+ * checkout's branch for both was wrong (user: 「打开ck和th两个环境的代码链接，
+ * 显示的分支都是同一个」, 2026-11-25).
+ *
+ * The remote-tracking branches are included (a branch that only exists on the
+ * remote is still the branch the commit belongs to); the `origin/` prefix is
+ * dropped so the name matches the one the dropdown shows.
+ *
+ * @returns {Promise<string[]>} the branch names, empty when the commit is not
+ *   in the local object store.
+ */
+async function branchesContaining(repo, commit) {
+  if (!repo || !commit) return []
+  let out = ''
+  try {
+    out = await git(repo, [
+      'for-each-ref',
+      '--contains',
+      commit,
+      '--format=%(refname:short)',
+      'refs/heads/',
+      'refs/remotes/',
+    ])
+  } catch {
+    return []
+  }
+  const names = []
+  for (const line of out.split(/\r?\n/)) {
+    let name = String(line || '').trim()
+    if (!name) continue
+    if (name.startsWith('origin/')) name = name.slice('origin/'.length)
+    if (!name || name === 'HEAD') continue
+    if (!names.includes(name)) names.push(name)
+  }
+  return names
+}
+
 async function apiGitMeta(res, state, url) {
   const { abs, repo, relInRepo } = gitTarget(state, url)
   const branchParam = url.searchParams.get('branch') || ''
+  const commitParam = url.searchParams.get('commit') || ''
   const currentBranch = (await git(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).trim()
   const branchText = await git(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/'])
   const branches = branchText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
@@ -803,6 +846,12 @@ async function apiGitMeta(res, state, url) {
   const branch = branchParam || currentBranch
   const remote = !!(branchParam && !branches.includes(branchParam))
   if (remote) branches.push(branchParam)
+  // The branches of a pinned commit (the popup shows the branch of the commit,
+  // not the branch of the checkout).
+  const contains = commitParam ? await branchesContaining(repo, commitParam) : []
+  for (const name of contains) {
+    if (!branches.includes(name)) branches.push(name)
+  }
   let commits = []
   try {
     const logText = await git(repo, [
@@ -836,6 +885,8 @@ async function apiGitMeta(res, state, url) {
     commits,
     // The branch is not in the local clone (it exists on the remote only).
     remote,
+    // The branches that contain the requested commit.
+    contains,
   })
 }
 
@@ -913,7 +964,10 @@ async function apiGitDiff(res, state, url) {
   if (!commit) throw new Error('缺少 commit')
   let patch = ''
   try {
-    patch = await git(repo, ['show', '--format=', '--patch', '--unified=3', commit, '--', relInRepo])
+    // `--first-parent`: a MERGE commit has no diff by default, and the CK/TH
+    // links of the docs pin exactly those (the merge of the day). The diff
+    // against the first parent is what the repository shows as "Changes".
+    patch = await git(repo, ['show', '--first-parent', '--format=', '--patch', '--unified=3', commit, '--', relInRepo])
   } catch (error) {
     // The commit is not in the local object store: read the patch from the
     // remote (the link's remote is authoritative).
