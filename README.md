@@ -109,3 +109,5 @@ Client 用 React 重写界面，不依赖原工具目录、不启 Python 服务�
 | 链接锁定的提交：分支、行号都必须是那个提交的（CK/TH 两条链接不能显示同一分支） | `work/harnesses/popup-branch-check.mjs` |
 | 线上文件读取（**不改用户的 clone**：不产生 `.git/shallow`、不 fetch） | `work/harnesses/remote-read-check.mjs` |
 | 线上代码弹窗端到端（headless Chrome + 真 React：真的打开代码、跳到那一行） | `work/harnesses/popup-remote-check.mjs`（需要 `work/tmp-react`：`cd work && pnpm add react@18 react-dom@18`） |
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
